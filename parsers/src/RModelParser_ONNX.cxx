@@ -118,6 +118,8 @@ extern ParserFuncSignature ParseSDPA;
 extern ParserFuncSignature ParseMambaScan;
 extern ParserFuncSignature ParseRWKVWKV6;
 extern ParserFuncSignature ParseGriffinRGLRU;
+extern ParserFuncSignature ParseNonZero;
+
 // Declaration of fused operators
 extern ParserFuseFuncSignature ParseFuseConvAdd;
 extern ParserFuseFuncSignature ParseFuseGemmRelu;

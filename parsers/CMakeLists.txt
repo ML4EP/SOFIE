@@ -88,6 +88,7 @@ set(sources_cxx
     src/ParseScatterND.cxx
     src/ParseTrilu.cxx
     src/ParseLogic.cxx
+<<<<<<< HEAD
     src/ParseRMSNorm.cxx
     src/ParseGroupNorm.cxx
     src/ParseCumSum.cxx
@@ -95,6 +96,9 @@ set(sources_cxx
     src/ParseMambaScan.cxx
     src/ParseRWKVWKV6.cxx
     src/ParseGriffinRGLRU.cxx
+=======
+    src/ParseNonZero.cxx
+>>>>>>> 6b29cc1 (feat: add Alpaka support for ONNX NonZero)
     ${PROTO_SRCS}
   ${DEPENDENCIES}
     ${SOFIE_core}
