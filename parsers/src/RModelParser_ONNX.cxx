@@ -294,6 +294,7 @@ RModelParser_ONNX::RModelParser_ONNX() noexcept : fOperatorsMapImpl(std::make_un
    RegisterOperator("ScatterElements", ParseScatterElements);
    RegisterOperator("ScatterND", ParseScatterND);
    RegisterOperator("Trilu", ParseTrilu);
+   RegisterOperator("NonZero", ParseNonZero);
    // Logical operators
    RegisterOperator("And", ParseAnd);
    RegisterOperator("Or", ParseOr);
