@@ -113,10 +113,26 @@ void RModel::ComputeEltwiseFusionGroups() {
       auto lastOutputs = fOperators[current]->GetOpOutputTensors();
       group.outputTensor = lastOutputs.empty() ? "" : std::string(lastOutputs[0]);
 
+<<<<<<< HEAD
       // only fused groups launch a fused kernel and need the element count;
       // GetDimTensorShape covers static and dynamic tensors and throws if unknown
       if (group.isFused())
          group.lengthExpr = ConvertDimShapeToLength(GetDimTensorShape(group.outputTensor));
+=======
+      if (!group.outputTensor.empty()) {
+         auto it = fIntermediateTensorInfos.find(group.outputTensor);
+         if (it != fIntermediateTensorInfos.end()) {
+            group.lengthExpr = std::to_string(ConvertShapeToLength(it->second.shape));
+         } else {
+            auto itDyn = fDynamicTensorInfos.find(group.outputTensor);
+            if (itDyn != fDynamicTensorInfos.end())
+               group.lengthExpr = ConvertDimShapeToLength(itDyn->second.shape);
+            else if (group.isFused())
+               throw std::runtime_error("SOFIE eltwise fusion: output tensor " + group.outputTensor +
+                                        " not found in intermediate or dynamic tensor infos");
+         }
+      }
+>>>>>>> 9cb225f (chore: in line comments cleanup in the code)
 
       size_t gIdx = fEltwiseFusionGroups.size();
       for (auto opIdx : group.opIndices)
@@ -653,6 +669,7 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
             fileName += ".root";
       }
 
+<<<<<<< HEAD
       // ---- build constructor body into a temporary string ----
       {
          std::string savedGC = fGC;
@@ -673,6 +690,17 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
                for (auto &blasCfg : fOperators[id]->GetBlasConfigs()) {
                   if (!blasCfg.empty())
                      fGC += "\nblas.addOperationConfig(" + blasCfg + ");\n";
+=======
+      if (!fShapeParams.empty()) {
+         std::unordered_map<std::string, int> seenParam;
+         for (auto &name : fInputTensorNames) {
+            if (IsDimInputTensor(name)) {
+               for (auto &d : GetDynamicTensorShape(name)) {
+                  if (d.isParam && seenParam.count(d.param) == 0) {
+                     seenParam[d.param] = 1;
+                     fGC += ",\n        size_t " + d.param + " = " + fShapeParams[d.param];
+                  }
+>>>>>>> 9cb225f (chore: in line comments cleanup in the code)
                }
             }
          }

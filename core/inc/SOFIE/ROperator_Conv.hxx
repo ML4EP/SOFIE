@@ -990,9 +990,20 @@ public:
 
 
    std::string GetBlasConfig(){
+<<<<<<< HEAD
       auto gemm = GetGemmInfo();
       std::string n = std::to_string(gemm.n), k = std::to_string(gemm.k);
       return gemm.m + ", " + n + ", " + k + ", " + gemm.m + ", " + k + ", " + gemm.m + ", 'n', 'n', Epilogue::Default";
+=======
+      std::string oDepth_  = (fDim > 2) ? fShapeY[2].GetVal()    : "1";
+      std::string oHeight_ = (fDim > 1) ? fShapeY[fDim].GetVal() : "1";
+      std::string oWidth_  = fShapeY[fDim + 1].GetVal();
+      size_t kSize_        = fAttrKernelShape[0] * fAttrKernelShape[1] * fAttrKernelShape[2];
+      std::string gemm_n_  = std::to_string(fShapeW[0] / fAttrGroup);
+      std::string gemm_k_  = std::to_string(fShapeW[1] * kSize_);
+      std::string gemm_m_  = "(" + oDepth_ + " * " + oHeight_ + " * " + oWidth_ + ")";
+      return gemm_m_ + ", " + gemm_n_ + ", " + gemm_k_ + ", " + gemm_m_ + ", " + gemm_k_ + ", " + gemm_m_ + ", 'n', 'n'";
+>>>>>>> 9cb225f (chore: in line comments cleanup in the code)
    }
 
 };
