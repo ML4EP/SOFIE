@@ -21,11 +21,7 @@
 namespace SOFIE {
 
 // device buffer / view alias per tensor type; must match the 'using Buf* / ViewConst*'
-<<<<<<< HEAD
 // aliases emitted into the generated Session
-=======
-// aliases emitted into the generated Session (hoisted from the former per-function lambdas)
->>>>>>> dd0600b (refactor: modifying dynamic input codegen, share shape helpers and fixing codegen bugs)
 static std::string GetBufType(ETensorType t) {
    switch (t) {
       case ETensorType::FLOAT:  return "BufF1D";
@@ -117,32 +113,10 @@ void RModel::ComputeEltwiseFusionGroups() {
       auto lastOutputs = fOperators[current]->GetOpOutputTensors();
       group.outputTensor = lastOutputs.empty() ? "" : std::string(lastOutputs[0]);
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> dd0600b (refactor: modifying dynamic input codegen, share shape helpers and fixing codegen bugs)
       // only fused groups launch a fused kernel and need the element count;
       // GetDimTensorShape covers static and dynamic tensors and throws if unknown
       if (group.isFused())
          group.lengthExpr = ConvertDimShapeToLength(GetDimTensorShape(group.outputTensor));
-<<<<<<< HEAD
-=======
-      if (!group.outputTensor.empty()) {
-         auto it = fIntermediateTensorInfos.find(group.outputTensor);
-         if (it != fIntermediateTensorInfos.end()) {
-            group.lengthExpr = std::to_string(ConvertShapeToLength(it->second.shape));
-         } else {
-            auto itDyn = fDynamicTensorInfos.find(group.outputTensor);
-            if (itDyn != fDynamicTensorInfos.end())
-               group.lengthExpr = ConvertDimShapeToLength(itDyn->second.shape);
-            else if (group.isFused())
-               throw std::runtime_error("SOFIE eltwise fusion: output tensor " + group.outputTensor +
-                                        " not found in intermediate or dynamic tensor infos");
-         }
-      }
->>>>>>> 9cb225f (chore: in line comments cleanup in the code)
-=======
->>>>>>> dd0600b (refactor: modifying dynamic input codegen, share shape helpers and fixing codegen bugs)
 
       size_t gIdx = fEltwiseFusionGroups.size();
       for (auto opIdx : group.opIndices)
@@ -534,22 +508,10 @@ void RModel::GenerateOutput_GPU_ALPAKA() {
 
 void RModel::GenerateSessionCode_GPU_ALPAKA() {
 
-<<<<<<< HEAD
    // the model's dynamic shape parameters in infer-argument order
    std::vector<std::string> dynParamNames;
    ForEachInferArg_GPU_ALPAKA([&](const std::string &p) { dynParamNames.push_back(p); },
                               [](const std::string &) {});
-=======
-   // hand every operator the model's dynamic shape parameters in infer-argument order;
-   // kernel signatures and launches iterate this one list
-   {
-      std::vector<std::string> dynParams;
-      ForEachInferArg_GPU_ALPAKA([&](const std::string &p) { dynParams.push_back(p); },
-                                 [](const std::string &) {});
-      for (auto &op : fOperators)
-         op->SetGPUDynParams(dynParams);
-   }
->>>>>>> dd0600b (refactor: modifying dynamic input codegen, share shape helpers and fixing codegen bugs)
 
    std::set<SOFIE::OperatorKind> registered_operators;
    std::set<size_t> fusedGroupsEmitted; // tracks which fusion groups have had their struct/decl emitted
@@ -691,7 +653,6 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
             fileName += ".root";
       }
 
-<<<<<<< HEAD
       // ---- build constructor body into a temporary string ----
       {
          std::string savedGC = fGC;
@@ -712,17 +673,6 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
                for (auto &blasCfg : fOperators[id]->GetBlasConfigs()) {
                   if (!blasCfg.empty())
                      fGC += "\nblas.addOperationConfig(" + blasCfg + ");\n";
-=======
-      if (!fShapeParams.empty()) {
-         std::unordered_map<std::string, int> seenParam;
-         for (auto &name : fInputTensorNames) {
-            if (IsDimInputTensor(name)) {
-               for (auto &d : GetDynamicTensorShape(name)) {
-                  if (d.isParam && seenParam.count(d.param) == 0) {
-                     seenParam[d.param] = 1;
-                     fGC += ",\n        size_t " + d.param + " = " + fShapeParams[d.param];
-                  }
->>>>>>> 9cb225f (chore: in line comments cleanup in the code)
                }
             }
          }
@@ -751,7 +701,6 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
          fGC = savedGC;
 
          std::string ctorParams;
-<<<<<<< HEAD
          for (auto &p : ctorParamNames)
             ctorParams += ",\n        size_t " + p + " = " + fShapeParams[p];
 
@@ -762,20 +711,6 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
           */
          for (auto &p : ctorParamNames)
             fGC += "size_t " + GetMemberNameForDimShape(p) + ";\n";
-=======
-         if (!fShapeParams.empty()) {
-            std::unordered_map<std::string, int> seenParam;
-            ForEachInferArg_GPU_ALPAKA(
-               [&](const std::string &p) {
-                  seenParam[p] = 1;
-                  ctorParams += ",\n        size_t " + p + " = " + fShapeParams[p];
-               },
-               [](const std::string &) {});
-            for (auto &p : fShapeParams)
-               if (seenParam.count(p.first) == 0)
-                  ctorParams += ",\n        size_t " + p.first + " = " + p.second;
-         }
->>>>>>> dd0600b (refactor: modifying dynamic input codegen, share shape helpers and fixing codegen bugs)
 
          // ---- public constructors with inlined body ----
          fGC += "public:\n";
