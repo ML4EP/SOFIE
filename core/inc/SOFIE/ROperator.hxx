@@ -38,7 +38,16 @@ enum class OperatorKind {
    UNARY_COS=22,
    UNARY_ABS=23,
    CLIP=24,
-   NOT=25
+   NOT=25,
+   POOL=26,
+   SELU=27,
+   RMSNORM=28,
+   GROUPNORM=29,
+   CUMSUM=30,
+   SDPA=31,
+   MAMBA_SCAN=32,
+   RWKV_WKV6=33,
+   GRIFFIN_RGLRU=34
 };
 
 inline const char* toString(OperatorKind kind) {
@@ -71,6 +80,8 @@ public:
    // generate initialization code for session constructor
    virtual std::string GenerateInitCode() { return "";}
    virtual std::string GenerateInitCode_GPU_ALPAKA() { return "";};
+   // generate code to reset recurrent/stateful buffers (called once per file boundary)
+   virtual std::string GenerateResetStateCode_GPU_ALPAKA() { return ""; }
    // generate some specific declaration code for Session
    virtual std::string GenerateDeclCode() { return "";}
    // generate session data members specific to operator
@@ -80,6 +91,15 @@ public:
    virtual std::string Header() { return "";}
    virtual std::string GetFusableOutputTensorName() { return "";}
    virtual std::string GetBlasConfig() { return ""; }
+   // most operators issue a single cuBLASLt GEMM call and so need at most one layout
+   // config; operators that chain multiple GEMM calls of different shapes (e.g. a
+   // low-rank factorized Gemm) override this to register one config per call.
+   virtual std::vector<std::string> GetBlasConfigs() {
+      auto c = GetBlasConfig();
+      if (c.empty())
+         return {};
+      return {c};
+   }
    virtual void UpdateFusableTensorName(std::string, const std::function<void(const std::string&)>& removal_func){ return;};
 
    // Elementwise kernel fusion interface
