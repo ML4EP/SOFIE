@@ -181,10 +181,18 @@ if (ENABLE_ALPAKA_TESTS)
       ${CMAKE_CURRENT_SOURCE_DIR}
     )
 
+    if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES OR CMAKE_CUDA_ARCHITECTURES STREQUAL "")
+      set(SOFIE_TEST_CUDA_ARCH "75") # RTX 2070 SUPER default
+    else()
+      set(SOFIE_TEST_CUDA_ARCH "${CMAKE_CUDA_ARCHITECTURES}")
+    endif()
+    message(STATUS "SOFIE Alpaka CUDA tests: CUDA architectures = ${SOFIE_TEST_CUDA_ARCH}")
+
     set_target_properties(
       TestCustomModelsFromONNXForAlpakaCuda
       PROPERTIES
         CUDA_SEPARABLE_COMPILATION OFF
+        CUDA_ARCHITECTURES ${SOFIE_TEST_CUDA_ARCH}
         CUDA_STANDARD 20
         CUDA_STANDARD_REQUIRED ON
     )
