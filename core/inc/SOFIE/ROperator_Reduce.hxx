@@ -322,8 +322,6 @@ public:
    // ---------------------------------------------------------------------------
    // GPU kernel: one block per output element, 256 threads cooperatively reduce
    // the slice via shared-memory tree reduction.
-   // This replaces the previous naive "one thread per output element" approach
-   // which serialised the entire reduction loop inside a single thread.
    // ---------------------------------------------------------------------------
    std::string Generate_GPU_Kernel_ALPAKA(std::string /*opName*/, const std::vector<std::string> &dynParamNames) override {
       if (fShapeX.empty() || fShapeY.empty())
@@ -342,8 +340,28 @@ public:
             keepAxes.push_back(d);
       }
 
+      // Detect whether the reduced axes are exactly the trailing (kLast) or
+      // leading (kFirst) contiguous axes of the input. In these common cases
+      // the flat input index is a direct affine function of out_idx and r,
+      // avoiding the per-axis division/modulo decode below
+      enum EReduceDim { kFirst, kLast, kMiddle };
+      EReduceDim reduceDims = kLast;
+      {
+         int kmin = (int)Dx - (int)redAxes.size();
+         for (int k = (int)Dx - 1; k >= kmin; k--) {
+            if (!IsReducedAxis(k)) { reduceDims = kMiddle; break; }
+         }
+      }
+      if (reduceDims == kMiddle) {
+         reduceDims = kFirst;
+         for (std::size_t k = 0; k < redAxes.size(); k++) {
+            if (!IsReducedAxis(k)) { reduceDims = kMiddle; break; }
+         }
+      }
+
       // row-major strides for decomposing the flat reduction index into coordinates
       // redStrides[i] = product of fShapeX[redAxes[j]] for j > i
+      // (only needed for the generic kMiddle path)
       std::vector<std::string> redStrides(redAxes.size(), "1");
       for (int ri = (int)redAxes.size() - 2; ri >= 0; --ri)
          redStrides[ri] = "(" + redStrides[ri + 1] + " * " + fShapeX[redAxes[ri + 1]].GetVal() + ")";
@@ -374,14 +392,18 @@ public:
       op += SP + SP + SP + "if (out_idx >= outputLength) return;\n\n";
 
       // ---- decode output (keep-axis) coordinates from out_idx ----
-      for (std::size_t d = 0; d < Dx; ++d) {
-         if (!IsReducedAxis(d)) {
-            op += SP + SP + SP + "std::size_t const oy_" + std::to_string(d)
-                  + " = (out_idx / (" + outputStrides[d].GetVal() + ")) % ("
-                  + fShapeYNotPruned[d].GetVal() + ");\n";
+      // (only needed for the generic kMiddle path; kFirst/kLast compute
+      // in_idx directly from out_idx without per-axis coordinates)
+      if (reduceDims == kMiddle) {
+         for (std::size_t d = 0; d < Dx; ++d) {
+            if (!IsReducedAxis(d)) {
+               op += SP + SP + SP + "std::size_t const oy_" + std::to_string(d)
+                     + " = (out_idx / (" + outputStrides[d].GetVal() + ")) % ("
+                     + fShapeYNotPruned[d].GetVal() + ");\n";
+            }
          }
+         op += "\n";
       }
-      op += "\n";
 
       // ---- thread-stride partial accumulation over reduction axis ----
       std::string startVal;
@@ -391,20 +413,30 @@ public:
       op += SP + SP + SP + "T partial = " + startVal + ";\n";
       op += SP + SP + SP + "for (std::size_t r = thread_id; r < reducedLength; r += 256u) {\n";
 
-      // Decode flat reduction index r into per-axis coordinates.
-      for (std::size_t ri = 0; ri < redAxes.size(); ++ri) {
-         std::size_t rd = redAxes[ri];
-         op += SP + SP + SP + SP + "std::size_t const r_" + std::to_string(rd)
-               + " = (r / (" + redStrides[ri] + ")) % ("
-               + fShapeX[rd].GetVal() + ");\n";
-      }
+      if (reduceDims == kLast) {
+         // reduced axes are the trailing contiguous axes: input is laid out
+         // as [outputLength, reducedLength] row-major.
+         op += SP + SP + SP + SP + "std::size_t const in_idx = out_idx * reducedLength + r;\n";
+      } else if (reduceDims == kFirst) {
+         // reduced axes are the leading contiguous axes: input is laid out
+         // as [reducedLength, outputLength] row-major.
+         op += SP + SP + SP + SP + "std::size_t const in_idx = r * outputLength + out_idx;\n";
+      } else {
+         // Decode flat reduction index r into per-axis coordinates.
+         for (std::size_t ri = 0; ri < redAxes.size(); ++ri) {
+            std::size_t rd = redAxes[ri];
+            op += SP + SP + SP + SP + "std::size_t const r_" + std::to_string(rd)
+                  + " = (r / (" + redStrides[ri] + ")) % ("
+                  + fShapeX[rd].GetVal() + ");\n";
+         }
 
-      // Compute flat input index.
-      op += SP + SP + SP + SP + "std::size_t const in_idx =\n";
-      for (std::size_t d = 0; d < Dx; ++d) {
-         std::string coord = IsReducedAxis(d) ? "r_" + std::to_string(d) : "oy_" + std::to_string(d);
-         op += SP + SP + SP + SP + SP + coord + " * (" + inputStrides[d].GetVal() + ")";
-         op += (d + 1 < Dx) ? " +\n" : ";\n";
+         // Compute flat input index.
+         op += SP + SP + SP + SP + "std::size_t const in_idx =\n";
+         for (std::size_t d = 0; d < Dx; ++d) {
+            std::string coord = IsReducedAxis(d) ? "r_" + std::to_string(d) : "oy_" + std::to_string(d);
+            op += SP + SP + SP + SP + SP + coord + " * (" + inputStrides[d].GetVal() + ")";
+            op += (d + 1 < Dx) ? " +\n" : ";\n";
+         }
       }
 
       // Partial accumulation step.

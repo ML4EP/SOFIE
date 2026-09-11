@@ -733,12 +733,8 @@ namespace SOFIE{
             out << SP << "for (int i = 0; i < " << lengthExtra << "; i++){\n";
          }
 
-         // Use getPtrNative() for all args so the raw-pointer overload is selected
-         // regardless of whether each buffer is a BufXxx or ViewPlainPtr.
-         // For the loop path, add per-iteration offsets; for the collapsed/batched
-         // paths, use base pointers (the whole contiguous tensor is processed at once).
-         std::string pA = "alpaka::getPtrNative(deviceBuf_" + fNA + ")";
-         std::string pB = "alpaka::getPtrNative(deviceBuf_" + fNB + ")";
+         std::string pA = "static_cast<const float*>(alpaka::getPtrNative(deviceBuf_" + fNA + "))";
+         std::string pB = "static_cast<const float*>(alpaka::getPtrNative(deviceBuf_" + fNB + "))";
          std::string pY = "alpaka::getPtrNative(deviceBuf_" + fNY + ")";
          if (useSerialLoop && !fIsDynamic) {
             pA += " + i * " + std::to_string(strideA);
@@ -770,7 +766,7 @@ namespace SOFIE{
             out << SP << "blas.matmul("
                 << "'n', " << opName << "_transA, "
                 << fLowRankRank << ", " << opName << "_m, " << opName << "_k, "
-                << opName << "_alpha, alpaka::getPtrNative(deviceBuf_" << fLowRankInName << "), " << pA
+                << opName << "_alpha, static_cast<const float*>(alpaka::getPtrNative(deviceBuf_" << fLowRankInName << ")), " << pA
                 << ", 0.f, tensor_" << opName << "_lrtmp);\n";
 
             // step 2: Y = 1 * tmp * Bout (+ bias). tmp and Bout are both untransposed
@@ -780,12 +776,12 @@ namespace SOFIE{
                const char *callFn = (fActivation == EActivationType::RELU) ? "blas.gemmrelu(" : "blas.gemm(";
                out << SP << callFn << "'n', 'n', "
                    << opName << "_n, " << opName << "_m, " << fLowRankRank << ", "
-                   << "1.f, alpaka::getPtrNative(deviceBuf_" << fLowRankOutName << "), tensor_" << opName << "_lrtmp, "
+                   << "1.f, static_cast<const float*>(alpaka::getPtrNative(deviceBuf_" << fLowRankOutName << ")), static_cast<const float*>(tensor_" << opName << "_lrtmp), "
                    << opName << "_beta, " << pC << ", " << pY << ");\n";
             } else {
                out << SP << "blas.matmul('n', 'n', "
                    << opName << "_n, " << opName << "_m, " << fLowRankRank << ", "
-                   << "1.f, alpaka::getPtrNative(deviceBuf_" << fLowRankOutName << "), tensor_" << opName << "_lrtmp, "
+                   << "1.f, static_cast<const float*>(alpaka::getPtrNative(deviceBuf_" << fLowRankOutName << ")), static_cast<const float*>(tensor_" << opName << "_lrtmp), "
                    << opName << "_beta, " << pY << ");\n";
             }
          } else if (useSBatched) {
