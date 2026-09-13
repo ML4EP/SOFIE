@@ -14,7 +14,6 @@
 #include <type_traits>
 
 #ifdef SOFIE_USE_CUBLASLT
-#include <cublasLt.h>
 #include <cuda_bf16.h>
 #include <cuda_fp8.h>
 #include <cuda_fp16.h>

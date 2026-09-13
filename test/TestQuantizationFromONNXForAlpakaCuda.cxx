@@ -1346,8 +1346,8 @@ TEST_F(QuantizationAlpakaTest, ConvolutionKernels)
          }
          // The candidate must have been attempted: either the direct layout is
          // active or the provider factually reported it unsupported.
-         EXPECT_TRUE(state.fAColumnMajorInput || state.fDirectInputLayoutUnsupported);
-         EXPECT_TRUE(state.fAColumnMajorInput)
+         EXPECT_TRUE(state.AColumnMajorInput() || state.DirectInputLayoutUnsupported());
+         EXPECT_TRUE(state.AColumnMajorInput())
             << "provider unexpectedly lacks the direct int8 layout for an aligned 1x1 shape";
       #endif
    }
@@ -1443,7 +1443,7 @@ TEST_F(QuantizationAlpakaTest, ConvolutionKernels)
          EXPECT_EQ(std::vector<std::int8_t>(alpaka::getPtrNative(output_h),
                                             alpaka::getPtrNative(output_h) + expected.size()),
                    expected);
-         EXPECT_FALSE(state.fAColumnMajorInput);
+         EXPECT_FALSE(state.AColumnMajorInput());
       #endif
    }
    {

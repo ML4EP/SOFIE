@@ -399,29 +399,11 @@ inline bool QuantizedGemmCudaLt_NarrowsQuantizedOutput(const QuantizedDenseLinea
 }
 
 struct QuantizedGemmCudaLtState : QuantizedDeferredEpilogueHolder {
-   // Declaration order fixes the teardown order (reverse): preference, then C/B/A layouts,
-   // operation, handle. The base holds borrowed pointers only and stays out of that order.
-   INTERNAL::QuantizedCudaLtHandle fHandle;
-   INTERNAL::QuantizedCudaLtMatmulDesc fOperation;
-   INTERNAL::QuantizedCudaLtMatrixLayout fALayout;
-   INTERNAL::QuantizedCudaLtMatrixLayout fBLayout;
-   INTERNAL::QuantizedCudaLtMatrixLayout fCLayout;
-   INTERNAL::QuantizedCudaLtMatrixLayout fDLayout;
-   INTERNAL::QuantizedCudaLtPreference fPreference;
-   static constexpr int kMaxHeuristicResults = 8;
-   cublasLtMatmulHeuristicResult_t fHeuristicResults[kMaxHeuristicResults]{};
-   cublasLtMatmulHeuristicResult_t fHeuristic{};
-   int fHeuristicResultCount = 0;
-   int fSelectedHeuristicIndex = 0;
-   std::size_t fWorkspaceSize = 0;
-   std::size_t fWorkspaceAllocatedBytes = 0;
-   std::size_t fWorkspaceLimitBytes = 0;
-   void *fWorkspace = nullptr;
+   // The cuBLASLt problem lives in the provider; this state keeps the session-side staging,
+   // the asymmetric-input column sums, and the tiled-Conv pipeline.
+   QuantBlasCuda fBlas;
    QuantizedCudaScratchView fScratch{};
-   bool fAutotuned = false;
-   float fAutotuneMs = 0.0f;
-   int fAutotunedCandidateCount = 0;
-   float fSelectedCandidateMs = 0.0f;
+   void *fWorkspace = nullptr;
    std::int8_t *fInputQuantized = nullptr;
    std::int32_t *fAccumulator = nullptr;
    void *fOutputQuantized = nullptr;
@@ -430,28 +412,10 @@ struct QuantizedGemmCudaLtState : QuantizedDeferredEpilogueHolder {
    std::size_t fAccumulatorBytes = 0;
    std::size_t fOutputQuantizedBytes = 0;
    std::size_t fBiasOutputOffsetBytes = 0;
-   std::size_t fM = 0;
-   std::size_t fN = 0;
-   std::size_t fK = 0;
-   std::size_t fBatchCount = 1;
-   std::int64_t fBatchStrideA = 0;
-   std::int64_t fBatchStrideB = 0;
-   std::int64_t fBatchStrideC = 0;
-   bool fAColumnMajorInput = false;
-   bool fInitialized = false;
-   // Output configuration the descriptor was built for: requested is what the caller asked,
-   // narrowed what the provider accepted — a declined shape settles on the wide accumulator.
-   bool fNarrowOutputRequested = false;
-   bool fNarrowedOutput = false;
-   bool fEpilogueHasBias = false;
-   bool fEpilogueHasRelu = false;
    // Per-output-channel weight sums for the asymmetric-input correction; built once and
    // surviving Reset(), since the weight bound to this state does not change.
    INTERNAL::QuantizedCudaDeviceBuffer<std::int32_t> fInputZpColumnSums;
    bool fInputZpColumnSumsBuilt = false;
-   // Remembers a provider rejection of the direct column-major input layout so an ineligible
-   // shape is probed once. Survives Reset(): the shape bound to this state does not change.
-   bool fDirectInputLayoutUnsupported = false;
    // Tiled-Conv staging pipeline: an internal stream and dependency events overlap the next
    // tile's im2col staging with the current tile's GEMM and epilogue. Reset() keeps them alive.
    INTERNAL::QuantizedCudaOwnedStream fTileStagingStream;
@@ -480,215 +444,60 @@ struct QuantizedGemmCudaLtState : QuantizedDeferredEpilogueHolder {
    QuantizedGemmCudaLtState() = default;
    QuantizedGemmCudaLtState(const QuantizedGemmCudaLtState &) = delete;
    QuantizedGemmCudaLtState &operator=(const QuantizedGemmCudaLtState &) = delete;
-   // The owned-handle members null themselves on move and destroy in the destructor.
    QuantizedGemmCudaLtState(QuantizedGemmCudaLtState &&) noexcept = default;
    QuantizedGemmCudaLtState &operator=(QuantizedGemmCudaLtState &&) noexcept = default;
    ~QuantizedGemmCudaLtState() = default;
 
    void Reset() noexcept
    {
-      fPreference.Reset();
-      fDLayout.Reset();
-      fCLayout.Reset();
-      fBLayout.Reset();
-      fALayout.Reset();
-      fOperation.Reset();
-      fHandle.Reset();
-      // Scratch-arena views are not owned; they are only unbound from the torn-down descriptor.
+      fBlas.resetInt8();
+      // Scratch-arena views are not owned; they are only unbound from the torn-down problem.
       fWorkspace = nullptr;
       fInputQuantized = nullptr;
       fAccumulator = nullptr;
       fOutputQuantized = nullptr;
       fBiasOutputOffset = nullptr;
-      for (auto &heuristic : fHeuristicResults)
-         heuristic = cublasLtMatmulHeuristicResult_t{};
-      fHeuristic = cublasLtMatmulHeuristicResult_t{};
-      fHeuristicResultCount = 0;
-      fSelectedHeuristicIndex = 0;
-      fWorkspaceSize = 0;
-      fWorkspaceAllocatedBytes = 0;
-      fWorkspaceLimitBytes = 0;
-      fAutotuned = false;
-      fAutotuneMs = 0.0f;
-      fAutotunedCandidateCount = 0;
-      fSelectedCandidateMs = 0.0f;
       fInputQuantizedBytes = 0;
       fAccumulatorBytes = 0;
       fOutputQuantizedBytes = 0;
       fBiasOutputOffsetBytes = 0;
-      fM = 0;
-      fN = 0;
-      fK = 0;
-      fBatchCount = 1;
-      fBatchStrideA = 0;
-      fBatchStrideB = 0;
-      fBatchStrideC = 0;
-      fAColumnMajorInput = false;
-      fInitialized = false;
-      fNarrowOutputRequested = false;
-      fNarrowedOutput = false;
-      fEpilogueHasBias = false;
-      fEpilogueHasRelu = false;
    }
 
    // narrowOutput asks the GEMM to write output codes directly; the caller reads
    // NarrowsOutput() for what the provider accepted and picks its destination from that.
    void Initialize(const QuantizedDenseLinearInvocation &params, bool narrowOutput = false)
    {
-      InitializeInternal(params, narrowOutput, true);
+      fBlas.prepareInt8(MakeMatmulDesc(params), narrowOutput, true);
    }
 
    // Attempts initialization for a unit-kernel Conv's direct column-major input layout;
    // returns false, leaving the state reset, when the provider has no algorithm for it.
    bool TryInitializeDirectInput(const QuantizedDenseLinearInvocation &params)
    {
-      if (fDirectInputLayoutUnsupported)
-         return false;
-      if (!InitializeInternal(params, false, false)) {
-         fDirectInputLayoutUnsupported = true;
-         return false;
-      }
-      return true;
+      return fBlas.tryPrepareInt8ColumnMajorA(MakeMatmulDesc(params));
    }
 
-   bool NarrowsOutput() const { return fNarrowedOutput; }
+   bool NarrowsOutput() const { return fBlas.int8OutputNarrowed(); }
+
+   bool AColumnMajorInput() const { return fBlas.int8ColumnMajorA(); }
+   bool DirectInputLayoutUnsupported() const { return fBlas.int8ColumnMajorARejected(); }
 
 private:
-   // Builds descriptor, layouts, and heuristics for one output configuration (narrowed D or
-   // wide accumulator); returns false with the state reset when no algorithm exists for it.
-   bool TryConfigure(const QuantizedDenseLinearInvocation &params, bool narrow)
+   static QuantBlasCuda::Int8MatmulDesc MakeMatmulDesc(const QuantizedDenseLinearInvocation &params)
    {
-      Reset();
-      try {
-         INTERNAL::CheckCublasLtStatus(cublasLtCreate(fHandle.Receive()), "cublasLtCreate");
-         // A narrowing store scales in float on the way out, so the descriptor carries a float
-         // scale type even though the accumulation stays integer.
-         INTERNAL::CheckCublasLtStatus(
-            cublasLtMatmulDescCreate(fOperation.Receive(), CUBLAS_COMPUTE_32I,
-                                     narrow ? CUDA_R_32F : CUDA_R_32I),
-            "cublasLtMatmulDescCreate");
-
-         // A narrowed store runs the transposed problem (row-major [m, n] D is column-major
-         // [n, m] memory): no bias epilogue exists on a row-major int8 D, and this moves no data.
-         const cublasOperation_t transA = narrow ? CUBLAS_OP_T
-                                                 : (params.aColumnMajorInput ? CUBLAS_OP_T : CUBLAS_OP_N);
-         const cublasOperation_t transB = narrow ? CUBLAS_OP_N : CUBLAS_OP_T;
-         INTERNAL::CheckCublasLtStatus(cublasLtMatmulDescSetAttribute(fOperation, CUBLASLT_MATMUL_DESC_TRANSA,
-                                                                      &transA, sizeof(transA)),
-                                       "cublasLtMatmulDescSetAttribute(transA)");
-         INTERNAL::CheckCublasLtStatus(cublasLtMatmulDescSetAttribute(fOperation, CUBLASLT_MATMUL_DESC_TRANSB,
-                                                                      &transB, sizeof(transB)),
-                                       "cublasLtMatmulDescSetAttribute(transB)");
-
-         if (narrow) {
-            // Relu on the code is a clamp at a zero point of 0, which the provider's Relu on the
-            // value reaches through the same monotone rounding.
-            cublasLtEpilogue_t epilogue = CUBLASLT_EPILOGUE_DEFAULT;
-            if (params.hasBias && params.hasRelu)
-               epilogue = CUBLASLT_EPILOGUE_RELU_BIAS;
-            else if (params.hasBias)
-               epilogue = CUBLASLT_EPILOGUE_BIAS;
-            else if (params.hasRelu)
-               epilogue = CUBLASLT_EPILOGUE_RELU;
-            if (epilogue != CUBLASLT_EPILOGUE_DEFAULT)
-               INTERNAL::CheckCublasLtStatus(
-                  cublasLtMatmulDescSetAttribute(fOperation, CUBLASLT_MATMUL_DESC_EPILOGUE, &epilogue,
-                                                 sizeof(epilogue)),
-                  "cublasLtMatmulDescSetAttribute(epilogue)");
-            if (params.hasBias) {
-               // Only float32 is accepted alongside an int8 D, and the offset vector the bias
-               // kernel builds is already float in output units.
-               const cudaDataType_t biasType = CUDA_R_32F;
-               INTERNAL::CheckCublasLtStatus(
-                  cublasLtMatmulDescSetAttribute(fOperation, CUBLASLT_MATMUL_DESC_BIAS_DATA_TYPE,
-                                                 &biasType, sizeof(biasType)),
-                  "cublasLtMatmulDescSetAttribute(bias data type)");
-            }
-         }
-
-         const cudaDataType_t outputType = narrow ? CUDA_R_8I : CUDA_R_32I;
-         if (narrow) {
-            // Row-major [n, k] weight and [m, k] input read column-major as [k, n] and [k, m];
-            // the first operand is the weight, so D comes out column-major [n, m].
-            fALayout = INTERNAL::CreateColumnMajorLayout(CUDA_R_8I, params.k, params.n,
-                                                         static_cast<std::int64_t>(params.k));
-            fBLayout = INTERNAL::CreateColumnMajorLayout(CUDA_R_8I, params.k, params.m,
-                                                         static_cast<std::int64_t>(params.k));
-            fCLayout = INTERNAL::CreateColumnMajorLayout(outputType, params.n, params.m,
-                                                         static_cast<std::int64_t>(params.n));
-            fDLayout = INTERNAL::CreateColumnMajorLayout(outputType, params.n, params.m,
-                                                         static_cast<std::int64_t>(params.n));
-            INTERNAL::SetStridedBatchLayout(fALayout, params.batchCount, params.batchStrideB);
-            INTERNAL::SetStridedBatchLayout(fBLayout, params.batchCount, params.batchStrideA);
-         } else {
-            // Column-major [m, k] input is described to the row-major convention
-            // as its transpose: a [k, m] row-major matrix with leading dimension m.
-            fALayout = params.aColumnMajorInput
-                          ? INTERNAL::CreateRowMajorLayout(CUDA_R_8I, params.k, params.m,
-                                                           static_cast<std::int64_t>(params.m))
-                          : INTERNAL::CreateRowMajorLayout(CUDA_R_8I, params.m, params.k,
-                                                           static_cast<std::int64_t>(params.k));
-            fBLayout = INTERNAL::CreateRowMajorLayout(CUDA_R_8I, params.n, params.k,
-                                                     static_cast<std::int64_t>(params.k));
-            // C goes unread at beta 0 and carries D's type so the provider accepts the pair.
-            fCLayout = INTERNAL::CreateRowMajorLayout(outputType, params.m, params.n,
-                                                     static_cast<std::int64_t>(params.n));
-            fDLayout = INTERNAL::CreateRowMajorLayout(outputType, params.m, params.n,
-                                                     static_cast<std::int64_t>(params.n));
-            INTERNAL::SetStridedBatchLayout(fALayout, params.batchCount, params.batchStrideA);
-            INTERNAL::SetStridedBatchLayout(fBLayout, params.batchCount, params.batchStrideB);
-         }
-         INTERNAL::SetStridedBatchLayout(fCLayout, params.batchCount, params.batchStrideC);
-         INTERNAL::SetStridedBatchLayout(fDLayout, params.batchCount, params.batchStrideC);
-
-         if (!INTERNAL::QuantizedGemmCudaLtSelectHeuristics(*this, fCLayout, fDLayout,
-                                                            params.maxWorkspaceBytes, narrow)) {
-            Reset();
-            return false;
-         }
-
-         fM = params.m;
-         fN = params.n;
-         fK = params.k;
-         fBatchCount = params.batchCount;
-         fBatchStrideA = params.batchStrideA;
-         fBatchStrideB = params.batchStrideB;
-         fBatchStrideC = params.batchStrideC;
-         fAColumnMajorInput = params.aColumnMajorInput;
-         fNarrowedOutput = narrow;
-         fEpilogueHasBias = params.hasBias;
-         fEpilogueHasRelu = params.hasRelu;
-         fInitialized = true;
-      } catch (...) {
-         Reset();
-         throw;
-      }
-      return true;
-   }
-
-   bool InitializeInternal(const QuantizedDenseLinearInvocation &params, bool narrowOutput,
-                           bool throwOnNoAlgorithm)
-   {
-      if (fInitialized && fM == params.m && fN == params.n && fK == params.k &&
-          fBatchCount == params.batchCount && fBatchStrideA == params.batchStrideA &&
-          fBatchStrideB == params.batchStrideB && fBatchStrideC == params.batchStrideC &&
-          fAColumnMajorInput == params.aColumnMajorInput &&
-          fWorkspaceLimitBytes == params.maxWorkspaceBytes &&
-          fNarrowOutputRequested == narrowOutput && fEpilogueHasBias == params.hasBias &&
-          fEpilogueHasRelu == params.hasRelu)
-         return true;
-
-      // A narrowed configuration the heuristic declines falls back to the accumulator, so a
-      // shape without an int8-D algorithm still runs through the readback epilogue.
-      if (!(narrowOutput && TryConfigure(params, true)) && !TryConfigure(params, false)) {
-         if (!throwOnNoAlgorithm) {
-            Reset();
-            return false;
-         }
-         throw std::runtime_error("SOFIE cuBLASLt quantized GEMM found no algorithm for the selected int8 shape");
-      }
-      fNarrowOutputRequested = narrowOutput;
-      return true;
+      QuantBlasCuda::Int8MatmulDesc desc;
+      desc.m = params.m;
+      desc.n = params.n;
+      desc.k = params.k;
+      desc.batchCount = params.batchCount;
+      desc.strideA = params.batchStrideA;
+      desc.strideB = params.batchStrideB;
+      desc.strideC = params.batchStrideC;
+      desc.aColumnMajor = params.aColumnMajorInput;
+      desc.bias = params.hasBias;
+      desc.relu = params.hasRelu;
+      desc.workspaceLimitBytes = params.maxWorkspaceBytes;
+      return desc;
    }
 
 public:
@@ -778,63 +587,12 @@ public:
    std::int32_t *AccumulatorBuffer() const { return fAccumulator; }
    void *OutputQuantizedBuffer() const { return fOutputQuantized; }
    std::size_t AccumulatorBytes() const { return fAccumulatorBytes; }
-   std::size_t WorkspaceSize() const { return fWorkspaceSize; }
-   int HeuristicResultCount() const { return fHeuristicResultCount; }
-   int SelectedHeuristicIndex() const { return fSelectedHeuristicIndex; }
-   float AutotuneMs() const { return fAutotuneMs; }
-   int AutotunedCandidateCount() const { return fAutotunedCandidateCount; }
-   float SelectedCandidateMs() const { return fSelectedCandidateMs; }
-
-   // Scaling constants for one launch: a narrowed store folds the accumulator-to-output scale
-   // into alpha and writes codes, while the wide store carries the accumulator out unscaled.
-   struct LaunchScalars {
-      std::int32_t alphaInt = 1;
-      std::int32_t betaInt = 0;
-      float alphaFloat = 1.0f;
-      float betaFloat = 0.0f;
-      bool narrowed = false;
-      const void *Alpha() const { return narrowed ? static_cast<const void *>(&alphaFloat)
-                                                  : static_cast<const void *>(&alphaInt); }
-      const void *Beta() const { return narrowed ? static_cast<const void *>(&betaFloat)
-                                                 : static_cast<const void *>(&betaInt); }
-   };
-
-   LaunchScalars MakeLaunchScalars(const QuantizedDenseLinearInvocation &params) const
-   {
-      LaunchScalars scalars;
-      scalars.narrowed = fNarrowedOutput;
-      scalars.alphaFloat = static_cast<float>(params.accumulatorToOutputScale);
-      return scalars;
-   }
-
-   // A narrowed store runs the transposed problem, so the weight is the first operand there.
-   const void *FirstOperand(const std::int8_t *inputQuantized, const std::int8_t *weightQuantized) const
-   {
-      return fNarrowedOutput ? static_cast<const void *>(weightQuantized)
-                             : static_cast<const void *>(inputQuantized);
-   }
-
-   const void *SecondOperand(const std::int8_t *inputQuantized, const std::int8_t *weightQuantized) const
-   {
-      return fNarrowedOutput ? static_cast<const void *>(inputQuantized)
-                             : static_cast<const void *>(weightQuantized);
-   }
-
-   void Autotune(void *target, const std::int8_t *inputQuantized, const std::int8_t *weightQuantized,
-                 const QuantizedDenseLinearInvocation &params, QuantizedGemmCudaStream stream)
-   {
-      const LaunchScalars scalars = MakeLaunchScalars(params);
-      const void *operandA = FirstOperand(inputQuantized, weightQuantized);
-      const void *operandB = SecondOperand(inputQuantized, weightQuantized);
-      INTERNAL::QuantizedGemmCudaLtAutotuneWalk(
-         *this, params.enableAutotuning, params.autotuneIterations, stream,
-         [&](const cublasLtMatmulAlgo_t &algo) {
-            return cublasLtMatmul(fHandle, fOperation, scalars.Alpha(), operandA, fALayout,
-                                  operandB, fBLayout, scalars.Beta(), target, fCLayout,
-                                  target, fDLayout, &algo, fWorkspace,
-                                  fWorkspaceAllocatedBytes, stream);
-         });
-   }
+   std::size_t WorkspaceSize() const { return fBlas.int8Stats().workspaceBytes; }
+   int HeuristicResultCount() const { return fBlas.int8Stats().heuristicCount; }
+   int SelectedHeuristicIndex() const { return fBlas.int8Stats().selectedHeuristic; }
+   float AutotuneMs() const { return fBlas.int8Stats().autotuneMs; }
+   int AutotunedCandidateCount() const { return fBlas.int8Stats().autotunedCandidates; }
+   float SelectedCandidateMs() const { return fBlas.int8Stats().selectedCandidateMs; }
 
    // target is the accumulator, or the output code buffer when a narrowed store was confirmed;
    // biasOutputOffset is the per-column offset in output units a narrowed biased store needs.
@@ -843,23 +601,9 @@ public:
                 bool narrowOutput = false, const float *biasOutputOffset = nullptr)
    {
       Initialize(params, narrowOutput);
-      if (fNarrowedOutput && params.hasBias) {
-         if (biasOutputOffset == nullptr)
-            throw std::runtime_error("SOFIE cuBLASLt quantized GEMM narrowed output requires the bias offset vector");
-         INTERNAL::CheckCublasLtStatus(
-            cublasLtMatmulDescSetAttribute(fOperation, CUBLASLT_MATMUL_DESC_BIAS_POINTER,
-                                           &biasOutputOffset, sizeof(biasOutputOffset)),
-            "cublasLtMatmulDescSetAttribute(bias pointer)");
-      }
-      Autotune(target, inputQuantized, weightQuantized, params, stream);
-      const LaunchScalars scalars = MakeLaunchScalars(params);
-      INTERNAL::CheckCublasLtStatus(cublasLtMatmul(fHandle, fOperation, scalars.Alpha(),
-                                                   FirstOperand(inputQuantized, weightQuantized), fALayout,
-                                                   SecondOperand(inputQuantized, weightQuantized), fBLayout,
-                                                   scalars.Beta(), target, fCLayout,
-                                                   target, fDLayout, &fHeuristic.algo, fWorkspace,
-                                                   fWorkspaceAllocatedBytes, stream),
-                                    "cublasLtMatmul");
+      fBlas.matmulInt8(stream, inputQuantized, weightQuantized, target,
+                       static_cast<float>(params.accumulatorToOutputScale), biasOutputOffset,
+                       fWorkspace, params.enableAutotuning, params.autotuneIterations);
    }
 };
 

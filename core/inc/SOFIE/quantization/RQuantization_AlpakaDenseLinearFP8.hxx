@@ -17,78 +17,38 @@ struct QuantizedGemmCudaLtFP8State {
 };
 #else
 struct QuantizedGemmCudaLtFP8State {
-   // Declaration order fixes the default teardown order (reverse of this list): destruction
-   // must run preference, then D/C/B/A layouts, then operation, then handle.
-   INTERNAL::QuantizedCudaLtHandle fHandle;
-   INTERNAL::QuantizedCudaLtMatmulDesc fOperation;
-   INTERNAL::QuantizedCudaLtMatrixLayout fALayout;
-   INTERNAL::QuantizedCudaLtMatrixLayout fBLayout;
-   INTERNAL::QuantizedCudaLtMatrixLayout fCLayout;
-   INTERNAL::QuantizedCudaLtMatrixLayout fDLayout;
-   INTERNAL::QuantizedCudaLtPreference fPreference;
-   static constexpr int kMaxHeuristicResults = 8;
-   cublasLtMatmulHeuristicResult_t fHeuristicResults[kMaxHeuristicResults]{};
-   cublasLtMatmulHeuristicResult_t fHeuristic{};
-   int fHeuristicResultCount = 0;
-   int fSelectedHeuristicIndex = 0;
-   std::size_t fWorkspaceSize = 0;
-   std::size_t fWorkspaceAllocatedBytes = 0;
-   std::size_t fWorkspaceLimitBytes = 0;
+   // The cuBLASLt problem lives in the provider; this state keeps the session-side scratch
+   // and the BF16 bias conversion the library epilogue needs.
+   QuantBlasCuda fBlas;
    void *fWorkspace = nullptr;
    void *fOutputStaging = nullptr;
-   // cuBLASLt reads the operand scales from device memory, and the scratch arena is reused
-   // between calls, so they live with the descriptor instead.
-   INTERNAL::QuantizedCudaDeviceBuffer<float> fOperandScales;
    // A bias folded into the cuBLASLt epilogue, held in BF16 (the only bias type the FP8
-   // heuristic accepts); converted once, outliving the descriptor rebuilds Reset() performs.
+   // heuristic accepts); converted once, outliving the problem rebuilds Reset() performs.
    INTERNAL::QuantizedCudaDeviceBuffer<void> fFusedBias;
    const float *fFusedBiasSource = nullptr;
    bool fFuseBias = false;
-   // What the live descriptor was actually built with, so a change of fusion decision
-   // re-queries the heuristic instead of reusing an algorithm chosen without the epilogue.
-   const void *fProgrammedBias = nullptr;
-   float fInputScale = 1.0f;
-   float fWeightScale = 1.0f;
-   float fOutputScale = 1.0f;
    QuantizedCudaScratchView fScratch{};
-   bool fAutotuned = false;
-   float fAutotuneMs = 0.0f;
-   int fAutotunedCandidateCount = 0;
-   float fSelectedCandidateMs = 0.0f;
-   std::size_t fM = 0;
-   std::size_t fN = 0;
-   std::size_t fK = 0;
-   std::size_t fBatchCount = 1;
-   std::int64_t fBatchStrideA = 0;
-   std::int64_t fBatchStrideB = 0;
-   std::int64_t fBatchStrideC = 0;
-   ELowPrecisionFormat fOutputCarrier = ELowPrecisionFormat::FP8E4M3;
-   bool fInitialized = false;
 
    QuantizedGemmCudaLtFP8State() = default;
    QuantizedGemmCudaLtFP8State(const QuantizedGemmCudaLtFP8State &) = delete;
    QuantizedGemmCudaLtFP8State &operator=(const QuantizedGemmCudaLtFP8State &) = delete;
-   // The owned-handle members null themselves on move and destroy in the destructor.
    QuantizedGemmCudaLtFP8State(QuantizedGemmCudaLtFP8State &&) noexcept = default;
    QuantizedGemmCudaLtFP8State &operator=(QuantizedGemmCudaLtFP8State &&) noexcept = default;
    ~QuantizedGemmCudaLtFP8State() = default;
 
    void Reset() noexcept;
-   // Separate from Reset() on purpose: Reset() tears the descriptor down on every shape
+   // Separate from Reset() on purpose: Reset() tears the problem down on every shape
    // change, and the converted bias is shape-independent and costs a device sync to rebuild.
    void ResetFusedBias() noexcept;
    bool TryFuseBias(const float *bias, const QuantizedFP8DenseLinearInvocation &params,
                     QuantizedGemmCudaStream stream);
    void BindScratch(QuantizedCudaScratchView scratch) { fScratch = scratch; }
    void PrepareScratch(const QuantizedFP8DenseLinearInvocation &params);
-   void DumpDescriptors(const char *tag, const void *input, const void *weight, const void *target) const;
    void *OutputStagingBuffer() const { return fOutputStaging; }
    void Initialize(const QuantizedFP8DenseLinearInvocation &params);
-   void Autotune(void *output, const void *input, const void *weight, const QuantizedFP8DenseLinearInvocation &params,
-                 QuantizedGemmCudaStream stream);
    void Execute(void *output, const void *input, const void *weight, const QuantizedFP8DenseLinearInvocation &params,
                 QuantizedGemmCudaStream stream);
-   std::size_t WorkspaceSize() const { return fWorkspaceSize; }
+   std::size_t WorkspaceSize() const { return fBlas.fp8Stats().workspaceBytes; }
 };
 #endif // SOFIE_USE_CUBLASLT
 
@@ -291,44 +251,11 @@ inline void QuantizedGemmCudaLtFP8ApplyBiasEpilogue(QuantizedGemmCudaStream stre
 
 inline void QuantizedGemmCudaLtFP8State::Reset() noexcept
 {
-   fPreference.Reset();
-   fDLayout.Reset();
-   fCLayout.Reset();
-   fBLayout.Reset();
-   fALayout.Reset();
-   fOperation.Reset();
-   fHandle.Reset();
-   // Scratch-arena views are not owned; they are only unbound from the torn-down descriptor.
+   fBlas.resetFp8();
+   // Scratch-arena views are not owned; they are only unbound from the torn-down problem.
+   // fFusedBias itself survives: it is keyed to the bias values, not to this shape.
    fWorkspace = nullptr;
    fOutputStaging = nullptr;
-   fOperandScales.Reset();
-   fInputScale = 1.0f;
-   fWeightScale = 1.0f;
-   fOutputScale = 1.0f;
-   for (auto &heuristic : fHeuristicResults)
-      heuristic = cublasLtMatmulHeuristicResult_t{};
-   fHeuristic = cublasLtMatmulHeuristicResult_t{};
-   fHeuristicResultCount = 0;
-   fSelectedHeuristicIndex = 0;
-   fWorkspaceSize = 0;
-   fWorkspaceAllocatedBytes = 0;
-   fWorkspaceLimitBytes = 0;
-   fAutotuned = false;
-   fAutotuneMs = 0.0f;
-   fAutotunedCandidateCount = 0;
-   fSelectedCandidateMs = 0.0f;
-   fM = 0;
-   fN = 0;
-   fK = 0;
-   fBatchCount = 1;
-   fBatchStrideA = 0;
-   fBatchStrideB = 0;
-   fBatchStrideC = 0;
-   fOutputCarrier = ELowPrecisionFormat::FP8E4M3;
-   // The descriptor is gone, so nothing is programmed into it any more. fFusedBias itself
-   // survives: it is keyed to the bias values, not to this shape.
-   fProgrammedBias = nullptr;
-   fInitialized = false;
 }
 
 inline void QuantizedGemmCudaLtFP8State::ResetFusedBias() noexcept
@@ -397,138 +324,24 @@ inline bool QuantizedGemmCudaLtFP8State::TryFuseBias(const float *bias,
 
 inline void QuantizedGemmCudaLtFP8State::Initialize(const QuantizedFP8DenseLinearInvocation &params)
 {
-   if (fInitialized && fM == params.m && fN == params.n && fK == params.k &&
-       fBatchCount == params.batchCount && fBatchStrideA == params.batchStrideA &&
-       fBatchStrideB == params.batchStrideB && fBatchStrideC == params.batchStrideC &&
-       fWorkspaceLimitBytes == params.maxWorkspaceBytes && fOutputCarrier == params.outputCarrier &&
-       fInputScale == params.inputScale && fWeightScale == params.weightScale &&
-       fOutputScale == params.outputScale &&
-       fProgrammedBias == (fFuseBias ? fFusedBias.Get() : nullptr))
-      return;
-
-   Reset();
-   try {
-      INTERNAL::CheckCublasLtStatus(cublasLtCreate(fHandle.Receive()), "cublasLtCreate(FP8)");
-      INTERNAL::CheckCublasLtStatus(cublasLtMatmulDescCreate(fOperation.Receive(), CUBLAS_COMPUTE_32F, CUDA_R_32F),
-                                    "cublasLtMatmulDescCreate(FP8)");
-      const cublasOperation_t transA = CUBLAS_OP_T;
-      const cublasOperation_t transB = CUBLAS_OP_N;
-      INTERNAL::CheckCublasLtStatus(cublasLtMatmulDescSetAttribute(fOperation, CUBLASLT_MATMUL_DESC_TRANSA,
-                                                                   &transA, sizeof(transA)),
-                                    "cublasLtMatmulDescSetAttribute(FP8 transA)");
-      INTERNAL::CheckCublasLtStatus(cublasLtMatmulDescSetAttribute(fOperation, CUBLASLT_MATMUL_DESC_TRANSB,
-                                                                   &transB, sizeof(transB)),
-                                    "cublasLtMatmulDescSetAttribute(FP8 transB)");
-
-      // Unit scales are left unprogrammed so an uncalibrated call keeps the exact operand
-      // path; the D scale only means anything when D narrows to FP8, never for a float D.
-      const bool programOutputScale = QuantizedGemmCudaLtFP8_ProgramsOutputScale(params);
-      if (params.inputScale != 1.0f || params.weightScale != 1.0f || programOutputScale) {
-         const float aScale = params.weightIsMatrixA ? params.weightScale : params.inputScale;
-         const float bScale = params.weightIsMatrixA ? params.inputScale : params.weightScale;
-         // Every scale pointer must be 16-byte aligned; cuBLASLt 12.9 rejects base+4
-         // packing with NOT_SUPPORTED, so each scalar gets its own 16-byte slot.
-         constexpr std::size_t kScaleStride = 16u / sizeof(float);
-         float scales[3u * kScaleStride] = {};
-         scales[0] = aScale;
-         scales[kScaleStride] = bScale;
-         // cuBLASLt multiplies D by this before narrowing, so encoding onto a grid of step
-         // `outputScale` means handing it the reciprocal.
-         scales[2u * kScaleStride] = programOutputScale ? 1.0f / params.outputScale : 1.0f;
-         INTERNAL::CheckCudaStatus(cudaMalloc(fOperandScales.Receive(), sizeof(scales)), "cudaMalloc(FP8 operand scales)");
-         INTERNAL::CheckCudaStatus(cudaMemcpy(fOperandScales.Get(), scales, sizeof(scales), cudaMemcpyHostToDevice),
-                                   "cudaMemcpy(FP8 operand scales)");
-         float *const aScalePointer = fOperandScales.Get();
-         float *const bScalePointer = fOperandScales.Get() + kScaleStride;
-         INTERNAL::CheckCublasLtStatus(
-            cublasLtMatmulDescSetAttribute(fOperation, CUBLASLT_MATMUL_DESC_A_SCALE_POINTER,
-                                           &aScalePointer, sizeof(aScalePointer)),
-            "cublasLtMatmulDescSetAttribute(FP8 A scale)");
-         INTERNAL::CheckCublasLtStatus(
-            cublasLtMatmulDescSetAttribute(fOperation, CUBLASLT_MATMUL_DESC_B_SCALE_POINTER,
-                                           &bScalePointer, sizeof(bScalePointer)),
-            "cublasLtMatmulDescSetAttribute(FP8 B scale)");
-         if (programOutputScale) {
-            float *const dScalePointer = fOperandScales.Get() + 2u * kScaleStride;
-            INTERNAL::CheckCublasLtStatus(
-               cublasLtMatmulDescSetAttribute(fOperation, CUBLASLT_MATMUL_DESC_D_SCALE_POINTER,
-                                              &dScalePointer, sizeof(dScalePointer)),
-               "cublasLtMatmulDescSetAttribute(FP8 D scale)");
-         }
-      }
-
-      // The epilogue must be programmed before the heuristic query below: an algorithm
-      // chosen without it may not support it.
-      if (fFuseBias && fFusedBias != nullptr) {
-         const cublasLtEpilogue_t epilogue =
-            params.hasRelu ? CUBLASLT_EPILOGUE_RELU_BIAS : CUBLASLT_EPILOGUE_BIAS;
-         INTERNAL::CheckCublasLtStatus(
-            cublasLtMatmulDescSetAttribute(fOperation, CUBLASLT_MATMUL_DESC_EPILOGUE, &epilogue,
-                                           sizeof(epilogue)),
-            "cublasLtMatmulDescSetAttribute(FP8 bias epilogue)");
-         INTERNAL::CheckCublasLtStatus(
-            cublasLtMatmulDescSetAttribute(fOperation, CUBLASLT_MATMUL_DESC_BIAS_POINTER,
-                                           &fFusedBias.fValue, sizeof(fFusedBias.fValue)),
-            "cublasLtMatmulDescSetAttribute(FP8 bias pointer)");
-         // Only BF16 is accepted here; float32 and fp16 are rejected by the FP8 heuristic.
-         const cudaDataType_t biasType = CUDA_R_16BF;
-         INTERNAL::CheckCublasLtStatus(
-            cublasLtMatmulDescSetAttribute(fOperation, CUBLASLT_MATMUL_DESC_BIAS_DATA_TYPE,
-                                           &biasType, sizeof(biasType)),
-            "cublasLtMatmulDescSetAttribute(FP8 bias data type)");
-      }
-
-      INTERNAL::CheckCublasLtStatus(cublasLtMatrixLayoutCreate(fALayout.Receive(), CUDA_R_8F_E4M3,
-                                                               static_cast<std::uint64_t>(params.k),
-                                                               static_cast<std::uint64_t>(params.m),
-                                                               static_cast<std::int64_t>(params.k)),
-                                    "cublasLtMatrixLayoutCreate(FP8 A)");
-      INTERNAL::CheckCublasLtStatus(cublasLtMatrixLayoutCreate(fBLayout.Receive(), CUDA_R_8F_E4M3,
-                                                               static_cast<std::uint64_t>(params.k),
-                                                               static_cast<std::uint64_t>(params.n),
-                                                               static_cast<std::int64_t>(params.k)),
-                                    "cublasLtMatrixLayoutCreate(FP8 B)");
-      const auto outputDataType = QuantizedGemmCudaLtFP8_OutputDataType(params.outputCarrier);
-      // cuBLASLt requires a BF16 or FP16 C when D is FP8. beta is 0 here, so C is unused.
-      const auto cDataType = (outputDataType == CUDA_R_8F_E4M3 || outputDataType == CUDA_R_8F_E5M2)
-                                ? CUDA_R_16BF
-                                : outputDataType;
-      INTERNAL::CheckCublasLtStatus(cublasLtMatrixLayoutCreate(fCLayout.Receive(), cDataType,
-                                                               static_cast<std::uint64_t>(params.m),
-                                                               static_cast<std::uint64_t>(params.n),
-                                                               static_cast<std::int64_t>(params.m)),
-                                    "cublasLtMatrixLayoutCreate(FP8 C)");
-      INTERNAL::CheckCublasLtStatus(cublasLtMatrixLayoutCreate(fDLayout.Receive(), outputDataType,
-                                                               static_cast<std::uint64_t>(params.m),
-                                                               static_cast<std::uint64_t>(params.n),
-                                                               static_cast<std::int64_t>(params.m)),
-                                    "cublasLtMatrixLayoutCreate(FP8 D)");
-      INTERNAL::SetStridedBatchLayout(fALayout, params.batchCount, params.batchStrideA);
-      INTERNAL::SetStridedBatchLayout(fBLayout, params.batchCount, params.batchStrideB);
-      INTERNAL::SetStridedBatchLayout(fCLayout, params.batchCount, params.batchStrideC);
-      INTERNAL::SetStridedBatchLayout(fDLayout, params.batchCount, params.batchStrideC);
-
-      if (!INTERNAL::QuantizedGemmCudaLtSelectHeuristics(*this, fCLayout, fDLayout,
-                                                         params.maxWorkspaceBytes))
-         throw std::runtime_error("SOFIE FP8 cuBLASLt dense-linear path found no E4M3 TN algorithm for the requested output profile");
-
-      fM = params.m;
-      fN = params.n;
-      fK = params.k;
-      fBatchCount = params.batchCount;
-      fBatchStrideA = params.batchStrideA;
-      fBatchStrideB = params.batchStrideB;
-      fBatchStrideC = params.batchStrideC;
-      fOutputCarrier = params.outputCarrier;
-      fInputScale = params.inputScale;
-      fWeightScale = params.weightScale;
-      fOutputScale = params.outputScale;
-      fProgrammedBias = fFuseBias ? fFusedBias.Get() : nullptr;
-      fInitialized = true;
-   } catch (...) {
-      Reset();
-      throw;
-   }
+   QuantBlasCuda::Fp8MatmulDesc desc;
+   desc.m = params.m;
+   desc.n = params.n;
+   desc.k = params.k;
+   desc.batchCount = params.batchCount;
+   desc.strideA = params.batchStrideA;
+   desc.strideB = params.batchStrideB;
+   desc.strideC = params.batchStrideC;
+   desc.aScale = params.weightIsMatrixA ? params.weightScale : params.inputScale;
+   desc.bScale = params.weightIsMatrixA ? params.inputScale : params.weightScale;
+   // cuBLASLt multiplies D by this before narrowing, so encoding onto a grid of step
+   // `outputScale` means handing it the reciprocal.
+   desc.dScale = QuantizedGemmCudaLtFP8_ProgramsOutputScale(params) ? 1.0f / params.outputScale : 1.0f;
+   desc.dType = QuantizedGemmCudaLtFP8_OutputDataType(params.outputCarrier);
+   desc.bias = fFuseBias ? fFusedBias.Get() : nullptr;
+   desc.relu = params.hasRelu;
+   desc.workspaceLimitBytes = params.maxWorkspaceBytes;
+   fBlas.prepareFp8(desc);
 }
 
 inline void QuantizedGemmCudaLtFP8State::PrepareScratch(const QuantizedFP8DenseLinearInvocation &params)
@@ -540,104 +353,10 @@ inline void QuantizedGemmCudaLtFP8State::PrepareScratch(const QuantizedFP8DenseL
                        : nullptr;
 }
 
-// Prints every descriptor and layout attribute cuBLASLt holds, unconditionally and in a
-// fixed order so two dumps diff as text. Enabled by SOFIE_FP8_DUMP.
-inline void QuantizedGemmCudaLtFP8State::DumpDescriptors(const char *tag, const void *input,
-                                                         const void *weight, const void *target) const
-{
-   auto descInt = [&](const char *name, cublasLtMatmulDescAttributes_t attr) {
-      std::int32_t value = -1;
-      std::size_t written = 0;
-      const auto status = cublasLtMatmulDescGetAttribute(fOperation, attr, &value, sizeof(value), &written);
-      std::printf("  desc.%-22s = %-12d (status %d)\n", name, static_cast<int>(value), static_cast<int>(status));
-   };
-   auto descPtr = [&](const char *name, cublasLtMatmulDescAttributes_t attr) {
-      void *value = nullptr;
-      std::size_t written = 0;
-      const auto status = cublasLtMatmulDescGetAttribute(fOperation, attr, &value, sizeof(value), &written);
-      std::printf("  desc.%-22s = %-12p (status %d)\n", name, value, static_cast<int>(status));
-   };
-   auto layout = [&](const char *name, cublasLtMatrixLayout_t handle) {
-      std::int32_t type = -1, order = -1, batch = -1;
-      std::uint64_t rows = 0, cols = 0;
-      std::int64_t ld = 0, stride = 0;
-      std::size_t written = 0;
-      cublasLtMatrixLayoutGetAttribute(handle, CUBLASLT_MATRIX_LAYOUT_TYPE, &type, sizeof(type), &written);
-      cublasLtMatrixLayoutGetAttribute(handle, CUBLASLT_MATRIX_LAYOUT_ORDER, &order, sizeof(order), &written);
-      cublasLtMatrixLayoutGetAttribute(handle, CUBLASLT_MATRIX_LAYOUT_ROWS, &rows, sizeof(rows), &written);
-      cublasLtMatrixLayoutGetAttribute(handle, CUBLASLT_MATRIX_LAYOUT_COLS, &cols, sizeof(cols), &written);
-      cublasLtMatrixLayoutGetAttribute(handle, CUBLASLT_MATRIX_LAYOUT_LD, &ld, sizeof(ld), &written);
-      cublasLtMatrixLayoutGetAttribute(handle, CUBLASLT_MATRIX_LAYOUT_BATCH_COUNT, &batch, sizeof(batch), &written);
-      cublasLtMatrixLayoutGetAttribute(handle, CUBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET, &stride,
-                                       sizeof(stride), &written);
-      std::printf("  layout.%-2s type=%-3d order=%-2d rows=%-6llu cols=%-6llu ld=%-6lld batch=%-4d stride=%lld\n",
-                  name, static_cast<int>(type), static_cast<int>(order),
-                  static_cast<unsigned long long>(rows), static_cast<unsigned long long>(cols),
-                  static_cast<long long>(ld), static_cast<int>(batch), static_cast<long long>(stride));
-   };
-
-   std::printf("[FP8 dump %s] m=%zu n=%zu k=%zu batch=%zu\n", tag, fM, fN, fK, fBatchCount);
-   descInt("TRANSA", CUBLASLT_MATMUL_DESC_TRANSA);
-   descInt("TRANSB", CUBLASLT_MATMUL_DESC_TRANSB);
-   descInt("COMPUTE_TYPE", CUBLASLT_MATMUL_DESC_COMPUTE_TYPE);
-   descInt("SCALE_TYPE", CUBLASLT_MATMUL_DESC_SCALE_TYPE);
-   descInt("POINTER_MODE", CUBLASLT_MATMUL_DESC_POINTER_MODE);
-   descInt("EPILOGUE", CUBLASLT_MATMUL_DESC_EPILOGUE);
-   descInt("FAST_ACCUM", CUBLASLT_MATMUL_DESC_FAST_ACCUM);
-   descPtr("A_SCALE_POINTER", CUBLASLT_MATMUL_DESC_A_SCALE_POINTER);
-   descPtr("B_SCALE_POINTER", CUBLASLT_MATMUL_DESC_B_SCALE_POINTER);
-   descPtr("C_SCALE_POINTER", CUBLASLT_MATMUL_DESC_C_SCALE_POINTER);
-   descPtr("D_SCALE_POINTER", CUBLASLT_MATMUL_DESC_D_SCALE_POINTER);
-   descPtr("BIAS_POINTER", CUBLASLT_MATMUL_DESC_BIAS_POINTER);
-   layout("A", fALayout);
-   layout("B", fBLayout);
-   layout("C", fCLayout);
-   layout("D", fDLayout);
-   std::printf("  ptr.A=%p (mod16 %zu)  ptr.B=%p (mod16 %zu)  ptr.D=%p (mod16 %zu)\n", input,
-               reinterpret_cast<std::uintptr_t>(input) % 16u, weight,
-               reinterpret_cast<std::uintptr_t>(weight) % 16u, target,
-               reinterpret_cast<std::uintptr_t>(target) % 16u);
-   std::printf("  workspace=%p bytes=%zu  heuristics=%d  scaleBuffer=%p\n", fWorkspace,
-               fWorkspaceAllocatedBytes, fHeuristicResultCount, static_cast<const void *>(fOperandScales.Get()));
-   // cuBLASLt binds a handle to the device current at creation and rejects operands living
-   // on another one; that is invisible in the attributes above, so residency is asked directly.
-   int currentDevice = -1;
-   cudaGetDevice(&currentDevice);
-   auto residency = [](const char *name, const void *pointer) {
-      cudaPointerAttributes attributes{};
-      const auto status = cudaPointerGetAttributes(&attributes, pointer);
-      std::printf("  residency.%-9s device=%-3d type=%-2d (status %d)\n", name, attributes.device,
-                  static_cast<int>(attributes.type), static_cast<int>(status));
-   };
-   std::printf("  currentDevice=%d\n", currentDevice);
-   residency("A", input);
-   residency("B", weight);
-   residency("D", target);
-   residency("workspace", fWorkspace);
-   residency("scales", fOperandScales.Get());
-   std::fflush(stdout);
-}
-
-inline void QuantizedGemmCudaLtFP8State::Autotune(void *output, const void *input, const void *weight,
-                                                   const QuantizedFP8DenseLinearInvocation &params,
-                                                   QuantizedGemmCudaStream stream)
-{
-   const float alpha = params.alpha;
-   const float beta = 0.0f;
-   INTERNAL::QuantizedGemmCudaLtAutotuneWalk(
-      *this, params.enableAutotuning, params.autotuneIterations, stream,
-      [&](const cublasLtMatmulAlgo_t &algo) {
-         return cublasLtMatmul(fHandle, fOperation, &alpha, input, fALayout, weight, fBLayout,
-                               &beta, output, fCLayout, output, fDLayout, &algo, fWorkspace,
-                               fWorkspaceAllocatedBytes, stream);
-      });
-}
-
 inline void QuantizedGemmCudaLtFP8State::Execute(void *output, const void *input, const void *weight,
                                                   const QuantizedFP8DenseLinearInvocation &params,
                                                   QuantizedGemmCudaStream stream)
 {
-   const cudaError_t entryError = cudaPeekAtLastError();
    Initialize(params);
    PrepareScratch(params);
    // A padded call runs at the physical width, so it writes staging and the caller slices
@@ -645,47 +364,8 @@ inline void QuantizedGemmCudaLtFP8State::Execute(void *output, const void *input
    void *target = params.paddedExecution ? fOutputStaging : output;
    if (target == nullptr)
       throw std::runtime_error("SOFIE FP8 cuBLASLt dense-linear padded call has no output staging buffer");
-   Autotune(target, input, weight, params, stream);
-   // Set SOFIE_FP8_DUMP to print every descriptor, layout, pointer and residency fact
-   // cuBLASLt holds at this call.
-   if (const char *tag = std::getenv("SOFIE_FP8_DUMP"))
-      DumpDescriptors(tag, input, weight, target);
-   const float alpha = params.alpha;
-   const float beta = 0.0f;
-   // The geometry travels with the status: a bare code cannot say which call failed. A
-   // heuristic candidate may still reject the full descriptor, so the list is walked until one runs.
-   auto launch = [&](const cublasLtMatmulAlgo_t &algo) {
-      return cublasLtMatmul(fHandle, fOperation, &alpha, input, fALayout, weight, fBLayout,
-                            &beta, target, fCLayout, target, fDLayout, &algo, fWorkspace,
-                            fWorkspaceAllocatedBytes, stream);
-   };
-   auto status = launch(fHeuristic.algo);
-   for (int i = 0; status != CUBLAS_STATUS_SUCCESS && i < fHeuristicResultCount; ++i) {
-      if (i == fSelectedHeuristicIndex)
-         continue;
-      status = launch(fHeuristicResults[i].algo);
-      if (status == CUBLAS_STATUS_SUCCESS) {
-         fSelectedHeuristicIndex = i;
-         fHeuristic = fHeuristicResults[i];
-      }
-   }
-
-   // cuBLASLt reports an already-errored context as a rejection of this call, so the entry
-   // error is peeked, not consumed, to tell an earlier failure from this call's own.
-   if (status != CUBLAS_STATUS_SUCCESS) {
-      const std::string where = "cublasLtMatmul(FP8) m=" + std::to_string(params.m) +
-                                " n=" + std::to_string(params.n) + " k=" + std::to_string(params.k) +
-                                " batch=" + std::to_string(params.batchCount) +
-                                " inputScale=" + std::to_string(params.inputScale) +
-                                " weightScale=" + std::to_string(params.weightScale) +
-                                " padded=" + (params.paddedExecution ? "1" : "0") +
-                                " heuristics=" + std::to_string(fHeuristicResultCount) +
-                                " entryError=" + cudaGetErrorName(entryError) +
-                                " workspace=" + std::to_string(fWorkspaceAllocatedBytes) +
-                                " workspaceAlign=" +
-                                std::to_string(reinterpret_cast<std::uintptr_t>(fWorkspace) % 256u);
-      INTERNAL::CheckCublasLtStatus(status, where.c_str());
-   }
+   fBlas.matmulFp8(stream, input, weight, target, params.alpha, fWorkspace,
+                   params.enableAutotuning, params.autotuneIterations);
 }
 
 #endif // SOFIE_USE_CUBLASLT
