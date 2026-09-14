@@ -181,7 +181,7 @@ public:
       out += SP + SP + SP + SP + "T sc = dot * scale;\n";
       if (fHasMask)
          out += SP + SP + SP + SP + "sc += mask[b*H*S*S + h*S*S + s*S + j];\n";
-      out += SP + SP + SP + SP + "T const a_j = SOFIE_DEVICE_exp(acc, sc - max_score);\n";
+      out += SP + SP + SP + SP + "T const a_j = alpaka::math::exp(acc, sc - max_score);\n";
       out += SP + SP + SP + SP + "sum_exp += a_j;\n";
       out += SP + SP + SP + SP + "std::size_t const vBase = b*H*S*Dv + h*S*Dv + j*Dv;\n";
       out += SP + SP + SP + SP + "for (std::size_t d = 0; d < Dv; ++d)\n";
