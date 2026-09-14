@@ -7,6 +7,7 @@
 
 #include <sstream>
 #include <algorithm>
+#include <iomanip>
 
 namespace SOFIE{
 
@@ -22,11 +23,36 @@ private:
    std::vector<Dim> fShape;
    std::string fType;
 
-   // element count computed at run time from the three scalar inputs, read through host
-   // pointers named tensor_<input>; shared by the CPU loop and the GPU launch
+   // set in Initialize() whenever the corresponding scalar input resolves to a value known
+   // at codegen time (an initializer, or a non-parametric shape-tensor entry); used to bake
+   // the value into the generated code as a literal instead of reading it through a pointer
+   bool fStartIsConst = false;
+   T fStartConst{};
+   bool fLimitIsConst = false;
+   T fLimitConst{};
+   bool fDeltaIsConst = false;
+   T fDeltaConst{};
+
+   std::string ValueLiteral(T v) const {
+      std::ostringstream s;
+      if (fType == "float")
+         s << std::setprecision(9) << v << "f";
+      else
+         s << v;
+      return s.str();
+   }
+
+   // expression used to read start/limit/delta in generated code: a literal when the
+   // value was already known at codegen time, otherwise a dereference of the host pointer
+   std::string StartExpr() const { return fStartIsConst ? ValueLiteral(fStartConst) : ("*tensor_" + fNStart); }
+   std::string LimitExpr() const { return fLimitIsConst ? ValueLiteral(fLimitConst) : ("*tensor_" + fNLimit); }
+   std::string DeltaExpr() const { return fDeltaIsConst ? ValueLiteral(fDeltaConst) : ("*tensor_" + fNDelta); }
+
+   // element count computed at run time from the three scalar inputs; shared by the CPU loop
+   // and the GPU launch. Each operand is either a literal or a host-pointer read, per *Expr().
    std::string RuntimeSizeExpr() const {
-      return "static_cast<size_t>(std::max(std::ceil((static_cast<float>(*tensor_" + fNLimit +
-             ") - static_cast<float>(*tensor_" + fNStart + ")) / static_cast<float>(*tensor_" + fNDelta + ")), 0.0f))";
+      return "static_cast<size_t>(std::max(std::ceil((static_cast<float>(" + LimitExpr() +
+             ") - static_cast<float>(" + StartExpr() + ")) / static_cast<float>(" + DeltaExpr() + ")), 0.0f))";
    }
 
 public:
@@ -95,6 +121,9 @@ public:
       int res1 = analyzeInput(fNStart, start_value, start_dim);
       int res2 = analyzeInput(fNLimit, limit_value, limit_dim);
       int res3 = analyzeInput(fNDelta, delta_value, delta_dim);
+      if (res1 == 1) { fStartIsConst = true; fStartConst = start_value; }
+      if (res2 == 1) { fLimitIsConst = true; fLimitConst = limit_value; }
+      if (res3 == 1) { fDeltaIsConst = true; fDeltaConst = delta_value; }
       if (res1 == 0 || res2 == 0 || res3 == 0) {
          // cannot know at compile time- need to do fully at run time
          //
@@ -174,7 +203,7 @@ public:
       }
       out << SP << "size_t " << outputSizeVar <<  " = " << outputSize << ";\n";
       out << SP << "for (size_t i = 0; i < " << outputSizeVar << "; i++) {\n";
-      out << SP << SP << "tensor_" << fNOutput << "[i] = *tensor_" << fNStart << " + i * (*tensor_" << fNDelta << ");\n";
+      out << SP << SP << "tensor_" << fNOutput << "[i] = " << StartExpr() << " + i * (" << DeltaExpr() << ");\n";
       out << SP << "}\n";
 
       return out.str();
@@ -186,11 +215,16 @@ public:
       std::string op;
       op += "\n//------ RANGE_KERNEL_ALPAKA\n";
       op += SP + "struct RangeKernel_" + opName + " {\n";
-      op += SP + SP + "template<typename TAcc, typename T>\n";
-      op += SP + SP + "ALPAKA_FN_ACC void operator()(TAcc const& acc, T const* start, T const* delta, T* output, std::size_t n) const {\n";
+      // TS/TD are deduced independently as either T (a compile-time-constant start/delta,
+      // baked in and passed by value - no device read) or T const* (a runtime value read
+      // from device memory), so the same kernel covers both without duplicating the body.
+      op += SP + SP + "template<typename TAcc, typename T, typename TS, typename TD>\n";
+      op += SP + SP + "ALPAKA_FN_ACC void operator()(TAcc const& acc, TS start, TD delta, T* output, std::size_t n) const {\n";
       op += SP + SP + SP + "auto const idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
       op += SP + SP + SP + "if (idx >= n) return;\n";
-      op += SP + SP + SP + "output[idx] = start[0] + static_cast<T>(idx) * delta[0];\n";
+      op += SP + SP + SP + "T startVal; if constexpr (std::is_pointer_v<TS>) startVal = start[0]; else startVal = static_cast<T>(start);\n";
+      op += SP + SP + SP + "T deltaVal; if constexpr (std::is_pointer_v<TD>) deltaVal = delta[0]; else deltaVal = static_cast<T>(delta);\n";
+      op += SP + SP + SP + "output[idx] = startVal + static_cast<T>(idx) * deltaVal;\n";
       op += SP + SP + "}\n";
       op += SP + "};\n";
       return op;
@@ -214,45 +248,60 @@ public:
       std::string outputSize = fShape[0].param;
       if (outputSize.find("range_size") != std::string::npos) {
          /*
-          * Run-time size: start, limit and delta are produced by other operators, so their values
-          * exist only on the device during inference. The generated code copies the three scalars
-          * to the host, computes the element count with the same expression the CPU code uses, and
-          * declares it under the name the downstream launches already reference. The output buffer
-          * was allocated in the constructor from the value passed there under that same name, so
-          * the count is checked against it before the kernel runs.
+          * Run-time size: at least one of start/limit/delta is produced by another operator, so
+          * its value exists only on the device during inference. The generated code copies just
+          * the operands that are NOT already known at codegen time to the host (a constant
+          * start/delta needs no round trip - see fStartIsConst/fDeltaIsConst), computes the
+          * element count with the same expression the CPU code uses, and declares it under the
+          * name the downstream launches already reference. The output buffer was allocated in
+          * the constructor from the value passed there under that same name, so the count is
+          * checked against it before the kernel runs.
           */
          std::vector<std::string> inputs;
          for (auto &in : {fNStart, fNLimit, fNDelta}) {
-            if (std::find(inputs.begin(), inputs.end(), in) == inputs.end())
+            bool isConst = (in == fNStart && fStartIsConst) || (in == fNLimit && fLimitIsConst) ||
+                           (in == fNDelta && fDeltaIsConst);
+            if (!isConst && std::find(inputs.begin(), inputs.end(), in) == inputs.end())
                inputs.push_back(in);
          }
          std::string sizeMember = memberNameForDimShape(outputSize);
 
          out << SP << "size_t " << outputSize << ";\n";
-         out << SP << "{\n";
-         for (auto &in : inputs) {
-            out << SP << SP << "auto host_" << in << " = alpaka::allocBuf<" << fType << ", Idx>(host, Ext1D::all(Idx{1}));\n";
-            out << SP << SP << "alpaka::memcpy(queue, host_" << in << ", deviceBuf_" << in << ");\n";
+         if (!inputs.empty()) {
+            out << SP << "{\n";
+            for (auto &in : inputs) {
+               out << SP << SP << "auto host_" << in << " = alpaka::allocBuf<" << fType << ", Idx>(host, Ext1D::all(Idx{1}));\n";
+               out << SP << SP << "alpaka::memcpy(queue, host_" << in << ", deviceBuf_" << in << ");\n";
+            }
+            out << SP << SP << "alpaka::wait(queue);\n";
+            for (auto &in : inputs) {
+               out << SP << SP << "const " << fType << "* tensor_" << in << " = alpaka::getPtrNative(host_" << in << ");\n";
+            }
+            out << SP << SP << outputSize << " = " << RuntimeSizeExpr() << ";\n";
+            out << SP << "}\n";
+         } else {
+            out << SP << outputSize << " = " << RuntimeSizeExpr() << ";\n";
          }
-         out << SP << SP << "alpaka::wait(queue);\n";
-         for (auto &in : inputs) {
-            out << SP << SP << "const " << fType << "* tensor_" << in << " = alpaka::getPtrNative(host_" << in << ");\n";
-         }
-         out << SP << SP << outputSize << " = " << RuntimeSizeExpr() << ";\n";
-         out << SP << "}\n";
          out << SP << "if (" << outputSize << " > " << sizeMember << ") {\n";
          out << SP << SP << "throw std::runtime_error(\"SOFIE Range " << opName
              << ": run-time size exceeds the size given at construction (" << outputSize << ")\");\n";
          out << SP << "}\n";
       }
 
+      // start/delta are passed by value (baked-in literal) when known at codegen time, so no
+      // device read is needed for them at all; otherwise fall back to the device pointer.
+      std::string startArg = fStartIsConst ? ValueLiteral(fStartConst)
+                                            : ("alpaka::getPtrNative(deviceBuf_" + fNStart + ")");
+      std::string deltaArg = fDeltaIsConst ? ValueLiteral(fDeltaConst)
+                                            : ("alpaka::getPtrNative(deviceBuf_" + fNDelta + ")");
+
       out << SP << "{\n";
       out << SP << SP << "auto const elementsPerGrid_" << opName << " = Vec::all(Idx{" << outputSize << "});\n";
       out << SP << SP << "auto const workDiv_" << opName << " = sofie_workdiv(elementsPerGrid_" << opName << ");\n";
       out << SP << SP << "auto task_" << opName << " = alpaka::createTaskKernel<Acc>(workDiv_" << opName
           << ", rangeKernel_" << opName
-          << ", alpaka::getPtrNative(deviceBuf_" << fNStart << ")"
-          << ", alpaka::getPtrNative(deviceBuf_" << fNDelta << ")"
+          << ", " << startArg
+          << ", " << deltaArg
           << ", alpaka::getPtrNative(deviceBuf_" << fNOutput << ")"
           << ", static_cast<std::size_t>(" << outputSize << "));\n";
       out << SP << SP << "alpaka::enqueue(queue, task_" << opName << ");\n";
