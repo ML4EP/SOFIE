@@ -859,12 +859,7 @@ namespace SOFIE{
          } else {
             // ----------------------------------------------------------------
             // Pure MatMul (no bias):  Y = alpha * op(A) * op(B)
-            // This covers:
-            //   • Scaled Dot-Product Attention:  softmax(QK^T/√d) @ V
-            //   • Any other no-bias matrix multiplication
-            // Previously this branch emitted nothing (empty loop body), which
-            // caused the attention output to be silently uninitialized.
-            // For batch-collapse, use m*batchCount for the same reason as above.
+            // This covers Scaled Dot-Product Attention and other no-bias matrix multiplication
             // ----------------------------------------------------------------
             std::string call_m = batchCollapseB
                ? std::to_string(static_cast<size_t>(std::stoi(m)) * static_cast<size_t>(std::stoi(lengthExtra)))
@@ -978,7 +973,7 @@ namespace SOFIE{
          return n+", "+m+", "+k+", "+ldb+", "+lda+", "+ldc+", "+transFlags+", "+epilogue;
       }
 
-      // low rank factorized Gemm issues two chained GEMM calls (see Generate_GPU_ALPAKA)
+      // low rank factorized Gemm issues two chained GEMM calls
       // of different shapes, so two cuBLASLt layouts need to be pre-registered instead
       // of the single one GetBlasConfig() computes for the dense case.
       std::vector<std::string> GetBlasConfigs() override {
