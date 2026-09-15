@@ -8,6 +8,7 @@
 #include "Exp_FromONNX_GPU_ALPAKA.hxx"
 #include "Log_FromONNX_GPU_ALPAKA.hxx"
 #include "Neg_FromONNX_GPU_ALPAKA.hxx"
+#include "DynamicNegRelu_FromONNX_GPU_ALPAKA.hxx"
 #include "input_models/references/Sqrt.ref.hxx"
 #include "input_models/references/Reciprocal.ref.hxx"
 #include "input_models/references/Exp.ref.hxx"
@@ -293,8 +294,6 @@ TEST_F(SofieAlpakaTest, Neg)
         EXPECT_LE(std::abs(res_ptr[i] - correct[i]), TOLERANCE) << "i=" << i;
 }
 
-<<<<<<< HEAD
-=======
 TEST_F(SofieAlpakaTest, DynamicNegRelu)
 {
     constexpr float TOLERANCE = DEFAULT_TOLERANCE;
@@ -331,7 +330,6 @@ TEST_F(SofieAlpakaTest, DynamicNegRelu)
     }
 }
 
->>>>>>> 9cb225f (chore: in line comments cleanup in the code)
 TEST_F(SofieAlpakaTest, Softplus)
 {
     constexpr float TOLERANCE = DEFAULT_TOLERANCE;

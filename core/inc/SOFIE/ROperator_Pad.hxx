@@ -23,8 +23,8 @@ private:
    std::string fNY;
    T fConstantValue;
    EMode fMode;
-   std::vector<size_t> fInputShape;
-   std::vector<size_t> fOutputShape;
+   std::vector<Dim> fInputShape;
+   std::vector<Dim> fOutputShape;
    std::vector<std::pair<int64_t, int64_t>> fPads;
 
 public:
@@ -64,7 +64,7 @@ public:
          throw std::runtime_error("SOFIE Pad Op Input Tensor is not found in model");
       }
 
-      fInputShape = model.GetTensorShape(fNX);
+      fInputShape = model.GetDimTensorShape(fNX);
 
       if (fMode != EMode::kConstant) {
          throw std::runtime_error("SOFIE Pad Op supports now only Constant mode");
@@ -125,10 +125,19 @@ public:
          if (axes[i] == int64_t(i)) {
             fPads[i].first = padsData[i];
             fPads[i].second = padsData[axesSize + i];
-            int64_t outDim = static_cast<int64_t>(fOutputShape[i]) + fPads[i].first + fPads[i].second;
-            if (outDim < 0)
-               throw std::runtime_error("SOFIE Pad Op : invalid Pads values");
-            fOutputShape[i] = outDim;
+            int64_t padSum = fPads[i].first + fPads[i].second;
+            if (!fInputShape[i].isParam) {
+               int64_t outDim = static_cast<int64_t>(fInputShape[i].dim) + padSum;
+               if (outDim < 0)
+                  throw std::runtime_error("SOFIE Pad Op : invalid Pads values");
+               fOutputShape[i] = Dim{static_cast<size_t>(outDim)};
+            } else if (padSum != 0) {
+               // dynamic dimension: build a symbolic expression for the padded size
+               std::string expr = "(" + fInputShape[i].param + (padSum >= 0 ? " + " : " - ")
+                                 + std::to_string(std::abs(padSum)) + ")";
+               fOutputShape[i] = Dim{expr, size_t(-1)};
+            }
+            // else: dynamic dimension with no padding on this axis, output dim == input dim
          }
       }
 
@@ -139,7 +148,7 @@ public:
          for (auto & p : fPads)
             std::cout << "{ " << p.first << " , " << p.second << "} ";
          std::cout << std::endl;
-         std::cout <<  "Pad: " << fNX << " " << ConvertShapeToString(fInputShape) << " -> " << fNY << " with shape " << ConvertShapeToString(fOutputShape)
+         std::cout <<  "Pad: " << fNX << " " << ConvertDimShapeToString(fInputShape) << " -> " << fNY << " with shape " << ConvertDimShapeToString(fOutputShape)
                   << std::endl;
       }
 
@@ -156,7 +165,7 @@ public:
       auto outStride = UTILITY::ComputeStrideFromShape(fOutputShape);
       out << "\n//------ Pad\n";
       // fill first output tensor with the constant values
-      int length = ConvertShapeToLength(fOutputShape);
+      std::string length = ConvertDimShapeToLength(fOutputShape);
       int dims = fOutputShape.size();
       out << "std::fill(tensor_" << fNY << ", tensor_" << fNY << " + " << length << ","
           << fConstantValue << ");\n";
@@ -164,7 +173,7 @@ public:
       // copy now data from input tensor in output ones
       for (int i = 0; i < dims; i++) {
          for (int j = 1; j < i; j++) out << SP;
-         out << "for (int id" << i << " = 0; id" << i << " < " << fInputShape[i] << "; id"
+         out << "for (size_t id" << i << " = 0; id" << i << " < " << fInputShape[i].GetVal() << "; id"
              << i << "++) {\n";
       }
       // compute index from strides
@@ -175,12 +184,12 @@ public:
          out << "(id" << i;
          if (fPads[i].first != 0) out << " + " << fPads[i].first;
          out << ")";
-         if (i < dims-1) out << " * " << outStride[i] << " + ";
+         if (i < dims-1) out << " * (" << outStride[i].GetVal() << ") + ";
       }
       out << "] =\n     tensor_" << fNX << "[";
       for (int i = 0; i < dims; i++) {
          out << "id" << i;
-         if (i < dims-1) out << " * " << inputStride[i] << " + ";
+         if (i < dims-1) out << " * (" << inputStride[i].GetVal() << ") + ";
       }
       out << "];\n";
       for (int i = dims-1; i >= 0; i--) {
@@ -191,9 +200,109 @@ public:
       return out.str();
    }
 
+   std::string Generate_GPU_Kernel_ALPAKA(std::string opName, const std::vector<std::string> &dynParamNames) override {
+      if (fOutputShape.empty())
+         throw std::runtime_error("SOFIE Pad called to Generate_GPU_Kernel_ALPAKA without being initialized first");
+
+      const size_t D = fOutputShape.size(); //dimensions
+
+      auto inputStrides = UTILITY::ComputeStrideFromShape(fInputShape);
+      auto outputStrides = UTILITY::ComputeStrideFromShape(fOutputShape);
+      opName = "op_" + opName;
+      std::string kname = "PadKernel_" + opName;
+
+      std::stringstream cv;
+      cv << fConstantValue;
+
+      std::string op;
+      op  = "\n//------ PAD_KERNEL_ALPAKA\n";
+      op += SP + "struct " + kname + " {\n";
+      op += SP + SP + "template<typename TAcc, typename T>\n";
+      op += SP + SP + "ALPAKA_FN_ACC void operator()(\n";
+      op += SP + SP + SP + "TAcc const& acc,\n";
+      op += SP + SP + SP + "T const* __restrict__ input,\n";
+      op += SP + SP + SP + "T* __restrict__ output,\n";
+      for (auto &p : dynParamNames)
+         op += SP + SP + SP + "std::size_t const " + p + ",\n";
+      op += SP + SP + SP + "std::size_t const totalElements) const {\n\n";
+
+      op += SP + SP + SP + "auto const global_thread_idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
+      op += SP + SP + SP + "if (global_thread_idx >= totalElements) return;\n";
+      op += SP + SP + SP + "auto const grid_thread_extent = alpaka::getWorkDiv<alpaka::Grid, alpaka::Threads>(acc)[0];\n\n";
+
+      op += SP + SP + SP + "for (std::size_t elem_idx = global_thread_idx; elem_idx < totalElements; elem_idx += grid_thread_extent) {\n\n";
+
+      EmitOutputCoordsFromThreadIdx(op, SP + SP + SP + SP, outputStrides, fOutputShape);
+      op += "\n";
+
+      op += SP + SP + SP + SP + "bool interior = true;\n";
+      for (std::size_t d = 0; d < D; ++d) {
+         std::string hi;
+         if (fPads[d].first != 0)
+            hi = "(" + std::to_string(fPads[d].first) + " + " + fInputShape[d].GetVal() + ")";
+         else
+            hi = fInputShape[d].GetVal();
+         op += SP + SP + SP + SP + "interior = interior";
+         if (fPads[d].first > 0)
+            op += " && (out_" + std::to_string(d) + " >= " + std::to_string(fPads[d].first) + "u)";
+         op += " && (out_" + std::to_string(d) + " < static_cast<std::size_t>(" + hi + "));\n";
+      }
+      op += "\n";
+
+      op += SP + SP + SP + SP + "if (interior) {\n";
+      op += SP + SP + SP + SP + SP + "std::size_t const input_idx =\n";
+      for (std::size_t d = 0; d < D; ++d) {
+         std::string lo = std::to_string(fPads[d].first);
+         op += SP + SP + SP + SP + SP + SP
+               + "(out_" + std::to_string(d) + " - " + lo + "u) * static_cast<std::size_t>("
+               + inputStrides[d].GetVal() + ")";
+         op += (d + 1 < D) ? " +\n" : ";\n";
+      }
+      op += SP + SP + SP + SP + SP + "output[elem_idx] = input[input_idx];\n";
+      op += SP + SP + SP + SP + "} else {\n";
+      op += SP + SP + SP + SP + SP + "output[elem_idx] = static_cast<T>(" + cv.str() + ");\n";
+      op += SP + SP + SP + SP + "}\n";
+
+      op += SP + SP + SP + "}\n";
+      op += SP + SP + "}\n";
+      op += SP + "};\n";
+      return op;
+   }
+
+   std::string Generate_GPU_Kernel_Definitions_ALPAKA(std::string opName) override {
+      opName = "op_" + opName;
+      std::string kname = "PadKernel_" + opName;
+      return SP + kname + " padKernel_" + opName + ";\n";
+   }
+
+   std::string Generate_GPU_ALPAKA(std::string opName, const std::vector<std::string> &dynParamNames) override {
+      opName = "op_" + opName;
+      if (fInputShape.empty() || fOutputShape.empty())
+         throw std::runtime_error("SOFIE Pad Op called to Generate without being initialized first");
+
+      std::string totalElements = ConvertDimShapeToLength(fOutputShape);
+      std::string kname = "padKernel_" + opName;
+
+      std::stringstream out;
+      out << "\n//------ PAD_GPU_ALPAKA\n";
+      out << SP << "auto const elementsPerThread_" << opName << " = Vec::all(static_cast<Idx>(1));\n";
+      out << SP << "auto const elementsPerGrid_"   << opName << " = Vec::all(Idx{static_cast<Idx>(" << totalElements << ")});\n";
+      out << SP << "auto const workDiv_" << opName << " = sofie_workdiv(elementsPerGrid_" << opName << ");\n";
+      out << SP << "auto task_" << opName << " = alpaka::createTaskKernel<Acc>(workDiv_" << opName
+         << ", " << kname
+         << ", alpaka::getPtrNative(deviceBuf_" << fNX << ")"
+         << ", alpaka::getPtrNative(deviceBuf_" << fNY << ")";
+      for (auto &p : dynParamNames)
+         out << ", static_cast<std::size_t>(" << p << ")";
+      out << ", static_cast<Idx>(" << totalElements << "));\n";
+      out << SP << "alpaka::enqueue(queue, task_" << opName << ");\n";
+
+      return out.str();
+   }
+
 };
 
 }//SOFIE
 
 
-#endif //SOFIE_ROPERATOR_Swish
+#endif //SOFIE_ROPERATOR_Pad

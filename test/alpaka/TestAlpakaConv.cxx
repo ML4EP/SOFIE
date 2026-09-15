@@ -37,6 +37,9 @@
 #include "input_models/references/Conv3d.ref.hxx"
 #include "ConvWithDilation_FromONNX_GPU_ALPAKA.hxx"
 #include "input_models/references/ConvWithDilation.ref.hxx"
+#include "DynamicConv1D_FromONNX_GPU_ALPAKA.hxx"
+#include "DynamicConv1DNoBias_FromONNX_GPU_ALPAKA.hxx"
+#include "DynamicConv2DNoBias_FromONNX_GPU_ALPAKA.hxx"
 
 TEST_F(SofieAlpakaTest, ConvWithPadding)
 {
@@ -680,8 +683,6 @@ TEST_F(SofieAlpakaTest, ConvWithDilation)
       EXPECT_LE(std::abs(res_ptr[i] - correct[i]), TOLERANCE) << "i=" << i;
    }
 }
-<<<<<<< HEAD
-=======
 
 // dynamic 1D Conv (k=3, pad=1) + bias, run at (N,n_pf) = (1,1) and (8,5)
 TEST_F(SofieAlpakaTest, DynamicConv1D)
@@ -817,4 +818,3 @@ TEST_F(SofieAlpakaTest, DynamicConv2DNoBias)
                     }
     }
 }
->>>>>>> 9cb225f (chore: in line comments cleanup in the code)
