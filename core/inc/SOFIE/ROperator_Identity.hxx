@@ -103,10 +103,6 @@ public:
       }
       std::stringstream out;
       out << "\n//------ IDENTITY\n";
-      // Device buffers cannot simply be aliased; perform an explicit device-to-device copy.
-      // No wait needed: this enqueues on the same in-order queue as every other op in
-      // the session, so whatever reads deviceBuf_<fNY> next (enqueued later on that
-      // same queue) is guaranteed to see this copy's result already.
       out << SP << "alpaka::memcpy(queue, deviceBuf_" << fNY << ", deviceBuf_" << fNX << ");\n";
       return out.str();
    }

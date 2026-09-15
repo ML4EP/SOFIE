@@ -116,7 +116,7 @@ void RModel::ComputeEltwiseFusionGroups() {
       // only fused groups launch a fused kernel and need the element count;
       // GetDimTensorShape covers static and dynamic tensors and throws if unknown
       if (group.isFused())
-         group.lengthExpr = ConvertDimShapeToLength(GetDimTensorShape(group.outputTensor));
+         group.iterationLengthExpr = ConvertDimShapeToLength(GetDimTensorShape(group.outputTensor));
 
       size_t gIdx = fEltwiseFusionGroups.size();
       for (auto opIdx : group.opIndices)
@@ -384,11 +384,11 @@ void RModel::GenerateOutput_GPU_ALPAKA() {
             fusedCode += "\n//------ FUSED_ELTWISE_GPU_ALPAKA" + sfx + "\n";
             fusedCode += SP + "{\n";
             fusedCode += SP + SP + "auto const elementsPerThread_fused" + sfx + " = Vec::all(static_cast<Idx>(1));\n";
-            fusedCode += SP + SP + "auto const elementsPerGrid_fused" + sfx + " = Vec::all(Idx{" + grp.lengthExpr + "});\n";
+            fusedCode += SP + SP + "auto const elementsPerGrid_fused" + sfx + " = Vec::all(Idx{" + grp.iterationLengthExpr + "});\n";
             fusedCode += SP + SP + "auto const workDiv_fused" + sfx + " = sofie_workdiv(elementsPerGrid_fused" + sfx + ");\n";
             fusedCode += SP + SP + "auto task_fused" + sfx + " = alpaka::createTaskKernel<Acc>(workDiv_fused" + sfx + ", " + kname +
                    ", alpaka::getPtrNative(deviceBuf_" + grp.inputTensor + "), alpaka::getPtrNative(deviceBuf_" + grp.outputTensor +
-                   "), static_cast<Idx>(" + grp.lengthExpr + "));\n";
+                   "), static_cast<Idx>(" + grp.iterationLengthExpr + "));\n";
             fusedCode += SP + SP + "alpaka::enqueue(queue, task_fused" + sfx + ");\n";
             fusedCode += SP + "}\n";
             if (fProfile) {
