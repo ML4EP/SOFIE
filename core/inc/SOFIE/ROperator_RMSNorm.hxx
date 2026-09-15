@@ -143,7 +143,7 @@ public:
       return out.str();
    }
 
-   std::string Generate_GPU_Kernel_ALPAKA(std::string opName) override {
+   std::string Generate_GPU_Kernel_ALPAKA(std::string opName, const std::vector<std::string> &dynParamNames) override {
       opName = "op_" + opName;
       if (fShapeX.empty())
          throw std::runtime_error("SOFIE RMSNorm GPU kernel called without initialization");
@@ -159,6 +159,10 @@ public:
       std::vector<std::string> shape(fRank);
       for (size_t i = 0; i < fRank; ++i) shape[i] = fShapeX[i].GetVal();
 
+      // Wraps a size expression (a literal, or a symbolic dim name/expression from
+      // Dim::GetVal()) as an explicit std::size_t cast.
+      auto sz = [](const std::string &e) { return "static_cast<std::size_t>(" + e + ")"; };
+
       auto strides      = UTILITY::ComputeStrideFromShape(fShapeX);
       auto axesStrides  = UTILITY::ComputeStrideFromShape(fAxesShape);
       auto normStrides  = UTILITY::ComputeStrideFromShape(fNormShape);
@@ -172,8 +176,10 @@ public:
       op += SP + SP + SP + "TAcc const& acc,\n";
       op += SP + SP + SP + "T const* __restrict__ X,\n";
       op += SP + SP + SP + "T const* __restrict__ scale,\n";
-      op += SP + SP + SP + "T* __restrict__ Y,\n";
-      op += SP + SP + SP + "std::size_t const axesLength) const {\n\n";
+      op += SP + SP + SP + "T* __restrict__ Y";
+      for (auto &p : dynParamNames)
+         op += ",\n" + SP + SP + SP + "std::size_t const " + p;
+      op += ",\n" + SP + SP + SP + "std::size_t const axesLength) const {\n\n";
 
       std::string eps = std::to_string(fAttrEpsilon);
       std::string nl  = fNormLength;
@@ -191,7 +197,7 @@ public:
          if (fAxis > 0) {
             for (size_t i = 0; i < fAxis; ++i) {
                op += SP + SP + SP + "std::size_t const axis_" + std::to_string(i)
-                  + " = (row / " + axesStrides[i].GetVal() + "u) % " + shape[i] + "u;\n";
+                  + " = (row / " + sz(axesStrides[i].GetVal()) + ") % " + sz(shape[i]) + ";\n";
             }
             op += "\n";
          }
@@ -202,26 +208,26 @@ public:
             op += SP + SP + SP + SP + "0u;\n\n";
          } else {
             for (size_t i = 0; i < fAxis; ++i) {
-               op += SP + SP + SP + SP + "axis_" + std::to_string(i) + " * " + strides[i].GetVal() + "u";
+               op += SP + SP + SP + SP + "axis_" + std::to_string(i) + " * " + sz(strides[i].GetVal());
                op += (i + 1 < fAxis) ? " +\n" : ";\n\n";
             }
          }
 
-         op += SP + SP + SP + "bool const in_range = (tid < " + nl + "u);\n";
+         op += SP + SP + SP + "bool const in_range = (tid < " + sz(nl) + ");\n";
          op += SP + SP + SP + "std::size_t norm_offset = 0u;\n";
          op += SP + SP + SP + "std::size_t s_offset = 0u;\n";
          op += SP + SP + SP + "if (in_range) {\n";
          if (fRank - fAxis == 1) {
-            op += SP + SP + SP + SP + "norm_offset = tid * " + strides[fAxis].GetVal() + "u;\n";
-            op += SP + SP + SP + SP + "s_offset    = tid * " + normStrides[0].GetVal()  + "u;\n";
+            op += SP + SP + SP + SP + "norm_offset = tid * " + sz(strides[fAxis].GetVal()) + ";\n";
+            op += SP + SP + SP + SP + "s_offset    = tid * " + sz(normStrides[0].GetVal())  + ";\n";
          } else {
             op += SP + SP + SP + SP + "std::size_t rem = tid;\n";
             for (size_t j = fAxis; j < fRank; ++j) {
                size_t ji = j - fAxis;
-               op += SP + SP + SP + SP + "{ std::size_t nj = rem / " + normStrides[ji].GetVal()
-                  + "u; rem %= " + normStrides[ji].GetVal()
-                  + "u; norm_offset += nj * " + strides[j].GetVal()
-                  + "u; s_offset += nj * " + normStrides[ji].GetVal() + "u; }\n";
+               op += SP + SP + SP + SP + "{ std::size_t nj = rem / " + sz(normStrides[ji].GetVal())
+                  + "; rem %= " + sz(normStrides[ji].GetVal())
+                  + "; norm_offset += nj * " + sz(strides[j].GetVal())
+                  + "; s_offset += nj * " + sz(normStrides[ji].GetVal()) + "; }\n";
             }
          }
          op += SP + SP + SP + "}\n\n";
@@ -256,7 +262,7 @@ public:
          if (fAxis > 0) {
             for (size_t i = 0; i < fAxis; ++i) {
                op += SP + SP + SP + SP + "std::size_t const axis_" + std::to_string(i)
-                  + " = (row / " + axesStrides[i].GetVal() + "u) % " + shape[i] + "u;\n";
+                  + " = (row / " + sz(axesStrides[i].GetVal()) + ") % " + sz(shape[i]) + ";\n";
             }
             op += "\n";
          }
@@ -266,7 +272,7 @@ public:
             op += SP + SP + SP + SP + SP + "0u;\n\n";
          } else {
             for (size_t i = 0; i < fAxis; ++i) {
-               op += SP + SP + SP + SP + SP + "axis_" + std::to_string(i) + " * " + strides[i].GetVal() + "u";
+               op += SP + SP + SP + SP + SP + "axis_" + std::to_string(i) + " * " + sz(strides[i].GetVal());
                op += (i + 1 < fAxis) ? " +\n" : ";\n\n";
             }
          }
@@ -274,9 +280,9 @@ public:
          op += SP + SP + SP + SP + "T rms_sum = static_cast<T>(0);\n";
          for (size_t j = fAxis; j < fRank; ++j)
             op += SP + SP + SP + SP + "for (std::size_t n_" + std::to_string(j)
-               + " = 0; n_" + std::to_string(j) + " < " + shape[j] + "u; ++n_" + std::to_string(j) + ") {\n";
+               + " = 0; n_" + std::to_string(j) + " < " + sz(shape[j]) + "; ++n_" + std::to_string(j) + ") {\n";
          op += SP + SP + SP + SP + SP + "std::size_t const idx = row_base";
-         for (size_t j = fAxis; j < fRank; ++j) op += " + n_" + std::to_string(j) + " * " + strides[j].GetVal() + "u";
+         for (size_t j = fAxis; j < fRank; ++j) op += " + n_" + std::to_string(j) + " * " + sz(strides[j].GetVal());
          op += ";\n";
          op += SP + SP + SP + SP + SP + "T v = X[idx]; rms_sum += v * v;\n";
          for (size_t j = fAxis; j < fRank; ++j) op += SP + SP + SP + SP + "}\n";
@@ -285,16 +291,16 @@ public:
 
          for (size_t j = fAxis; j < fRank; ++j)
             op += SP + SP + SP + SP + "for (std::size_t n_" + std::to_string(j)
-               + " = 0; n_" + std::to_string(j) + " < " + shape[j] + "u; ++n_" + std::to_string(j) + ") {\n";
+               + " = 0; n_" + std::to_string(j) + " < " + sz(shape[j]) + "; ++n_" + std::to_string(j) + ") {\n";
          op += SP + SP + SP + SP + SP + "std::size_t const idx = row_base";
-         for (size_t j = fAxis; j < fRank; ++j) op += " + n_" + std::to_string(j) + " * " + strides[j].GetVal() + "u";
+         for (size_t j = fAxis; j < fRank; ++j) op += " + n_" + std::to_string(j) + " * " + sz(strides[j].GetVal());
          op += ";\n";
          op += SP + SP + SP + SP + SP + "std::size_t s_idx = ";
          {
             bool first = true;
             for (size_t j = fAxis; j < fRank; ++j) {
                if (!first) op += " + ";
-               op += "n_" + std::to_string(j) + " * " + normStrides[j - fAxis].GetVal() + "u";
+               op += "n_" + std::to_string(j) + " * " + sz(normStrides[j - fAxis].GetVal());
                first = false;
             }
             if (fRank == fAxis) op += "0u";
@@ -317,7 +323,7 @@ public:
       return SP + kname + " rmsNormKernel_" + opName + ";\n";
    }
 
-   std::string Generate_GPU_ALPAKA(std::string opName) override {
+   std::string Generate_GPU_ALPAKA(std::string opName, const std::vector<std::string> &dynParamNames) override {
       opName = "op_" + opName;
       if (fShapeX.empty())
          throw std::runtime_error("SOFIE RMSNorm GPU dispatch called without initialization");
@@ -332,8 +338,10 @@ public:
       std::string args =
          "alpaka::getPtrNative(deviceBuf_" + fNX + "), "
          "alpaka::getPtrNative(deviceBuf_" + fNScale + "), "
-         "alpaka::getPtrNative(deviceBuf_" + fNY + "), "
-         "static_cast<Idx>(" + fAxesLength + ")";
+         "alpaka::getPtrNative(deviceBuf_" + fNY + ")";
+      for (auto &p : dynParamNames)
+         args += ", static_cast<std::size_t>(" + p + ")";
+      args += ", static_cast<Idx>(" + fAxesLength + ")";
 
       std::stringstream out;
       out << "\n//------ RMSNORM_GPU_ALPAKA\n";

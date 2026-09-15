@@ -20,9 +20,9 @@ private:
    std::string fNX;
    std::string fNSplit;
    std::vector<std::string> fNYs;
-   std::vector<size_t> fInputShape;
+   std::vector<Dim> fInputShape;
    std::vector<int64_t> fSplit;
-   std::vector<std::vector<size_t>> fOutputShapes;
+   std::vector<std::vector<Dim>> fOutputShapes;
 
 
 
@@ -53,7 +53,7 @@ public:
       if (model.CheckIfTensorAlreadyExist(fNX) == false){   //input must be a graph input, or already initialized intermediate tensor
          throw std::runtime_error("SOFIE Split Op Input Tensor is not found in model");
       }
-      fInputShape = model.GetTensorShape(fNX);
+      fInputShape = model.GetDimTensorShape(fNX);
 
       // correct for negative axis
       if (fAxis < 0) fAxis += fInputShape.size();
@@ -64,15 +64,19 @@ public:
       size_t nsplit = fNYs.size();
       // case split tensor is empty
       if (fNSplit.empty()) {
+         if (fInputShape[fAxis].isParam)
+            throw std::runtime_error("SOFIE Split - cannot compute an equal split of a dynamic "
+               "(runtime-sized) axis " + std::to_string(fAxis) + " - provide explicit split sizes instead");
+         int64_t axisDim = static_cast<int64_t>(fInputShape[fAxis].dim);
          int64_t splitValue = 0;
-         if (fInputShape[fAxis] % nsplit == 0) {
-            splitValue = fInputShape[fAxis]/nsplit;
+         if (axisDim % nsplit == 0) {
+            splitValue = axisDim/nsplit;
             fSplit = std::vector<int64_t>(nsplit, splitValue);
          } else {
             // case of not equal splitting
-            splitValue = std::ceil(double(fInputShape[fAxis])/nsplit);
+            splitValue = std::ceil(double(axisDim)/nsplit);
             fSplit = std::vector<int64_t>(nsplit-1, splitValue);
-            fSplit.push_back(fInputShape[fAxis] % splitValue);
+            fSplit.push_back(axisDim % splitValue);
          }
       } else {
          // get split tensor values
@@ -85,22 +89,24 @@ public:
          fSplit = std::vector<int64_t>(split_data, split_data + nsplit);
       }
       // compute now the output shapes
-      size_t tot_split = 0;
+      int64_t tot_split = 0;
       for (size_t i = 0; i < fNYs.size(); i++) {
-         std::vector<size_t> outputShape = fInputShape;
-         outputShape[fAxis] = fSplit[i];
+         std::vector<Dim> outputShape = fInputShape;
+         outputShape[fAxis] = Dim{static_cast<size_t>(fSplit[i])};
          tot_split += fSplit[i];
          model.AddIntermediateTensor(fNYs[i], model.GetTensorType(fNX), outputShape);
          fOutputShapes.push_back(outputShape);
       }
-      if (tot_split != fInputShape[fAxis])
+      // the total can only be validated at graph-construction time when the split
+      // axis itself is static,for a dynamic axis this must hold at runtime instead
+      if (!fInputShape[fAxis].isParam && tot_split != static_cast<int64_t>(fInputShape[fAxis].dim))
          throw std::runtime_error("SOFIE Split - Sum of split sizes must match the input dimension along the axis");
 
 
       if (model.Verbose()) {
-         std::cout << "Split - input shape " << ConvertShapeToString(fInputShape) << " --> ";
+         std::cout << "Split - input shape " << ConvertDimShapeToString(fInputShape) << " --> ";
          for (auto & s : fOutputShapes)
-            std::cout << ConvertShapeToString(s) << "  ";
+            std::cout << ConvertDimShapeToString(s) << "  ";
          std::cout << std::endl;
       }
    }
@@ -120,10 +126,10 @@ public:
       out << SP << "size_t " << OpName << "_axis_offset = 0;\n";
       // unroll the loop on split outputs
       for (size_t i = 0; i < fNYs.size(); i++)  {
-         size_t length = ConvertShapeToLength(fOutputShapes[i]);
+         std::string length = ConvertDimShapeToLength(fOutputShapes[i]);
          auto output_strides = UTILITY::ComputeStrideFromShape(fOutputShapes[i]);
 
-         out << SP << "for (int id = 0; id < " << length << " ; id++){\n";
+         out << SP << "for (int id = 0; id < static_cast<int>(" << length << ") ; id++){\n";
          // convert output index to input index
          out << SP << SP << "int input_index = 0;\n";
          out << SP << SP << "int remaining = id;\n";
@@ -131,12 +137,12 @@ public:
          for (size_t k = 0; k < fOutputShapes[i].size(); ++k) {
             out << SP << SP << "// dim " << k << "\n";
             if (k < fOutputShapes[i].size()-1) {
-               out << SP << SP << "input_index += (int(remaining / " << output_strides[k] << ")";
+               out << SP << SP << "input_index += (int(remaining / " << output_strides[k].GetVal() << ")";
                // for the split axis we need to consider the offset in the splits when converting to input coordinates
                if (k == static_cast<size_t>(fAxis) && i > 0)
                   out << " + " << OpName << "_axis_offset";
-               out << ") * " << input_strides[k] << ";\n";
-               out << SP << SP  << "remaining %= " << output_strides[k] << ";\n";
+               out << ") * " << input_strides[k].GetVal() << ";\n";
+               out << SP << SP  << "remaining %= " << output_strides[k].GetVal() << ";\n";
             } else {
                // for last dims all strides are one
                out << SP << SP << "input_index += remaining";
@@ -153,7 +159,7 @@ public:
       return out.str();
    }
 
-std::string Generate_GPU_Kernel_ALPAKA(std::string opName) override {
+std::string Generate_GPU_Kernel_ALPAKA(std::string opName, const std::vector<std::string> &dynParamNames) override {
     opName = "op_" + opName;
     if (fOutputShapes.empty())
         throw std::runtime_error("SOFIE Operator Split called to Generate without being initialized first");
@@ -165,11 +171,12 @@ std::string Generate_GPU_Kernel_ALPAKA(std::string opName) override {
 
     std::string op;
     op  = "\n//------ SPLIT_KERNEL_ALPAKA\n";
-   std::cout<<"Generating GPU kernel for Split operator with input shape "<< ConvertShapeToString(fInputShape) << " and output shapes : ";
     for (std::size_t i = 0; i < Nin; ++i) {
-      std::cout<<"Loop running for output "<<i<<" with shape "<< ConvertShapeToString(fOutputShapes[i]) << " and split size "<<fSplit[i]<<std::endl;
         auto outputStrides = UTILITY::ComputeStrideFromShape(fOutputShapes[i]);
 
+        // split sizes (fSplit) are always static, so this 
+        // offset is a compile-time literal even when 
+        // the axis itself, or other dims, are dynamic.
         std::size_t axis_offset = 0;
         for (std::size_t k = 0; k < i; ++k)
             axis_offset += fSplit[k];
@@ -182,6 +189,8 @@ std::string Generate_GPU_Kernel_ALPAKA(std::string opName) override {
         op += SP + SP + SP + "TAcc const& acc,\n";
         op += SP + SP + SP + "T const* input,\n";
         op += SP + SP + SP + "T* output,\n";
+        for (auto &p : dynParamNames)
+           op += SP + SP + SP + "std::size_t const " + p + ",\n";
         op += SP + SP + SP + "std::size_t const totalElements) const {\n\n";
 
         op += SP + SP + SP + "auto const global_thread_idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
@@ -192,8 +201,8 @@ std::string Generate_GPU_Kernel_ALPAKA(std::string opName) override {
 
         for (std::size_t d = 0; d < D; ++d) {
             op += SP + SP + SP + SP + "std::size_t const out_" + std::to_string(d)
-                + " = (elem_idx / " + std::to_string(outputStrides[d]) + "u) % "
-                + std::to_string(fOutputShapes[i][d]) + "u;\n";
+                + " = (elem_idx / static_cast<std::size_t>(" + outputStrides[d].GetVal() + ")) % "
+                + "static_cast<std::size_t>(" + fOutputShapes[i][d].GetVal() + ");\n";
         }
         op += "\n";
 
@@ -202,7 +211,7 @@ std::string Generate_GPU_Kernel_ALPAKA(std::string opName) override {
             std::string coord = (d == static_cast<std::size_t>(fAxis))
                 ? ("(out_" + std::to_string(d) + " + " + std::to_string(axis_offset) + "u)")
                 : ("out_" + std::to_string(d));
-            op += SP + SP + SP + SP + SP + coord + " * " + std::to_string(inputStrides[d]) + "u";
+            op += SP + SP + SP + SP + SP + coord + " * static_cast<std::size_t>(" + inputStrides[d].GetVal() + ")";
             op += (d + 1 < D) ? " +\n" : ";\n\n";
         }
 
@@ -211,7 +220,6 @@ std::string Generate_GPU_Kernel_ALPAKA(std::string opName) override {
         op += SP + SP + "}\n";
         op += SP + "};\n\n";
     }
-    std::cout<<"Finished generating GPU kernel for Split operator "<<op<<std::endl;
     return op;
 }
 
@@ -225,7 +233,7 @@ std::string Generate_GPU_Kernel_Definitions_ALPAKA(std::string opName) override 
     return op;
 }
 
-std::string Generate_GPU_ALPAKA(std::string opName) override {
+std::string Generate_GPU_ALPAKA(std::string opName, const std::vector<std::string> &dynParamNames) override {
     opName = "op_" + opName;
     if (fOutputShapes.empty())
         throw std::runtime_error("SOFIE Operator Split called to Generate without being initialized first");
@@ -234,18 +242,20 @@ std::string Generate_GPU_ALPAKA(std::string opName) override {
     out << "\n//------ SPLIT_GPU_ALPAKA\n";
 
     for (std::size_t i = 0; i < fNYs.size(); ++i) {
-        std::size_t length = ConvertShapeToLength(fOutputShapes[i]);
+        std::string length = ConvertDimShapeToLength(fOutputShapes[i]);
         std::string kname  = "splitKernel_" + opName + "_" + std::to_string(i);
 
         out << SP << "{\n";
         out << SP << SP << "auto const elementsPerThread_" << i << " = Vec::all(static_cast<Idx>(1));\n";
-        out << SP << SP << "auto const elementsPerGrid_"   << i << " = Vec::all(Idx{" << length << "});\n";
+        out << SP << SP << "auto const elementsPerGrid_"   << i << " = Vec::all(Idx{static_cast<Idx>(" << length << ")});\n";
         out << SP << SP << "auto const workDiv_" << i << " = sofie_workdiv(elementsPerGrid_" << i << ");\n";
         out << SP << SP << "auto task_" << opName << "_" << i << " = alpaka::createTaskKernel<Acc>(workDiv_" << i
             << ", " << kname
             << ", alpaka::getPtrNative(deviceBuf_" << fNX << ")"
-            << ", alpaka::getPtrNative(deviceBuf_" << fNYs[i] << ")"
-            << ", static_cast<Idx>(" << length << "));\n";
+            << ", alpaka::getPtrNative(deviceBuf_" << fNYs[i] << ")";
+        for (auto &p : dynParamNames)
+           out << ", static_cast<std::size_t>(" << p << ")";
+        out << ", static_cast<Idx>(" << length << "));\n";
         out << SP << "alpaka::enqueue(queue, task_" << opName << "_" << i << ");\n";
         out << SP << "}\n";
     }

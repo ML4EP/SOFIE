@@ -1,14 +1,17 @@
 #!/bin/bash
 set -e
 
-# Directories
-SRC_DIR="./include"
-TEST_DIR="./tests"
+# Directories (SOFIE's own layout: source lives under core/parsers/utils,
+# tests under test/ - unlike sofieBLAS this script was originally written for,
+# SOFIE has no top-level include/ or tests/ directory)
+SRC_DIRS="./core ./parsers ./utils"
+TEST_DIR="./test"
 
 echo "📝 Discovering source/header files..."
 
-FILES=$(find "$SRC_DIR" "$TEST_DIR" \
+FILES=$(find $SRC_DIRS "$TEST_DIR" \
     -path "$TEST_DIR/build" -prune -o \
+    -path "$TEST_DIR/input_models/references" -prune -o \
     -type f \( \
         -name '*.cpp' -o -name '*.cc' -o -name '*.cxx' -o \
         -name '*.h' -o -name '*.hpp' -o -name '*.hxx' -o -name '*.hh' \
@@ -31,7 +34,7 @@ done
 echo "🔍 Running clang-tidy..."
 for file in $FILES; do
     echo "Linting $file"
-    clang-tidy "$file" --extra-arg=-std=c++20 -- -I"$SRC_DIR" || true
+    clang-tidy "$file" --extra-arg=-std=c++20 -- -I./core/inc -I./parsers/inc -I./utils || true
 done
 
 echo "✅ Formatting and linting complete."

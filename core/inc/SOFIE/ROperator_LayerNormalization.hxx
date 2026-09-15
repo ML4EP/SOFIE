@@ -322,14 +322,14 @@ public:
          throw std::runtime_error("TMVA::SOFIE LayerNormalization called to Generate without being initialized first");
 
       // -----------------------------------------------------------------------
-      // Parallel block-per-row strategy (for static normalizedLength ≤ 1024):
+      // Parallel block-per-row strategy (for any static normalizedLength):
       //   • One block per row (axes element).
-      //   • blockSize = next power-of-2 ≥ normalizedLength, capped at 1024.
-      //   • Each thread loads one element, two shared-memory tree reductions
-      //     compute mean then variance; final pass normalises in parallel.
-      // This replaces the previous single-thread-per-row serial scan.
-      // For dynamic shapes or normalizedLength > 1024, fall back to the original
-      // serial kernel (one thread per row, explicit loops).
+      //   • blockSize = next power-of-2 >= normalizedLength, capped at 256
+      //   • Each thread handles itemsPerThread = ceil(normalizedLength/blockSize)
+      //     elements, strided by blockSize, accumulating a local partial sum
+      //     before the shared-memory tree reduction.
+      //   Two shared-memory tree reductions compute mean then variance; a final
+      //   pass normalises in parallel.
       // -----------------------------------------------------------------------
 
       // Determine whether we can use the parallel path
@@ -337,14 +337,21 @@ public:
       bool canParallel = false;
       try {
          normLenVal = std::stoul(fNormalizedLength);
-         canParallel = (normLenVal > 0 && normLenVal <= 1024);
+         canParallel = (normLenVal > 0);
       } catch (...) {}
 
-      // Compute blockSize = next power-of-2 >= normLenVal
+      // blockSize = next power-of-2 >= normLenVal, capped well under the 1024
+      // hardware max: each thread carries a small vals[]/idxs[] array across
+      // passes, and a full 1024-thread block leaves very little register headroom
+      // once the kernel is compiled without heavy optimization, so a
+      // smaller, safer default is used and itemsPerThread absorbs the rest of a
+      // large normalizedLength.
       size_t blockSize = 1;
       if (canParallel) {
-         while (blockSize < normLenVal) blockSize <<= 1;
+         while (blockSize < normLenVal && blockSize < 256) blockSize <<= 1;
       }
+      // number of strided elements each thread accumulates within its row
+      size_t itemsPerThread = canParallel ? (normLenVal + blockSize - 1) / blockSize : 1;
 
       // Each thread handles one "row" — one element of the axes dims [0..axis)
       // and iterates over all normalized dims [axis..size)
@@ -385,18 +392,77 @@ public:
       op += SP + SP + SP + "T* __restrict__ Y,\n";
       op += SP + SP + SP + "std::size_t const axesLength) const {\n\n";
 
+      // Sum of "axis_i * stride_i" over outer axes where the scale/bias tensor
+      // actually varies (dim != 1), joined with " +\n" (collecting terms first
+      // avoids mis-placing the separator once a base has more than one term).
+      // Shared by both the parallel and serial kernel bodies below.
+      auto axisBase = [&](const std::vector<Dim> &shapeVec, const std::vector<Dim> &strideVec,
+                           const std::string &ind) -> std::string {
+         std::vector<std::string> terms;
+         for (size_t i = 0; i < fAxis; ++i) {
+            if (shapeVec[i].dim != 1)
+               terms.push_back("axis_" + std::to_string(i) + " * " + strideVec[i].GetVal() + "u");
+         }
+         if (terms.empty()) return ind + "0u";
+         std::string s;
+         for (size_t t = 0; t < terms.size(); ++t)
+            s += ind + terms[t] + (t + 1 < terms.size() ? " +\n" : "");
+         return s;
+      };
+
       if (canParallel) {
          // ---------------------------------------------------------------
-         // PARALLEL PATH: one block per row, blockSize threads per block.
-         // Each thread handles one element in the normalised dimension.
+         // PARALLEL PATH: one block per row, blockSize threads per block,
+         // each thread strided over itemsPerThread elements of the row.
          // Two shared-memory tree reductions compute mean then variance.
          // ---------------------------------------------------------------
          std::string bs = std::to_string(blockSize);
          std::string nl = fNormalizedLength; // e.g. "64"
          std::string eps = std::to_string(fAttrEpsilon);
+         std::string ipt = std::to_string(itemsPerThread);
+
+         // Build the norm-dim strides (strides within the flattened normalised space)
+         auto normShape = fNormalizedShape;  // dims [fAxis .. fSize-1]
+         auto normInner = UTILITY::ComputeStrideFromShape(normShape);
+
+         // Emits norm_offset/s_norm_offset[/b_norm_offset] for a given linear index
+         // into the flattened normalised space (idxVar), reusing the same
+         // decomposition logic regardless of which loop calls it.
+         auto emitOffsets = [&](const std::string &idxVar, const std::string &ind) -> std::string {
+            std::string s;
+            if (fSize - fAxis == 1) {
+               s += ind + "std::size_t const norm_offset = " + idxVar + " * " + strides[fAxis].GetVal() + "u;\n";
+               s += ind + "std::size_t const s_norm_offset = ";
+               s += (fShapeScale[fAxis].dim != 1) ? (idxVar + " * " + scaleStrides[fAxis].GetVal() + "u;\n") : "0u;\n";
+               if (!fNB.empty()) {
+                  s += ind + "std::size_t const b_norm_offset = ";
+                  s += (fShapeB[fAxis].dim != 1) ? (idxVar + " * " + biasStrides[fAxis].GetVal() + "u;\n") : "0u;\n";
+               }
+            } else {
+               s += ind + "std::size_t norm_offset = 0u, s_norm_offset = 0u";
+               if (!fNB.empty()) s += ", b_norm_offset = 0u";
+               s += ";\n";
+               s += ind + "{\n";
+               s += ind + SP + "std::size_t norm_rem = " + idxVar + ";\n";
+               for (size_t j = fAxis; j < fSize; ++j) {
+                  size_t ji = j - fAxis;
+                  s += ind + SP + "{ std::size_t nj = norm_rem / " + normInner[ji].GetVal() + "u;"
+                     + " norm_rem %= " + normInner[ji].GetVal() + "u;"
+                     + " norm_offset += nj * " + strides[j].GetVal() + "u;";
+                  if (fShapeScale[j].dim != 1)
+                     s += " s_norm_offset += nj * " + scaleStrides[j].GetVal() + "u;";
+                  if (!fNB.empty() && fShapeB[j].dim != 1)
+                     s += " b_norm_offset += nj * " + biasStrides[j].GetVal() + "u;";
+                  s += " }\n";
+               }
+               s += ind + "}\n";
+            }
+            return s;
+         };
 
          op += SP + SP + SP + "// Block-parallel LayerNorm: one block per row, "
-               + bs + " threads per block, " + nl + " active.\n";
+               + bs + " threads per block, " + ipt + " item(s) per thread, "
+               + nl + " active elements.\n";
          op += SP + SP + SP + "auto& shmem = alpaka::declareSharedVar<T[" + bs + "], __COUNTER__>(acc);\n";
          op += SP + SP + SP + "auto const row = alpaka::getIdx<alpaka::Grid, alpaka::Blocks>(acc)[0];\n";
          op += SP + SP + SP + "auto const tid = alpaka::getIdx<alpaka::Block, alpaka::Threads>(acc)[0];\n";
@@ -424,53 +490,27 @@ public:
             }
          }
 
-         // Map thread id → index within normalised dims.
-         // For each normalised dim j, the "within-norm" stride is the product of
-         // dimensions after it: normInnerStrides[j-fAxis] computed at code-gen time.
-         // Then:  norm_offset = sum_j( (tid / normInnerStride[j]) % dim[j] * stride[j] )
-         // For the common 1D normalised case this simplifies to: norm_offset = tid * stride[fAxis]
-
-         // Build the norm-dim strides (strides within the flattened normalised space)
-         auto normShape = fNormalizedShape;  // dims [fAxis .. fSize-1]
-         auto normInner = UTILITY::ComputeStrideFromShape(normShape);
-
-         op += SP + SP + SP + "bool const in_range = (tid < " + nl + "u);\n";
-         op += SP + SP + SP + "std::size_t norm_offset = 0u;\n";
-         op += SP + SP + SP + "std::size_t s_norm_offset = 0u;\n";
-         if (!fNB.empty())
-            op += SP + SP + SP + "std::size_t b_norm_offset = 0u;\n";
-         op += SP + SP + SP + "if (in_range) {\n";
-
-         if (fSize - fAxis == 1) {
-            // Single normalised dim — simplest case
-            op += SP + SP + SP + SP + "norm_offset = tid * " + strides[fAxis].GetVal() + "u;\n";
-            if (fShapeScale[fAxis].dim != 1)
-               op += SP + SP + SP + SP + "s_norm_offset = tid * " + scaleStrides[fAxis].GetVal() + "u;\n";
-            if (!fNB.empty() && fShapeB[fAxis].dim != 1)
-               op += SP + SP + SP + SP + "b_norm_offset = tid * " + biasStrides[fAxis].GetVal() + "u;\n";
-         } else {
-            // Multi-dim normalised space
-            op += SP + SP + SP + SP + "std::size_t norm_rem = tid;\n";
-            for (size_t j = fAxis; j < fSize; ++j) {
-               size_t ji = j - fAxis;
-               op += SP + SP + SP + SP + "{ std::size_t nj = norm_rem / " + normInner[ji].GetVal() + "u;"
-                  + " norm_rem %= " + normInner[ji].GetVal() + "u;"
-                  + " norm_offset += nj * " + strides[j].GetVal() + "u;";
-               if (fShapeScale[j].dim != 1)
-                  op += " s_norm_offset += nj * " + scaleStrides[j].GetVal() + "u;";
-               if (!fNB.empty() && fShapeB[j].dim != 1)
-                  op += " b_norm_offset += nj * " + biasStrides[j].GetVal() + "u;";
-               op += " }\n";
-            }
-         }
+         // --- Pass 1: each thread strided-accumulates its items, caching the
+         // loaded values and their flat indices for reuse in passes 2 and 3 ---
+         op += SP + SP + SP + "constexpr std::size_t itemsPerThread = " + ipt + "u;\n";
+         op += SP + SP + SP + "T vals[itemsPerThread];\n";
+         op += SP + SP + SP + "std::size_t idxs[itemsPerThread];\n";
+         op += SP + SP + SP + "T local_sum = static_cast<T>(0);\n";
+         op += SP + SP + SP + "for (std::size_t k = 0; k < itemsPerThread; ++k) {\n";
+         op += SP + SP + SP + SP + "std::size_t const j = tid + k * " + bs + "u;\n";
+         op += SP + SP + SP + SP + "if (j < " + nl + "u) {\n";
+         op += emitOffsets("j", SP + SP + SP + SP + SP);
+         op += SP + SP + SP + SP + SP + "idxs[k] = row_base + norm_offset;\n";
+         op += SP + SP + SP + SP + SP + "vals[k] = X[idxs[k]];\n";
+         op += SP + SP + SP + SP + SP + "local_sum += vals[k];\n";
+         op += SP + SP + SP + SP + "} else {\n";
+         op += SP + SP + SP + SP + SP + "idxs[k] = 0u;\n";
+         op += SP + SP + SP + SP + SP + "vals[k] = static_cast<T>(0);\n";
+         op += SP + SP + SP + SP + "}\n";
          op += SP + SP + SP + "}\n\n";
 
-         op += SP + SP + SP + "std::size_t const norm_idx = row_base + norm_offset;\n";
-         op += SP + SP + SP + "T const val = in_range ? X[norm_idx] : static_cast<T>(0);\n\n";
-
-         // --- Pass 1: parallel mean ---
          op += SP + SP + SP + "// Pass 1: compute mean via shared-memory tree reduction\n";
-         op += SP + SP + SP + "shmem[tid] = val;\n";
+         op += SP + SP + SP + "shmem[tid] = local_sum;\n";
          op += SP + SP + SP + "alpaka::syncBlockThreads(acc);\n";
          size_t half = blockSize / 2;
          while (half > 0) {
@@ -481,10 +521,14 @@ public:
          op += SP + SP + SP + "T const mean = shmem[0] / static_cast<T>(" + nl + ");\n";
          op += SP + SP + SP + "alpaka::syncBlockThreads(acc);\n\n";
 
-         // --- Pass 2: parallel variance ---
+         // --- Pass 2: parallel variance, reusing the values cached in pass 1 ---
          op += SP + SP + SP + "// Pass 2: compute variance\n";
-         op += SP + SP + SP + "T const diff = val - mean;\n";
-         op += SP + SP + SP + "shmem[tid] = in_range ? diff * diff : static_cast<T>(0);\n";
+         op += SP + SP + SP + "T local_sq = static_cast<T>(0);\n";
+         op += SP + SP + SP + "for (std::size_t k = 0; k < itemsPerThread; ++k) {\n";
+         op += SP + SP + SP + SP + "std::size_t const j = tid + k * " + bs + "u;\n";
+         op += SP + SP + SP + SP + "if (j < " + nl + "u) { T const diff = vals[k] - mean; local_sq += diff * diff; }\n";
+         op += SP + SP + SP + "}\n";
+         op += SP + SP + SP + "shmem[tid] = local_sq;\n";
          op += SP + SP + SP + "alpaka::syncBlockThreads(acc);\n";
          half = blockSize / 2;
          while (half > 0) {
@@ -502,49 +546,29 @@ public:
             op += SP + SP + SP + "if (tid == 0u) out_invstd[row] = invStdDev;\n";
          op += "\n";
 
-         // --- Pass 3: normalise, scale, bias ---
+         // --- Pass 3: normalise, scale, bias, using the cached values/indices ---
          op += SP + SP + SP + "// Pass 3: normalize + scale + bias\n";
-         op += SP + SP + SP + "if (in_range) {\n";
 
-         // scale base (axis contribution)
-         op += SP + SP + SP + SP + "std::size_t const scale_base =\n";
-         {
-            bool any = false;
-            for (size_t i = 0; i < fAxis; ++i) {
-               if (fShapeScale[i].dim != 1) {
-                  op += SP + SP + SP + SP + SP + "axis_" + std::to_string(i)
-                     + " * " + scaleStrides[i].GetVal() + "u";
-                  if (any) op += " +\n";
-                  any = true;
-               }
-            }
-            if (!any) op += SP + SP + SP + SP + SP + "0u";
-            op += ";\n";
-         }
-         op += SP + SP + SP + SP + "T out_val = scale[scale_base + s_norm_offset] * invStdDev * (val - mean);\n";
+         // scale/bias base (axis contribution) is invariant across a thread's
+         // items, so it is computed once, outside the per-item loop.
+         op += SP + SP + SP + "std::size_t const scale_base =\n" + axisBase(fShapeScale, scaleStrides, SP + SP + SP + SP) + ";\n";
+         if (!fNB.empty())
+            op += SP + SP + SP + "std::size_t const bias_base =\n" + axisBase(fShapeB, biasStrides, SP + SP + SP + SP) + ";\n";
 
-         if (!fNB.empty()) {
-            op += SP + SP + SP + SP + "std::size_t const bias_base =\n";
-            bool any = false;
-            for (size_t i = 0; i < fAxis; ++i) {
-               if (fShapeB[i].dim != 1) {
-                  op += SP + SP + SP + SP + SP + "axis_" + std::to_string(i)
-                     + " * " + biasStrides[i].GetVal() + "u";
-                  if (any) op += " +\n";
-                  any = true;
-               }
-            }
-            if (!any) op += SP + SP + SP + SP + SP + "0u";
-            op += ";\n";
-            op += SP + SP + SP + SP + "out_val += bias[bias_base + b_norm_offset];\n";
-         }
-
-         op += SP + SP + SP + SP + "Y[norm_idx] = out_val;\n";
-         op += SP + SP + SP + "}\n";  // end in_range
+         op += SP + SP + SP + "for (std::size_t k = 0; k < itemsPerThread; ++k) {\n";
+         op += SP + SP + SP + SP + "std::size_t const j = tid + k * " + bs + "u;\n";
+         op += SP + SP + SP + SP + "if (j < " + nl + "u) {\n";
+         op += emitOffsets("j", SP + SP + SP + SP + SP);
+         op += SP + SP + SP + SP + SP + "T out_val = scale[scale_base + s_norm_offset] * invStdDev * (vals[k] - mean);\n";
+         if (!fNB.empty())
+            op += SP + SP + SP + SP + SP + "out_val += bias[bias_base + b_norm_offset];\n";
+         op += SP + SP + SP + SP + SP + "Y[idxs[k]] = out_val;\n";
+         op += SP + SP + SP + SP + "}\n";
+         op += SP + SP + SP + "}\n";
 
       } else {
          // ---------------------------------------------------------------
-         // SERIAL PATH (dynamic shapes or normalizedLength > 1024):
+         // SERIAL PATH (only for a dynamic/runtime normalizedLength with no known upper bound):
          // one thread per row, explicit loops over normalized dims.
          // ---------------------------------------------------------------
          op += SP + SP + SP + "auto const global_thread_idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
@@ -572,32 +596,10 @@ public:
             }
          }
 
-         op += SP + SP + SP + SP + "std::size_t const scale_base =\n";
-         { bool any = false;
-           for (size_t i = 0; i < fAxis; ++i) {
-              if (fShapeScale[i].dim != 1) {
-                 op += SP + SP + SP + SP + SP + "axis_" + std::to_string(i)
-                    + " * " + scaleStrides[i].GetVal() + "u";
-                 if (any) op = " +\n" + op; any = true;
-              }
-           }
-           if (!any) op += SP + SP + SP + SP + SP + "0u";
-           op += ";\n\n";
-         }
+         op += SP + SP + SP + SP + "std::size_t const scale_base =\n" + axisBase(fShapeScale, scaleStrides, SP + SP + SP + SP + SP) + ";\n\n";
 
-         if (!fNB.empty()) {
-            op += SP + SP + SP + SP + "std::size_t const bias_base =\n";
-            bool any = false;
-            for (size_t i = 0; i < fAxis; ++i) {
-               if (fShapeB[i].dim != 1) {
-                  op += SP + SP + SP + SP + SP + "axis_" + std::to_string(i)
-                     + " * " + biasStrides[i].GetVal() + "u";
-                  if (any) op = " +\n" + op; any = true;
-               }
-            }
-            if (!any) op += SP + SP + SP + SP + SP + "0u";
-            op += ";\n\n";
-         }
+         if (!fNB.empty())
+            op += SP + SP + SP + SP + "std::size_t const bias_base =\n" + axisBase(fShapeB, biasStrides, SP + SP + SP + SP + SP) + ";\n\n";
 
          op += SP + SP + SP + SP + "T mean = static_cast<T>(0);\n";
          for (size_t j = fAxis; j < fSize; ++j)
@@ -686,10 +688,10 @@ public:
       // Determine parallel vs serial (same logic as kernel generation)
       size_t normLenVal2 = 0;
       bool canParallel2 = false;
-      try { normLenVal2 = std::stoul(fNormalizedLength); canParallel2 = (normLenVal2 > 0 && normLenVal2 <= 1024); }
+      try { normLenVal2 = std::stoul(fNormalizedLength); canParallel2 = (normLenVal2 > 0); }
       catch (...) {}
       size_t blockSize2 = 1;
-      if (canParallel2) { while (blockSize2 < normLenVal2) blockSize2 <<= 1; }
+      if (canParallel2) { while (blockSize2 < normLenVal2 && blockSize2 < 256) blockSize2 <<= 1; }
 
       std::string args =
          "alpaka::getPtrNative(deviceBuf_" + fNX + "), "

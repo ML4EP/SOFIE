@@ -293,6 +293,45 @@ TEST_F(SofieAlpakaTest, Neg)
         EXPECT_LE(std::abs(res_ptr[i] - correct[i]), TOLERANCE) << "i=" << i;
 }
 
+<<<<<<< HEAD
+=======
+TEST_F(SofieAlpakaTest, DynamicNegRelu)
+{
+    constexpr float TOLERANCE = DEFAULT_TOLERANCE;
+    const std::size_t C = 3;
+
+    const std::size_t Ns[] = {1, 8};
+    const std::size_t Ps[] = {1, 5};   // n_pf
+    for (int t = 0; t < 2; ++t) {
+        const std::size_t N = Ns[t], P = Ps[t];
+        const std::size_t sz = N * C * P;
+
+        auto input_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{sz}));
+        float* in_ptr = reinterpret_cast<float*>(alpaka::getPtrNative(input_h));
+        for (Idx i = 0; i < sz; ++i) in_ptr[i] = static_cast<float>(i % 7) - 3.0f;
+
+        auto input_d = alpaka::allocBuf<float, Idx>(device, Ext1D::all(Idx{sz}));
+        alpaka::memcpy(queue, input_d, input_h);
+        alpaka::wait(queue);
+
+        auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{sz}));
+        {
+            SOFIE_DynamicNegRelu::Session<alpaka::TagGpuCudaRt> session("", N, P);
+            auto result = session.infer(N, P, input_d);
+            cudaDeviceSynchronize();
+            alpaka::memcpy(queue, result_h, result);
+            alpaka::wait(queue);
+        }
+
+        float* res = reinterpret_cast<float*>(alpaka::getPtrNative(result_h));
+        for (std::size_t i = 0; i < sz; ++i) {
+            float expected = std::max(0.0f, -in_ptr[i]);
+            EXPECT_LE(std::abs(res[i] - expected), TOLERANCE) << "i=" << i << " N=" << N << " P=" << P;
+        }
+    }
+}
+
+>>>>>>> 9cb225f (chore: in line comments cleanup in the code)
 TEST_F(SofieAlpakaTest, Softplus)
 {
     constexpr float TOLERANCE = DEFAULT_TOLERANCE;

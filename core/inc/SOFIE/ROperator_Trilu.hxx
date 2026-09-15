@@ -26,11 +26,10 @@ private:
    std::string fNK;
    std::string fNY;
 
-   std::vector<size_t> fShape;
-   size_t fM     = 0;
-   size_t fN     = 0;
-   size_t fBatch = 1;
-   size_t fTotal = 0;
+   std::vector<Dim> fShape;
+   Dim fM;
+   Dim fN;
+   std::string fTotal;  // ConvertDimShapeToLength(fShape)
 
 public:
    ROperator_Trilu() {}
@@ -69,7 +68,7 @@ public:
          throw std::runtime_error("SOFIE Trilu: input tensor '" + fNX +
                                   "' not found in model");
 
-      fShape = model.GetTensorShape(fNX);
+      fShape = model.GetDimTensorShape(fNX);
       if (fShape.size() < 2)
          throw std::runtime_error("SOFIE Trilu: input tensor '" + fNX +
                                   "' must have at least 2 dimensions, got " +
@@ -77,10 +76,7 @@ public:
 
       fN = fShape.back();
       fM = fShape[fShape.size() - 2];
-      fBatch = 1;
-      for (size_t d = 0; d + 2 < fShape.size(); ++d)
-         fBatch *= fShape[d];
-      fTotal = fBatch * fM * fN;
+      fTotal = ConvertDimShapeToLength(fShape);
 
       if (!fNK.empty()) {
          if (model.IsInitializedTensor(fNK) || model.IsConstantTensor(fNK)) {
@@ -102,7 +98,7 @@ public:
          if (fKIsStatic) std::cout << fK;
          else            std::cout << "dyn(" << fNK << ")";
          std::cout << " -> " << fNY
-                   << " " << ConvertShapeToString(fShape) << std::endl;
+                   << " " << ConvertDimShapeToString(fShape) << std::endl;
       }
    }
 
@@ -122,13 +118,13 @@ public:
              << " = static_cast<int64_t>(tensor_" << fNK << "[0]);\n";
       }
 
-      out << SP << "for (std::size_t id = 0; id < " << fTotal << "u; ++id) {\n";
-      out << SP << SP << "const std::size_t mat_id = id % "
-                      << (fM * fN) << "u;\n";
+      out << SP << "for (std::size_t id = 0; id < static_cast<std::size_t>(" << fTotal << "); ++id) {\n";
+      out << SP << SP << "const std::size_t mat_id = id % static_cast<std::size_t>("
+                      << fM.GetVal() << " * " << fN.GetVal() << ");\n";
       out << SP << SP << "const std::ptrdiff_t row = "
-                      << "static_cast<std::ptrdiff_t>(mat_id / " << fN << "u);\n";
+                      << "static_cast<std::ptrdiff_t>(mat_id / static_cast<std::size_t>(" << fN.GetVal() << "));\n";
       out << SP << SP << "const std::ptrdiff_t col = "
-                      << "static_cast<std::ptrdiff_t>(mat_id % " << fN << "u);\n";
+                      << "static_cast<std::ptrdiff_t>(mat_id % static_cast<std::size_t>(" << fN.GetVal() << "));\n";
       if (fUpper) {
          out << SP << SP << "const bool keep = (col >= row + k_" << OpName << ");\n";
       } else {
@@ -156,12 +152,13 @@ public:
                << "T const* __restrict__ input, "
                << "T* __restrict__ output, "
                << "const std::size_t total, "
+               << "const std::size_t M, "
+               << "const std::size_t N, "
                << "const std::ptrdiff_t k) const {\n";
       op << SP << SP << "auto const idx = "
                << "alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
       op << SP << SP << "if (idx >= total) return;\n";
-      op << SP << SP << "constexpr std::size_t N  = " << fN  << "u;\n";
-      op << SP << SP << "constexpr std::size_t MN = " << (fM * fN) << "u;\n";
+      op << SP << SP << "const std::size_t    MN     = M * N;\n";
       op << SP << SP << "const std::size_t    mat_id = idx % MN;\n";
       op << SP << SP << "const std::ptrdiff_t row    = "
                << "static_cast<std::ptrdiff_t>(mat_id / N);\n";
@@ -212,7 +209,7 @@ public:
       out << SP << "auto const elementsPerThread_" << fNY
           << " = Vec::all(static_cast<Idx>(1));\n";
       out << SP << "auto const elementsPerGrid_" << fNY
-          << " = Vec::all(Idx{" << fTotal << "});\n";
+          << " = Vec::all(Idx{static_cast<Idx>(" << fTotal << ")});\n";
       out << SP << "auto const workDiv_" << fNY
           << " = sofie_workdiv(elementsPerGrid_" << fNY << ");\n";
       out << SP << "auto task_" << cleanOp
@@ -220,7 +217,9 @@ public:
           << ", triluKernel_" << cleanOp
           << ", alpaka::getPtrNative(deviceBuf_" << fNX << ")"
           << ", alpaka::getPtrNative(deviceBuf_" << fNY << ")"
-          << ", static_cast<Idx>(" << fTotal << ")"
+          << ", static_cast<std::size_t>(" << fTotal << ")"
+          << ", static_cast<std::size_t>(" << fM.GetVal() << ")"
+          << ", static_cast<std::size_t>(" << fN.GetVal() << ")"
           << ", k_" << cleanOp << ");\n";
       out << SP << "alpaka::enqueue(queue, task_" << cleanOp << ");\n";
       return out.str();

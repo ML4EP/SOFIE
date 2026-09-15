@@ -22,11 +22,15 @@ private:
    std::string fNIndices;
    std::string fNY;
 
-   std::vector<size_t> fShapeData;
-   std::vector<size_t> fShapeIndices;
-   std::vector<size_t> fShapeY;
+   std::vector<Dim> fShapeData;
+   std::vector<Dim> fShapeIndices;
+   std::vector<Dim> fShapeY;
 
    std::string fType;
+
+   // A size expression (a literal, or a symbolic dim name/expression from
+   // Dim::GetVal()) wrapped as an explicit std::size_t cast.
+   static std::string sz(const std::string &e) { return "static_cast<std::size_t>(" + e + ")"; }
 
 public:
    ROperator_GatherND() {}
@@ -57,13 +61,12 @@ public:
       if (!model.CheckIfTensorAlreadyExist(fNIndices))
          throw std::runtime_error("SOFIE GatherND: indices tensor " + fNIndices + " not found in model");
 
-      fShapeData    = model.GetTensorShape(fNData);
-      fShapeIndices = model.GetTensorShape(fNIndices);
+      fShapeData    = model.GetDimTensorShape(fNData);
+      fShapeIndices = model.GetDimTensorShape(fNIndices);
 
       size_t r = fShapeData.size();
       size_t q = fShapeIndices.size();
       size_t b = static_cast<size_t>(fBatchDims);
-      size_t last_idx_dim = fShapeIndices.back();
 
       if (r < 1)
          throw std::runtime_error("SOFIE GatherND: data rank must be >= 1");
@@ -71,6 +74,11 @@ public:
          throw std::runtime_error("SOFIE GatherND: indices rank must be >= 1");
       if (b >= std::min(q, r))
          throw std::runtime_error("SOFIE GatherND: batch_dims must be < min(q, r)");
+
+      if (fShapeIndices.back().isParam)
+         throw std::runtime_error("SOFIE GatherND: the last indices dimension (index tuple length) "
+            "must be static - a dynamic index-tuple length is not supported");
+      size_t last_idx_dim = fShapeIndices.back().dim;
       if (last_idx_dim > r - b)
          throw std::runtime_error("SOFIE GatherND: indices_shape[-1] must be <= r - batch_dims");
 
@@ -94,10 +102,10 @@ public:
       fType = ConvertTypeToString(model.GetTensorType(fNData));
 
       if (model.Verbose())
-         std::cout << "GatherND: data " << ConvertShapeToString(fShapeData)
-                   << " indices " << ConvertShapeToString(fShapeIndices)
+         std::cout << "GatherND: data " << ConvertDimShapeToString(fShapeData)
+                   << " indices " << ConvertDimShapeToString(fShapeIndices)
                    << " batch_dims=" << fBatchDims
-                   << " -> " << fNY << " " << ConvertShapeToString(fShapeY) << std::endl;
+                   << " -> " << fNY << " " << ConvertDimShapeToString(fShapeY) << std::endl;
    }
 
    std::string Generate(std::string opName) override {
@@ -108,39 +116,39 @@ public:
       size_t r = fShapeData.size();
       size_t q = fShapeIndices.size();
       size_t b = static_cast<size_t>(fBatchDims);
-      size_t last_idx_dim = fShapeIndices.back();
+      size_t last_idx_dim = fShapeIndices.back().dim;
 
       auto stridesData    = UTILITY::ComputeStrideFromShape(fShapeData);
       auto stridesIndices = UTILITY::ComputeStrideFromShape(fShapeIndices);
       auto stridesY       = UTILITY::ComputeStrideFromShape(fShapeY);
 
-      size_t totalOutput = ConvertShapeToLength(fShapeY);
+      std::string totalOutput = ConvertDimShapeToLength(fShapeY);
 
       std::stringstream out;
       out << SP << "//--------- GatherND operator " << opName << "\n";
 
-      out << SP << "for (size_t out_idx = 0; out_idx < " << totalOutput << "; out_idx++) {\n";
+      out << SP << "for (size_t out_idx = 0; out_idx < static_cast<size_t>(" << totalOutput << "); out_idx++) {\n";
 
       out << SP << SP << "size_t rem = out_idx;\n";
       size_t Dy = fShapeY.size();
       for (size_t d = 0; d < Dy; ++d) {
-         out << SP << SP << "size_t oy_" << d << " = rem / " << stridesY[d] << ";\n";
-         out << SP << SP << "rem %= " << stridesY[d] << ";\n";
+         out << SP << SP << "size_t oy_" << d << " = rem / " << stridesY[d].GetVal() << ";\n";
+         out << SP << SP << "rem %= " << stridesY[d].GetVal() << ";\n";
       }
 
       out << SP << SP << "size_t idx_base = 0;\n";
       for (size_t i = 0; i < b; ++i)
-         out << SP << SP << "idx_base += oy_" << i << " * " << stridesIndices[i] << ";\n";
+         out << SP << SP << "idx_base += oy_" << i << " * " << stridesIndices[i].GetVal() << ";\n";
       for (size_t i = b; i + 1 < q; ++i)
-         out << SP << SP << "idx_base += oy_" << i << " * " << stridesIndices[i] << ";\n";
+         out << SP << SP << "idx_base += oy_" << i << " * " << stridesIndices[i].GetVal() << ";\n";
 
       out << SP << SP << "size_t data_idx = 0;\n";
       for (size_t i = 0; i < b; ++i)
-         out << SP << SP << "data_idx += oy_" << i << " * " << stridesData[i] << ";\n";
+         out << SP << SP << "data_idx += oy_" << i << " * " << stridesData[i].GetVal() << ";\n";
 
       out << SP << SP << "for (size_t k = 0; k < " << last_idx_dim << "; k++) {\n";
       out << SP << SP << SP << "int64_t idx_val = tensor_" << fNIndices
-          << "[idx_base + k * " << stridesIndices[q - 1] << "];\n";
+          << "[idx_base + k * " << stridesIndices[q - 1].GetVal() << "];\n";
       out << SP << SP << SP << "if (idx_val < 0) idx_val += " << "static_cast<int64_t>(tensor_"
           << fNData << "_shape[" << b << " + k]);\n";
       out << SP << SP << SP << "data_idx += static_cast<size_t>(idx_val) * " << "data_stride_b_plus_k_" << opName << "[k];\n";
@@ -151,7 +159,7 @@ public:
       size_t y_trailing_start = b + (q - b - 1);
       for (size_t i = b + last_idx_dim; i < r; ++i) {
          size_t oy_dim = y_trailing_start + (i - (b + last_idx_dim));
-         out << SP << SP << "data_idx += oy_" << oy_dim << " * " << stridesData[i] << ";\n";
+         out << SP << SP << "data_idx += oy_" << oy_dim << " * " << stridesData[i].GetVal() << ";\n";
       }
 
       out << SP << SP << "tensor_" << fNY << "[out_idx] = tensor_" << fNData << "[data_idx];\n";
@@ -160,7 +168,7 @@ public:
       return out.str();
    }
 
-   std::string Generate_GPU_Kernel_ALPAKA(std::string opName) override {
+   std::string Generate_GPU_Kernel_ALPAKA(std::string opName, const std::vector<std::string> &dynParamNames) override {
       opName = "op_" + opName;
       if (fShapeY.empty())
          throw std::runtime_error("SOFIE GatherND called to Generate without being initialized first");
@@ -168,14 +176,13 @@ public:
       size_t r = fShapeData.size();
       size_t q = fShapeIndices.size();
       size_t b = static_cast<size_t>(fBatchDims);
-      size_t last_idx_dim = fShapeIndices.back();
+      size_t last_idx_dim = fShapeIndices.back().dim;
 
       auto stridesData    = UTILITY::ComputeStrideFromShape(fShapeData);
       auto stridesIndices = UTILITY::ComputeStrideFromShape(fShapeIndices);
       auto stridesY       = UTILITY::ComputeStrideFromShape(fShapeY);
 
       size_t Dy = fShapeY.size();
-      size_t totalOutput = ConvertShapeToLength(fShapeY);
 
       std::string kname = "GatherNDKernel_" + opName;
 
@@ -188,6 +195,8 @@ public:
       op += SP + SP + SP + "T const* __restrict__ data,\n";
       op += SP + SP + SP + "int64_t const* __restrict__ indices,\n";
       op += SP + SP + SP + "T* __restrict__ output,\n";
+      for (auto &p : dynParamNames)
+         op += SP + SP + SP + "std::size_t const " + p + ",\n";
       op += SP + SP + SP + "std::size_t const totalElements) const {\n\n";
 
       op += SP + SP + SP + "auto const global_thread_idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
@@ -198,8 +207,8 @@ public:
 
       for (size_t d = 0; d < Dy; ++d) {
          op += SP + SP + SP + SP + "std::size_t const oy_" + std::to_string(d)
-             + " = (elem_idx / " + std::to_string(stridesY[d]) + "u) % "
-             + std::to_string(fShapeY[d]) + "u;\n";
+             + " = (elem_idx / " + sz(stridesY[d].GetVal()) + ") % "
+             + sz(fShapeY[d].GetVal()) + ";\n";
       }
       op += "\n";
 
@@ -210,7 +219,7 @@ public:
       for (size_t i = 0; i < q - 1; ++i) {
          op += SP + SP + SP + SP + SP
              + (first ? "" : "+ ")
-             + "oy_" + std::to_string(i) + " * " + std::to_string(stridesIndices[i]) + "u\n";
+             + "oy_" + std::to_string(i) + " * " + sz(stridesIndices[i].GetVal()) + "\n";
          first = false;
       }
       if (first) op += SP + SP + SP + SP + SP + "0u\n"; // q==1: scalar index tuple
@@ -221,7 +230,7 @@ public:
       for (size_t i = 0; i < b; ++i) {
          op += SP + SP + SP + SP + SP
              + (first ? "" : "+ ")
-             + "oy_" + std::to_string(i) + " * " + std::to_string(stridesData[i]) + "u\n";
+             + "oy_" + std::to_string(i) + " * " + sz(stridesData[i].GetVal()) + "\n";
          first = false;
       }
       if (first) op += SP + SP + SP + SP + SP + "0u\n";
@@ -237,10 +246,10 @@ public:
              + std::to_string(idx_offset) + "u];\n";
          op += SP + SP + SP + SP + SP
              + "if (idx_val < 0) idx_val += "
-             + std::to_string(fShapeData[data_axis]) + ";\n";
+             + fShapeData[data_axis].GetVal() + ";\n";
          op += SP + SP + SP + SP + SP
              + "data_idx += static_cast<std::size_t>(idx_val) * "
-             + std::to_string(stridesData[data_axis]) + "u;\n";
+             + sz(stridesData[data_axis].GetVal()) + ";\n";
          op += SP + SP + SP + SP + "}\n";
       }
       op += "\n";
@@ -250,7 +259,7 @@ public:
          size_t oy_dim = y_trailing_start + (i - (b + last_idx_dim));
          op += SP + SP + SP + SP
              + "data_idx += oy_" + std::to_string(oy_dim)
-             + " * " + std::to_string(stridesData[i]) + "u;\n";
+             + " * " + sz(stridesData[i].GetVal()) + ";\n";
       }
       op += "\n";
 
@@ -268,25 +277,27 @@ public:
       return SP + kname + " gatherNDKernel_" + opName + ";\n";
    }
 
-   std::string Generate_GPU_ALPAKA(std::string opName) override {
+   std::string Generate_GPU_ALPAKA(std::string opName, const std::vector<std::string> &dynParamNames) override {
       opName = "op_" + opName;
       if (fShapeY.empty())
          throw std::runtime_error("SOFIE GatherND called to Generate without being initialized first");
 
-      std::size_t totalElements = ConvertShapeToLength(fShapeY);
+      std::string totalElements = ConvertDimShapeToLength(fShapeY);
       std::string kname = "gatherNDKernel_" + opName;
 
       std::stringstream out;
       out << "\n//------ GATHERND_GPU_ALPAKA\n";
       out << SP << "auto const elementsPerThread_" << opName << " = Vec::all(static_cast<Idx>(1));\n";
-      out << SP << "auto const elementsPerGrid_"   << opName << " = Vec::all(Idx{" << totalElements << "});\n";
+      out << SP << "auto const elementsPerGrid_"   << opName << " = Vec::all(Idx{static_cast<Idx>(" << totalElements << ")});\n";
       out << SP << "auto const workDiv_" << opName << " = sofie_workdiv(elementsPerGrid_" << opName << ");\n";
       out << SP << "alpaka::exec<Acc>(queue, workDiv_" << opName
           << ", " << kname
           << ", alpaka::getPtrNative(deviceBuf_" << fNData << ")"
           << ", alpaka::getPtrNative(deviceBuf_" << fNIndices << ")"
-          << ", alpaka::getPtrNative(deviceBuf_" << fNY << ")"
-          << ", static_cast<Idx>(" << totalElements << "));\n";
+          << ", alpaka::getPtrNative(deviceBuf_" << fNY << ")";
+      for (auto &p : dynParamNames)
+         out << ", static_cast<std::size_t>(" << p << ")";
+      out << ", static_cast<Idx>(" << totalElements << "));\n";
       out << SP <<"alpaka::wait(queue);\n";
       return out.str();
    }

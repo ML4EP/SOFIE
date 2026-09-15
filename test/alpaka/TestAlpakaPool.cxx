@@ -14,6 +14,43 @@
 #include "input_models/references/AvgPoolCountIncludePad.ref.hxx"
 #include "GlobalAvgPool2d_FromONNX_GPU_ALPAKA.hxx"
 #include "input_models/references/GlobalAvgPool2d.ref.hxx"
+#include "DynamicMaxPool_FromONNX_GPU_ALPAKA.hxx"
+
+TEST_F(SofieAlpakaTest, DynamicMaxPool)
+{
+    constexpr float TOLERANCE = DEFAULT_TOLERANCE;
+
+    for (std::size_t N : {std::size_t(1), std::size_t(3)}) {
+        std::vector<float> input(N * 16);
+        for (std::size_t i = 0; i < input.size(); ++i) input[i] = static_cast<float>(i % 17) - 8.0f;
+
+        auto input_d = makeDeviceBuf<float>(host, device, queue, input.data(), input.size());
+        auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{N * 4}));
+        {
+            SOFIE_DynamicMaxPool::Session<alpaka::TagGpuCudaRt> session("DynamicMaxPool_FromONNX_GPU_ALPAKA.dat", N);
+            auto result = session.infer(N, input_d);
+            cudaDeviceSynchronize();
+            alpaka::memcpy(queue, result_h, result);
+            alpaka::wait(queue);
+        }
+
+        float* res = reinterpret_cast<float*>(alpaka::getPtrNative(result_h));
+        for (std::size_t n = 0; n < N; ++n) {
+            const float* img = input.data() + n * 16;
+            float expected[4];
+            for (int oh = 0; oh < 2; ++oh)
+                for (int ow = 0; ow < 2; ++ow) {
+                    float m = -1e30f;
+                    for (int kh = 0; kh < 2; ++kh)
+                        for (int kw = 0; kw < 2; ++kw)
+                            m = std::max(m, img[(oh * 2 + kh) * 4 + (ow * 2 + kw)]);
+                    expected[oh * 2 + ow] = m;
+                }
+            for (int i = 0; i < 4; ++i)
+                EXPECT_LE(std::abs(res[n * 4 + i] - expected[i]), TOLERANCE) << "n=" << n << " i=" << i << " N=" << N;
+        }
+    }
+}
 
 TEST_F(SofieAlpakaTest, MaxPool2d)
 {
@@ -251,8 +288,6 @@ TEST_F(SofieAlpakaTest, AvgPoolCountIncludePad)
 }
 
 // GlobalAveragePool: one output per channel = the mean of the whole channel.
-// Input x[1,2,3,3] = iota 0..17, so the channel means are 4 and 13.
-
 TEST_F(SofieAlpakaTest, GlobalAvgPool2d)
 {
    constexpr float TOLERANCE = DEFAULT_TOLERANCE;
