@@ -548,7 +548,6 @@ std::vector<size_t> ComputeStrideFromShape(const std::vector<size_t> & shape);
 std::vector<Dim> ComputeStrideFromShape(const std::vector<Dim> & shape);
 
 /// layout of the independent 1-D slices of a row-major tensor along one axis, as code expressions
-/// (shared by the operators working along an axis: TopK, Softmax)
 struct SliceInfo {
    std::string nBefore;        // slice groups before the axis ("1" for axis 0)
    std::string nAfter;         // slices per group after the axis
@@ -877,7 +876,7 @@ void CloseNestedLoops(std::stringstream &out, size_t loopRank);
 
 //emit the out_0..out_{D-1} coordinate declarations of the flat kernel index elem_idx
 //from the output strides and shape
-void EmitOutputCoords(std::string &op, const std::string &indent,
+void EmitOutputCoordsFromThreadIdx(std::string &op, const std::string &indent,
                       const std::vector<Dim> &strides, const std::vector<Dim> &shape);
 
 

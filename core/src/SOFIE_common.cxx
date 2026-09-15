@@ -571,7 +571,7 @@ UTILITY::SliceInfo UTILITY::ComputeSliceInfo(const std::vector<Dim> & shape, siz
    return s;
 }
 
-void EmitOutputCoords(std::string &op, const std::string &indent,
+void EmitOutputCoordsFromThreadIdx(std::string &op, const std::string &indent,
                       const std::vector<Dim> &strides, const std::vector<Dim> &shape) {
    for (std::size_t d = 0; d < shape.size(); ++d) {
       op += indent + "std::size_t const out_" + std::to_string(d)

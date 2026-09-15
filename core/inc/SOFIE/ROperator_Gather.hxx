@@ -327,7 +327,7 @@ std::string Generate_GPU_Kernel_ALPAKA(std::string opName, const std::vector<std
 
     op += SP + SP + SP + "for (std::size_t elem_idx = global_thread_idx; elem_idx < totalElements; elem_idx += grid_thread_extent) {\n\n";
 
-    EmitOutputCoords(op, SP + SP + SP + SP, stridesY, fShapeY);
+    EmitOutputCoordsFromThreadIdx(op, SP + SP + SP + SP, stridesY, fShapeY);
     op += "\n";
 
     // Output dims [axis ... axis+q) correspond to the indices tensor dims [0 ... q)

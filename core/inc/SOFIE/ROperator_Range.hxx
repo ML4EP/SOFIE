@@ -251,8 +251,8 @@ public:
           * Run-time size: at least one of start/limit/delta is produced by another operator, so
           * its value exists only on the device during inference. The generated code copies just
           * the operands that are NOT already known at codegen time to the host (a constant
-          * start/delta needs no round trip - see fStartIsConst/fDeltaIsConst), computes the
-          * element count with the same expression the CPU code uses, and declares it under the
+          * start/delta needs no round trip, computes the element count with the same expression 
+          * the CPU code uses, and declares it under the
           * name the downstream launches already reference. The output buffer was allocated in
           * the constructor from the value passed there under that same name, so the count is
           * checked against it before the kernel runs.
@@ -264,7 +264,7 @@ public:
             if (!isConst && std::find(inputs.begin(), inputs.end(), in) == inputs.end())
                inputs.push_back(in);
          }
-         std::string sizeMember = memberNameForDimShape(outputSize);
+         std::string sizeMember = GetMemberNameForDimShape(outputSize);
 
          out << SP << "size_t " << outputSize << ";\n";
          if (!inputs.empty()) {

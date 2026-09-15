@@ -165,7 +165,7 @@ public:
 
       op += SP + SP + SP + "for (std::size_t elem_idx = global_thread_idx; elem_idx < totalElements; elem_idx += grid_thread_extent) {\n\n";
 
-      EmitOutputCoords(op, SP + SP + SP + SP, outputStrides, fShapeY);
+      EmitOutputCoordsFromThreadIdx(op, SP + SP + SP + SP, outputStrides, fShapeY);
       op += "\n";
 
       // Input index: tiling wraps each output coordinate back into the input shape

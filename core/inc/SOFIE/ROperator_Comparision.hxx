@@ -410,7 +410,7 @@ public:
 
       op += SP + SP + SP + "for (std::size_t elem_idx = global_thread_idx; elem_idx < totalElements; elem_idx += grid_thread_extent) {\n\n";
 
-      EmitOutputCoords(op, SP + SP + SP + SP, stridesY, fDimShapeY);
+      EmitOutputCoordsFromThreadIdx(op, SP + SP + SP + SP, stridesY, fDimShapeY);
       op += "\n";
 
       op += SP + SP + SP + SP + "std::size_t const x1_idx =\n";
