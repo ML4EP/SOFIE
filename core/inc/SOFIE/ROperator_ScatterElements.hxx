@@ -285,7 +285,7 @@ public:
    //
    // Non-"add" reductions retain the original atomicXxx kernel.
    // -----------------------------------------------------------------------
-   std::string Generate_GPU_Kernel_ALPAKA(std::string opName) override {
+   std::string Generate_GPU_Kernel_ALPAKA(std::string opName, const std::vector<std::string> &dynParamNames) override {
       opName = "op_" + opName;
       if (fShapeY.empty()) {
          throw std::runtime_error("SOFIE ScatterElements Op called to Generate without being initialized first");
@@ -318,6 +318,8 @@ public:
          op += SP + SP + SP + "int64_t const* I_sorted,\n";   // axis index, sorted
          op += SP + SP + SP + "T const* U,\n";
          op += SP + SP + SP + "int32_t const* sortPerm,\n";   // argsort of I
+         for (auto &p : dynParamNames)
+            op += SP + SP + SP + "std::size_t const " + p + ",\n";
          op += SP + SP + SP + "std::size_t const totalUpdates,\n";
          op += SP + SP + SP + "std::size_t const numFeatures) const {\n\n";
 
@@ -359,6 +361,8 @@ public:
       op += SP + SP + SP + "T* Y,\n";
       op += SP + SP + SP + "int64_t const* I,\n";
       op += SP + SP + SP + "T const* U,\n";
+      for (auto &p : dynParamNames)
+         op += SP + SP + SP + "std::size_t const " + p + ",\n";
       op += SP + SP + SP + "std::size_t const totalElements) const {\n\n";
 
       op += SP + SP + SP + "auto const global_thread_idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
@@ -410,7 +414,7 @@ std::string Generate_GPU_Kernel_Definitions_ALPAKA(std::string opName) override 
     return SP + "ScatterElementsKernel_" + opName + " scatterElementsKernel_" + opName + ";\n";
 }
 
-std::string Generate_GPU_ALPAKA(std::string opName) override {
+std::string Generate_GPU_ALPAKA(std::string opName, const std::vector<std::string> &dynParamNames) override {
     opName = "op_" + opName;
     if (fShapeY.empty()) {
         throw std::runtime_error("SOFIE ScatterElements Op called to Generate without being initialized first");
@@ -442,8 +446,10 @@ std::string Generate_GPU_ALPAKA(std::string opName) override {
            << ", alpaka::getPtrNative(deviceBuf_" << fNY << ")"
            << ", alpaka::getPtrNative(deviceBuf_" << fNI << "_sortedI)"
            << ", alpaka::getPtrNative(deviceBuf_" << fNU << ")"
-           << ", alpaka::getPtrNative(deviceBuf_" << fNI << "_sortPerm)"
-           << ", static_cast<Idx>(" << numRows << ")"
+           << ", alpaka::getPtrNative(deviceBuf_" << fNI << "_sortPerm)";
+       for (auto &p : dynParamNames)
+          out << ", static_cast<std::size_t>(" << p << ")";
+       out << ", static_cast<Idx>(" << numRows << ")"
            << ", static_cast<Idx>(" << numFeatures << "));\n";
        out << SP << "alpaka::enqueue(queue, task_" << opName << ");\n";
     } else {
@@ -455,8 +461,10 @@ std::string Generate_GPU_ALPAKA(std::string opName) override {
            << ", scatterElementsKernel_" << opName
            << ", alpaka::getPtrNative(deviceBuf_" << fNY << ")"
            << ", alpaka::getPtrNative(deviceBuf_" << fNI << ")"
-           << ", alpaka::getPtrNative(deviceBuf_" << fNU << ")"
-           << ", static_cast<Idx>(" << totalElements << "));\n";
+           << ", alpaka::getPtrNative(deviceBuf_" << fNU << ")";
+       for (auto &p : dynParamNames)
+          out << ", static_cast<std::size_t>(" << p << ")";
+       out << ", static_cast<Idx>(" << totalElements << "));\n";
        out << SP << "alpaka::enqueue(queue, task_" << opName << ");\n";
     }
     return out.str();

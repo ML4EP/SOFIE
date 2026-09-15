@@ -5,6 +5,7 @@
 #include "Trilu_k2_FromONNX_GPU_ALPAKA.hxx"
 #include "Trilu_kn1_FromONNX_GPU_ALPAKA.hxx"
 #include "Trilu_3D_FromONNX_GPU_ALPAKA.hxx"
+#include "DynamicTrilu_FromONNX_GPU_ALPAKA.hxx"
 #include "input_models/references/Trilu_upper.ref.hxx"
 #include "input_models/references/Trilu_upper_input.ref.hxx"
 #include "input_models/references/Trilu_lower.ref.hxx"
@@ -17,14 +18,20 @@
 #include "input_models/references/Trilu_3D_input.ref.hxx"
 #include "Transpose_FromONNX_GPU_ALPAKA.hxx"
 #include "Concat_0D_FromONNX_GPU_ALPAKA.hxx"
+#include "DynamicExpand_FromONNX_GPU_ALPAKA.hxx"
 #include "ScatterElements_FromONNX_GPU_ALPAKA.hxx"
+#include "DynamicScatterElements_FromONNX_GPU_ALPAKA.hxx"
+#include "DynamicCumSum_FromONNX_GPU_ALPAKA.hxx"
+#include "DynamicConstantOfShape_FromONNX_GPU_ALPAKA.hxx"
 #include "ScatterND_Ex1_FromONNX_GPU_ALPAKA.hxx"
 #include "ScatterND_Ex2_FromONNX_GPU_ALPAKA.hxx"
 #include "ScatterND_NegativeIndices_FromONNX_GPU_ALPAKA.hxx"
 #include "ScatterND_2D_FromONNX_GPU_ALPAKA.hxx"
+#include "DynamicScatterND_FromONNX_GPU_ALPAKA.hxx"
 #include "Split_0_FromONNX_GPU_ALPAKA.hxx"
 #include "Split_1_FromONNX_GPU_ALPAKA.hxx"
 #include "Split_2_FromONNX_GPU_ALPAKA.hxx"
+#include "DynamicSplit_FromONNX_GPU_ALPAKA.hxx"
 #include "Tile5D_FromONNX_GPU_ALPAKA.hxx"
 #include "input_models/references/Tile5D.ref.hxx"
 #include "GatherAxis0_FromONNX_GPU_ALPAKA.hxx"
@@ -50,6 +57,7 @@
 #include "GatherND_Ex5_FromONNX_GPU_ALPAKA.hxx"
 #include "GatherND_NegativeIndices_FromONNX_GPU_ALPAKA.hxx"
 #include "GatherND_Batch_FromONNX_GPU_ALPAKA.hxx"
+#include "DynamicGatherND_FromONNX_GPU_ALPAKA.hxx"
 #include "Slice_FromONNX_GPU_ALPAKA.hxx"
 #include "Slice_Default_Axis_FromONNX_GPU_ALPAKA.hxx"
 #include "Slice_Default_Steps_FromONNX_GPU_ALPAKA.hxx"
@@ -58,6 +66,14 @@
 #include "input_models/references/Slice_Default_Axis.ref.hxx"
 #include "input_models/references/Slice_Default_Steps.ref.hxx"
 #include "input_models/references/Slice_Neg.ref.hxx"
+
+#include "DynamicTranspose_FromONNX_GPU_ALPAKA.hxx"
+#include "DynamicConcat_FromONNX_GPU_ALPAKA.hxx"
+#include "DynamicTile_FromONNX_GPU_ALPAKA.hxx"
+#include "DynamicGather_FromONNX_GPU_ALPAKA.hxx"
+#include "DynamicSlice_FromONNX_GPU_ALPAKA.hxx"
+#include "DynamicRange_FromONNX_GPU_ALPAKA.hxx"
+#include "DynamicRangeMul_FromONNX_GPU_ALPAKA.hxx"
 
 TEST_F(SofieAlpakaTest, Transpose)
 {
@@ -127,8 +143,6 @@ TEST_F(SofieAlpakaTest, Transpose)
         EXPECT_LE(std::abs(res_ptr[i] - expected[i]), TOLERANCE);
 }
 
-<<<<<<< HEAD
-=======
 TEST_F(SofieAlpakaTest, DynamicTranspose)
 {
     constexpr float TOLERANCE = DEFAULT_TOLERANCE;
@@ -168,7 +182,6 @@ TEST_F(SofieAlpakaTest, DynamicTranspose)
     }
 }
 
->>>>>>> 9cb225f (chore: in line comments cleanup in the code)
 TEST_F(SofieAlpakaTest, Concat0D)
 {
    constexpr float TOLERANCE = DEFAULT_TOLERANCE;
@@ -212,8 +225,6 @@ TEST_F(SofieAlpakaTest, Concat0D)
    }
 }
 
-<<<<<<< HEAD
-=======
 TEST_F(SofieAlpakaTest, DynamicConcat)
 {
     constexpr float TOLERANCE = DEFAULT_TOLERANCE;
@@ -259,7 +270,6 @@ TEST_F(SofieAlpakaTest, DynamicConcat)
     }
 }
 
->>>>>>> 9cb225f (chore: in line comments cleanup in the code)
 TEST_F(SofieAlpakaTest, ScatterElements)
 {
     constexpr float TOLERANCE = DEFAULT_TOLERANCE;
@@ -309,6 +319,103 @@ TEST_F(SofieAlpakaTest, ScatterElements)
     EXPECT_EQ(correct.size(), 9u);
     for (size_t i = 0; i < correct.size(); ++i){
         EXPECT_LE(std::abs(res_ptr[i] - correct[i]), TOLERANCE);
+    }
+}
+
+TEST_F(SofieAlpakaTest, DynamicScatterElements)
+{
+    constexpr float TOLERANCE = DEFAULT_TOLERANCE;
+    constexpr std::size_t Cols = 4;
+
+    for (std::size_t N : {std::size_t(1), std::size_t(3)}) {
+        const std::size_t size = N * Cols;
+        std::vector<float> input(size, 0.f);
+        std::vector<int64_t> indices(size);
+        std::vector<float> updates(size);
+        for (std::size_t i = 0; i < size; ++i) {
+            indices[i] = static_cast<int64_t>((i + 1) % Cols);
+            updates[i] = static_cast<float>(i) + 0.5f;
+        }
+
+        auto input_d   = makeDeviceBuf<float>(host, device, queue, input.data(), size);
+        auto indices_d = makeDeviceBuf<int64_t>(host, device, queue, indices.data(), size);
+        auto updates_d = makeDeviceBuf<float>(host, device, queue, updates.data(), size);
+
+        auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{size}));
+        {
+            SOFIE_DynamicScatterElements::Session<alpaka::TagGpuCudaRt> session("DynamicScatterElements_FromONNX_GPU_ALPAKA.dat", N);
+            auto result = session.infer(N, input_d, indices_d, updates_d);
+            cudaDeviceSynchronize();
+            alpaka::memcpy(queue, result_h, result);
+            alpaka::wait(queue);
+        }
+
+        std::vector<float> expected = input;
+        for (std::size_t n = 0; n < N; ++n)
+            for (std::size_t c = 0; c < Cols; ++c) {
+                std::size_t srcIdx = n * Cols + c;
+                std::size_t dstIdx = n * Cols + static_cast<std::size_t>(indices[srcIdx]);
+                expected[dstIdx] = updates[srcIdx];
+            }
+
+        float* res = reinterpret_cast<float*>(alpaka::getPtrNative(result_h));
+        for (std::size_t i = 0; i < size; ++i)
+            EXPECT_LE(std::abs(res[i] - expected[i]), TOLERANCE) << "i=" << i << " N=" << N;
+    }
+}
+
+TEST_F(SofieAlpakaTest, DynamicCumSum)
+{
+    constexpr float TOLERANCE = DEFAULT_TOLERANCE;
+    constexpr std::size_t Cols = 5;
+
+    for (std::size_t N : {std::size_t(1), std::size_t(4)}) {
+        const std::size_t size = N * Cols;
+        std::vector<float> input(size);
+        for (std::size_t i = 0; i < size; ++i) input[i] = static_cast<float>(i % 6) * 0.5f;
+
+        auto input_d = makeDeviceBuf<float>(host, device, queue, input.data(), size);
+        auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{size}));
+        {
+            SOFIE_DynamicCumSum::Session<alpaka::TagGpuCudaRt> session("DynamicCumSum_FromONNX_GPU_ALPAKA.dat", N);
+            auto result = session.infer(N, input_d);
+            cudaDeviceSynchronize();
+            alpaka::memcpy(queue, result_h, result);
+            alpaka::wait(queue);
+        }
+
+        float* res = reinterpret_cast<float*>(alpaka::getPtrNative(result_h));
+        for (std::size_t n = 0; n < N; ++n) {
+            float acc = 0.f;
+            for (std::size_t c = 0; c < Cols; ++c) {
+                acc += input[n * Cols + c];
+                EXPECT_LE(std::abs(res[n * Cols + c] - acc), TOLERANCE) << "n=" << n << " c=" << c << " N=" << N;
+            }
+        }
+    }
+}
+
+TEST_F(SofieAlpakaTest, DynamicConstantOfShape)
+{
+    constexpr float TOLERANCE = DEFAULT_TOLERANCE;
+    constexpr std::size_t Cols = 3;
+
+    for (std::size_t N : {std::size_t(1), std::size_t(5)}) {
+        std::vector<float> input(N * Cols, 0.0f);
+        auto input_d = makeDeviceBuf<float>(host, device, queue, input.data(), input.size());
+        auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{N * Cols}));
+
+        {
+            SOFIE_DynamicConstantOfShape::Session<alpaka::TagGpuCudaRt> session("DynamicConstantOfShape_FromONNX_GPU_ALPAKA.dat", N);
+            auto result = session.infer(N, input_d);
+            cudaDeviceSynchronize();
+            alpaka::memcpy(queue, result_h, result);
+            alpaka::wait(queue);
+        }
+
+        float* res = reinterpret_cast<float*>(alpaka::getPtrNative(result_h));
+        for (std::size_t i = 0; i < N * Cols; ++i)
+            EXPECT_LE(std::abs(res[i] - 7.0f), TOLERANCE) << "i=" << i << " N=" << N;
     }
 }
 
@@ -439,6 +546,38 @@ TEST_F(SofieAlpakaTest, ScatterND_2D)
         EXPECT_LE(std::abs(res[i] - correct[i]), TOLERANCE) << "  index=" << i;
 }
 
+TEST_F(SofieAlpakaTest, DynamicScatterND)
+{
+    constexpr float TOLERANCE = DEFAULT_TOLERANCE;
+    constexpr std::size_t Cols = 3;
+    std::vector<float> updates = {5.f, 6.f, 7.f, 8.f, 9.f, 10.f};
+
+    for (std::size_t N : {std::size_t(2), std::size_t(5)}) {
+        std::vector<float> data(N * Cols, 0.f);
+        auto data_d = makeDeviceBuf<float>(host, device, queue, data.data(), data.size());
+        auto updates_d = makeDeviceBuf<float>(host, device, queue, updates.data(), updates.size());
+
+        auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{N * Cols}));
+        {
+            SOFIE_DynamicScatterND::Session<alpaka::TagGpuCudaRt> session("DynamicScatterND_FromONNX_GPU_ALPAKA.dat", N);
+            auto result = session.infer(N, data_d, updates_d);
+            cudaDeviceSynchronize();
+            alpaka::memcpy(queue, result_h, result);
+            alpaka::wait(queue);
+        }
+
+        std::vector<float> expected = data;
+        for (std::size_t c = 0; c < Cols; ++c) {
+            expected[(N - 1) * Cols + c] = updates[c];       // index -1 -> row N-1
+            expected[c] = updates[Cols + c];                 // index 0
+        }
+
+        float* res = reinterpret_cast<float*>(alpaka::getPtrNative(result_h));
+        for (std::size_t i = 0; i < N * Cols; ++i)
+            EXPECT_LE(std::abs(res[i] - expected[i]), TOLERANCE) << "i=" << i << " N=" << N;
+    }
+}
+
 TEST_F(SofieAlpakaTest, Split_0)
 {
     constexpr float TOLERANCE = DEFAULT_TOLERANCE;
@@ -557,6 +696,40 @@ TEST_F(SofieAlpakaTest, Split_2)
         EXPECT_LE(std::abs(res1_ptr[j] - correct_output[1][j]), TOLERANCE);
 }
 
+TEST_F(SofieAlpakaTest, DynamicSplit)
+{
+    constexpr float TOLERANCE = DEFAULT_TOLERANCE;
+    constexpr std::size_t Cols = 6, Split0 = 2, Split1 = 4;
+
+    for (std::size_t N : {std::size_t(1), std::size_t(3)}) {
+        const std::size_t size = N * Cols;
+        std::vector<float> input(size);
+        for (std::size_t i = 0; i < size; ++i) input[i] = static_cast<float>(i) + 1.0f;
+
+        auto input_d = makeDeviceBuf<float>(host, device, queue, input.data(), size);
+        auto result0_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{N * Split0}));
+        auto result1_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{N * Split1}));
+
+        {
+            SOFIE_DynamicSplit::Session<alpaka::TagGpuCudaRt> session("DynamicSplit_FromONNX_GPU_ALPAKA.dat", N);
+            auto [result0, result1] = session.infer(N, input_d);
+            cudaDeviceSynchronize();
+            alpaka::memcpy(queue, result0_h, result0);
+            alpaka::memcpy(queue, result1_h, result1);
+            alpaka::wait(queue);
+        }
+
+        float* res0 = reinterpret_cast<float*>(alpaka::getPtrNative(result0_h));
+        float* res1 = reinterpret_cast<float*>(alpaka::getPtrNative(result1_h));
+        for (std::size_t n = 0; n < N; ++n) {
+            for (std::size_t c = 0; c < Split0; ++c)
+                EXPECT_LE(std::abs(res0[n * Split0 + c] - input[n * Cols + c]), TOLERANCE) << "n=" << n << " c=" << c << " N=" << N;
+            for (std::size_t c = 0; c < Split1; ++c)
+                EXPECT_LE(std::abs(res1[n * Split1 + c] - input[n * Cols + Split0 + c]), TOLERANCE) << "n=" << n << " c=" << c << " N=" << N;
+        }
+    }
+}
+
 TEST_F(SofieAlpakaTest, Tile5D)
 {
     constexpr float TOLERANCE = DEFAULT_TOLERANCE;
@@ -613,8 +786,6 @@ TEST_F(SofieAlpakaTest, Tile5D)
         EXPECT_LE(std::abs(res_ptr[i] - correct[i]), TOLERANCE);
 }
 
-<<<<<<< HEAD
-=======
 // X[N,2] -> Tile([2,3]) -> Y[2N,6], N dynamic
 TEST_F(SofieAlpakaTest, DynamicTile)
 {
@@ -652,7 +823,6 @@ TEST_F(SofieAlpakaTest, DynamicTile)
     }
 }
 
->>>>>>> 9cb225f (chore: in line comments cleanup in the code)
 TEST_F(SofieAlpakaTest, GatherAxis0)
 {
     constexpr float TOLERANCE = DEFAULT_TOLERANCE;
@@ -857,8 +1027,6 @@ TEST_F(SofieAlpakaTest, GatherNegativeIndices)
         EXPECT_LE(std::abs(res_ptr[i] - correct[i]), TOLERANCE);
 }
 
-<<<<<<< HEAD
-=======
 TEST_F(SofieAlpakaTest, DynamicGather)
 {
     constexpr float TOLERANCE = DEFAULT_TOLERANCE;
@@ -899,7 +1067,32 @@ TEST_F(SofieAlpakaTest, DynamicGather)
     }
 }
 
->>>>>>> 9cb225f (chore: in line comments cleanup in the code)
+TEST_F(SofieAlpakaTest, DynamicExpand)
+{
+    constexpr float TOLERANCE = DEFAULT_TOLERANCE;
+    constexpr std::size_t Cols = 4;
+
+    for (std::size_t N : {std::size_t(1), std::size_t(4)}) {
+        std::vector<float> input(N);
+        for (std::size_t i = 0; i < N; ++i) input[i] = static_cast<float>(i) + 1.0f;
+
+        auto input_d = makeDeviceBuf<float>(host, device, queue, input.data(), N);
+        auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{N * Cols}));
+        {
+            SOFIE_DynamicExpand::Session<alpaka::TagGpuCudaRt> session("DynamicExpand_FromONNX_GPU_ALPAKA.dat", N);
+            auto result = session.infer(N, input_d);
+            cudaDeviceSynchronize();
+            alpaka::memcpy(queue, result_h, result);
+            alpaka::wait(queue);
+        }
+
+        float* res = reinterpret_cast<float*>(alpaka::getPtrNative(result_h));
+        for (std::size_t n = 0; n < N; ++n)
+            for (std::size_t c = 0; c < Cols; ++c)
+                EXPECT_LE(std::abs(res[n * Cols + c] - input[n]), TOLERANCE) << "n=" << n << " c=" << c << " N=" << N;
+    }
+}
+
 TEST_F(SofieAlpakaTest, ExpandSameSize)
 {
     constexpr float TOLERANCE = DEFAULT_TOLERANCE;
@@ -1195,6 +1388,33 @@ TEST_F(SofieAlpakaTest, GatherND_Batch)
         EXPECT_LE(std::abs(res[i] - expected[i]), TOLERANCE) << "i=" << i;
 }
 
+TEST_F(SofieAlpakaTest, DynamicGatherND)
+{
+    constexpr float TOLERANCE = DEFAULT_TOLERANCE;
+    constexpr std::size_t Cols = 3;
+
+    for (std::size_t N : {std::size_t(2), std::size_t(5)}) {
+        std::vector<float> data(N * Cols);
+        for (std::size_t i = 0; i < data.size(); ++i) data[i] = static_cast<float>(i) + 1.0f;
+
+        auto data_d = makeDeviceBuf<float>(host, device, queue, data.data(), data.size());
+        auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{2 * Cols}));
+        {
+            SOFIE_DynamicGatherND::Session<alpaka::TagGpuCudaRt> session("DynamicGatherND_FromONNX_GPU_ALPAKA.dat", N);
+            auto result = session.infer(N, data_d);
+            cudaDeviceSynchronize();
+            alpaka::memcpy(queue, result_h, result);
+            alpaka::wait(queue);
+        }
+
+        float* res = reinterpret_cast<float*>(alpaka::getPtrNative(result_h));
+        for (std::size_t c = 0; c < Cols; ++c) {
+            EXPECT_LE(std::abs(res[c] - data[(N - 1) * Cols + c]), TOLERANCE) << "row -1, c=" << c << " N=" << N;
+            EXPECT_LE(std::abs(res[Cols + c] - data[c]), TOLERANCE) << "row 0, c=" << c << " N=" << N;
+        }
+    }
+}
+
 TEST_F(SofieAlpakaTest, Slice)
 {
     constexpr float TOLERANCE = DEFAULT_TOLERANCE;
@@ -1327,8 +1547,6 @@ TEST_F(SofieAlpakaTest, Slice_Neg)
         EXPECT_LE(std::abs(res_ptr[i] - correct[i]), TOLERANCE) << "i=" << i;
 }
 
-<<<<<<< HEAD
-=======
 TEST_F(SofieAlpakaTest, DynamicSlice)
 {
     constexpr float TOLERANCE = DEFAULT_TOLERANCE;
@@ -1368,7 +1586,6 @@ TEST_F(SofieAlpakaTest, DynamicSlice)
     }
 }
 
->>>>>>> 9cb225f (chore: in line comments cleanup in the code)
 TEST_F(SofieAlpakaTest, Trilu_upper)
 {
    constexpr std::size_t N = 16;   // 4×4
@@ -1482,8 +1699,37 @@ TEST_F(SofieAlpakaTest, Trilu_3D)
    for (std::size_t i = 0; i < N; ++i)
       EXPECT_NEAR(res[i], ref[i], DEFAULT_TOLERANCE) << "  index=" << i;
 }
-<<<<<<< HEAD
-=======
+
+TEST_F(SofieAlpakaTest, DynamicTrilu)
+{
+    constexpr float TOLERANCE = DEFAULT_TOLERANCE;
+    constexpr std::size_t Rows = 4, Cols = 4;
+
+    for (std::size_t N : {std::size_t(1), std::size_t(3)}) {
+        const std::size_t size = N * Rows * Cols;
+        std::vector<float> input(size);
+        for (std::size_t i = 0; i < size; ++i) input[i] = static_cast<float>(i % 13) + 1.0f;
+
+        auto input_d = makeDeviceBuf<float>(host, device, queue, input.data(), size);
+        auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{size}));
+        {
+            SOFIE_DynamicTrilu::Session<alpaka::TagGpuCudaRt> session("DynamicTrilu_FromONNX_GPU_ALPAKA.dat", N);
+            auto result = session.infer(N, input_d);
+            cudaDeviceSynchronize();
+            alpaka::memcpy(queue, result_h, result);
+            alpaka::wait(queue);
+        }
+
+        float* res = reinterpret_cast<float*>(alpaka::getPtrNative(result_h));
+        for (std::size_t n = 0; n < N; ++n)
+            for (std::size_t r = 0; r < Rows; ++r)
+                for (std::size_t c = 0; c < Cols; ++c) {
+                    std::size_t idx = n * Rows * Cols + r * Cols + c;
+                    float expected = (c >= r) ? input[idx] : 0.0f;
+                    EXPECT_LE(std::abs(res[idx] - expected), TOLERANCE) << "n=" << n << " r=" << r << " c=" << c << " N=" << N;
+                }
+    }
+}
 
 TEST_F(SofieAlpakaTest, DynamicRange)
 {
@@ -1546,4 +1792,3 @@ TEST_F(SofieAlpakaTest, DynamicRangeMul)
             EXPECT_EQ(res[i], static_cast<int64_t>(i * N)) << "i=" << i << " N=" << N << " K=" << K;
     }
 }
->>>>>>> 9cb225f (chore: in line comments cleanup in the code)

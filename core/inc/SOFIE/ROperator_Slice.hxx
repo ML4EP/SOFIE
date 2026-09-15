@@ -32,8 +32,6 @@ private:
    std::vector<Dim> fShapeOutput;   // output shape
    std::vector<Dim> fOutputShapeData;   // output shape data in case output is a shape param tensor
 
-   // saved Start/End.Steps are corrected from initial ONNX for negative/default values
-   // and are available for each axis
    std::vector<Dim> fStart;         // starting values of slices for all axes
    std::vector<Dim> fEnd;           // End values of slices for all axes
    std::vector<Dim> fSteps;         // step values of slices for all axes
@@ -500,6 +498,11 @@ public:
       if (fShapeInput.empty() || fShapeOutput.empty())
          throw std::runtime_error("SOFIE Slice Op called to Generate without being initialized first");
 
+      if (fIsStartUndef || fIsEndUndef)
+         throw std::runtime_error("SOFIE Slice Op " + opName +
+            ": GPU codegen does not support start/end supplied by a runtime tensor's data "
+            "(as opposed to a named dynamic shape dimension) - only CPU codegen supports this case");
+
       const std::size_t D = fShapeInput.size();
 
       auto inputStrides = UTILITY::ComputeStrideFromShape(fShapeInput);
@@ -528,10 +531,6 @@ public:
       EmitOutputCoords(op, SP + SP + SP + SP, outputStrides, fShapeOutput);
       op += "\n";
 
-      // Map each output coord back to input coord:
-      //   input_coord[d] = fStart[d] + out_d * fSteps[d]
-      // Negative steps are supported naturally since fStart/fEnd/fSteps are
-      // already corrected for negative/default values during Initialize().
       op += SP + SP + SP + SP + "std::size_t const input_idx =\n";
       for (std::size_t d = 0; d < D; ++d) {
          // input coordinate for this dim: start + out_d * step

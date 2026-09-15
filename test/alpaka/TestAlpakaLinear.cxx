@@ -7,6 +7,9 @@
 #include "LinearWithSigmoid_FromONNX_GPU_ALPAKA.hxx"
 #include "input_models/references/LinearWithSigmoid.ref.hxx"
 
+#include "DynamicLinear_FromONNX_GPU_ALPAKA.hxx"
+#include "DynamicMatMulBatched_FromONNX_GPU_ALPAKA.hxx"
+
 TEST_F(SofieAlpakaTest, Linear64)
 {
    constexpr float TOLERANCE = DEFAULT_TOLERANCE;
@@ -118,8 +121,6 @@ TEST_F(SofieAlpakaTest, LinearWithSigmoid)
    }
 }
 
-<<<<<<< HEAD
-=======
 TEST_F(SofieAlpakaTest, DynamicLinear)
 {
     constexpr float TOLERANCE = DEFAULT_TOLERANCE;
@@ -160,4 +161,48 @@ TEST_F(SofieAlpakaTest, DynamicLinear)
             }
     }
 }
->>>>>>> 9cb225f (chore: in line comments cleanup in the code)
+
+TEST_F(SofieAlpakaTest, DynamicMatMulBatched)
+{
+    constexpr float TOLERANCE = DEFAULT_TOLERANCE;
+    const std::size_t M = 4, K = 8, Nc = 6;
+
+    for (std::size_t N : {std::size_t(1), std::size_t(5)}) {
+        const std::size_t aSize = N * M * K, bSize = N * K * Nc, ySize = N * M * Nc;
+
+        auto a_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{aSize}));
+        float* a_ptr = reinterpret_cast<float*>(alpaka::getPtrNative(a_h));
+        for (Idx i = 0; i < aSize; ++i) a_ptr[i] = (static_cast<float>(i % 11) - 5.0f) * 0.3f;
+
+        auto b_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{bSize}));
+        float* b_ptr = reinterpret_cast<float*>(alpaka::getPtrNative(b_h));
+        for (Idx i = 0; i < bSize; ++i) b_ptr[i] = (static_cast<float>(i % 7) - 3.0f) * 0.5f;
+
+        auto a_d = alpaka::allocBuf<float, Idx>(device, Ext1D::all(Idx{aSize}));
+        auto b_d = alpaka::allocBuf<float, Idx>(device, Ext1D::all(Idx{bSize}));
+        alpaka::memcpy(queue, a_d, a_h);
+        alpaka::memcpy(queue, b_d, b_h);
+        alpaka::wait(queue);
+
+        auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{ySize}));
+        {
+            SOFIE_DynamicMatMulBatched::Session<alpaka::TagGpuCudaRt> session("DynamicMatMulBatched_FromONNX_GPU_ALPAKA.dat", N);
+            auto result = session.infer(N, a_d, b_d);
+            cudaDeviceSynchronize();
+            alpaka::memcpy(queue, result_h, result);
+            alpaka::wait(queue);
+        }
+
+        float* res = reinterpret_cast<float*>(alpaka::getPtrNative(result_h));
+        for (std::size_t n = 0; n < N; ++n)
+            for (std::size_t i = 0; i < M; ++i)
+                for (std::size_t j = 0; j < Nc; ++j) {
+                    float expected = 0.0f;
+                    for (std::size_t k = 0; k < K; ++k)
+                        expected += a_ptr[n * M * K + i * K + k] * b_ptr[n * K * Nc + k * Nc + j];
+                    float got = res[n * M * Nc + i * Nc + j];
+                    EXPECT_LE(std::abs(got - expected), TOLERANCE)
+                        << "n=" << n << " i=" << i << " j=" << j << " N=" << N;
+                }
+    }
+}

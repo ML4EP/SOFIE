@@ -20,15 +20,17 @@ private:
    std::string fNY;
    std::string fReduction;
 
-   std::vector<size_t> fShapeData;
-   std::vector<size_t> fShapeIndices;
-   std::vector<size_t> fShapeY;
+   std::vector<Dim> fShapeData;
+   std::vector<Dim> fShapeIndices;
+   std::vector<Dim> fShapeY;
 
-   size_t fK         = 0;
-   size_t fSliceSize = 1;
-   size_t fNumOuter  = 1;
+   size_t fK          = 0;
+   std::string fSliceSize;   // host size expression
+   std::string fNumOuter;    // host size expression
 
    std::string fType;
+
+   static std::string sz(const std::string &e) { return "static_cast<std::size_t>(" + e + ")"; }
 
 public:
    ROperator_ScatterND() {}
@@ -64,8 +66,8 @@ public:
       if (!model.CheckIfTensorAlreadyExist(fNUpdates))
          throw std::runtime_error("SOFIE ScatterND: updates tensor " + fNUpdates + " not found");
 
-      fShapeData    = model.GetTensorShape(fNData);
-      fShapeIndices = model.GetTensorShape(fNIndices);
+      fShapeData    = model.GetDimTensorShape(fNData);
+      fShapeIndices = model.GetDimTensorShape(fNIndices);
 
       size_t r = fShapeData.size();
       size_t q = fShapeIndices.size();
@@ -75,29 +77,30 @@ public:
       if (q < 1)
          throw std::runtime_error("SOFIE ScatterND: indices rank must be >= 1");
 
-      fK = fShapeIndices.back();
+      if (fShapeIndices.back().isParam)
+         throw std::runtime_error("SOFIE ScatterND: the last indices dimension (index tuple length) "
+            "must be static - a dynamic index-tuple length is not supported");
+      fK = fShapeIndices.back().dim;
       if (fK > r)
          throw std::runtime_error("SOFIE ScatterND: indices.shape[-1] must be <= data rank");
 
-      fNumOuter = 1;
-      for (size_t i = 0; i + 1 < q; i++)
-         fNumOuter *= fShapeIndices[i];
+      std::vector<Dim> outerShape(fShapeIndices.begin(), fShapeIndices.end() - 1);
+      fNumOuter = ConvertDimShapeToLength(outerShape);
 
-      fSliceSize = 1;
-      for (size_t i = fK; i < r; i++)
-         fSliceSize *= fShapeData[i];
+      std::vector<Dim> sliceShape(fShapeData.begin() + fK, fShapeData.end());
+      fSliceSize = ConvertDimShapeToLength(sliceShape);
 
       fShapeY = fShapeData;
       model.AddIntermediateTensor(fNY, model.GetTensorType(fNData), fShapeY);
       fType = ConvertTypeToString(model.GetTensorType(fNData));
 
       if (model.Verbose())
-         std::cout << "ScatterND: data " << ConvertShapeToString(fShapeData)
-                   << " indices " << ConvertShapeToString(fShapeIndices)
+         std::cout << "ScatterND: data " << ConvertDimShapeToString(fShapeData)
+                   << " indices " << ConvertDimShapeToString(fShapeIndices)
                    << " k=" << fK << " numOuter=" << fNumOuter
                    << " sliceSize=" << fSliceSize
                    << " reduction=" << (fReduction.empty() ? "none" : fReduction)
-                   << " -> " << fNY << " " << ConvertShapeToString(fShapeY) << "\n";
+                   << " -> " << fNY << " " << ConvertDimShapeToString(fShapeY) << "\n";
    }
 
    std::string GenerateInitCode() override { return ""; }
@@ -107,17 +110,17 @@ public:
       if (fShapeY.empty())
          throw std::runtime_error("SOFIE ScatterND: Generate called before Initialize");
 
-      size_t dataSize = ConvertShapeToLength(fShapeY);
+      std::string dataSize = ConvertDimShapeToLength(fShapeY);
       auto stridesData = UTILITY::ComputeStrideFromShape(fShapeData);
 
       std::stringstream out;
       out << SP << "//------- ScatterND " << opName << "\n";
 
       out << SP << "std::copy(tensor_" << fNData
-          << ", tensor_" << fNData << " + " << dataSize
+          << ", tensor_" << fNData << " + static_cast<size_t>(" << dataSize << ")"
           << ", tensor_" << fNY << ");\n";
 
-      out << SP << "for (std::size_t _i = 0; _i < " << fNumOuter << "; ++_i) {\n";
+      out << SP << "for (std::size_t _i = 0; _i < static_cast<std::size_t>(" << fNumOuter << "); ++_i) {\n";
       out << SP << SP << "std::size_t _out_base = 0;\n";
 
       for (size_t j = 0; j < fK; ++j) {
@@ -125,15 +128,15 @@ public:
          out << SP << SP << SP << "int64_t _idx = tensor_" << fNIndices
              << "[_i * " << fK << " + " << j << "];\n";
          out << SP << SP << SP << "if (_idx < 0) _idx += "
-             << static_cast<int64_t>(fShapeData[j]) << ";\n";
+             << "static_cast<int64_t>(" << fShapeData[j].GetVal() << ");\n";
          out << SP << SP << SP << "_out_base += static_cast<std::size_t>(_idx) * "
-             << stridesData[j] << ";\n";
+             << stridesData[j].GetVal() << ";\n";
          out << SP << SP << "}\n";
       }
 
-      out << SP << SP << "for (std::size_t _s = 0; _s < " << fSliceSize << "; ++_s) {\n";
+      out << SP << SP << "for (std::size_t _s = 0; _s < static_cast<std::size_t>(" << fSliceSize << "); ++_s) {\n";
       out << SP << SP << SP << "std::size_t const _out_idx = _out_base + _s;\n";
-      out << SP << SP << SP << "std::size_t const _upd_idx = _i * " << fSliceSize << " + _s;\n";
+      out << SP << SP << SP << "std::size_t const _upd_idx = _i * static_cast<std::size_t>(" << fSliceSize << ") + _s;\n";
 
       if (fReduction.empty() || fReduction == "none") {
          out << SP << SP << SP << "tensor_" << fNY << "[_out_idx] = tensor_" << fNUpdates << "[_upd_idx];\n";
@@ -156,7 +159,7 @@ public:
       return out.str();
    }
 
-   std::string Generate_GPU_Kernel_ALPAKA(std::string opName) override {
+   std::string Generate_GPU_Kernel_ALPAKA(std::string opName, const std::vector<std::string> &dynParamNames) override {
       opName = "op_" + opName;
       if (fShapeY.empty())
          throw std::runtime_error("SOFIE ScatterND: Generate_GPU_Kernel_ALPAKA called before Initialize");
@@ -173,6 +176,8 @@ public:
       op += SP + SP + SP + "T* Y,\n";
       op += SP + SP + SP + "int64_t const* indices,\n";
       op += SP + SP + SP + "T const* updates,\n";
+      for (auto &p : dynParamNames)
+         op += SP + SP + SP + "std::size_t const " + p + ",\n";
       op += SP + SP + SP + "std::size_t const numOuter,\n";
       op += SP + SP + SP + "std::size_t const sliceSize) const {\n\n";
 
@@ -188,9 +193,9 @@ public:
          op += SP + SP + SP + SP + SP
              + "int64_t idx = indices[i * " + std::to_string(fK) + "u + " + std::to_string(j) + "u];\n";
          op += SP + SP + SP + SP + SP
-             + "if (idx < 0) idx += " + std::to_string(static_cast<int64_t>(fShapeData[j])) + ";\n";
+             + "if (idx < 0) idx += " + fShapeData[j].GetVal() + ";\n";
          op += SP + SP + SP + SP + SP
-             + "out_base += static_cast<std::size_t>(idx) * " + std::to_string(stridesData[j]) + "u;\n";
+             + "out_base += static_cast<std::size_t>(idx) * " + sz(stridesData[j].GetVal()) + ";\n";
          op += SP + SP + SP + SP + "}\n";
       }
 
@@ -224,7 +229,7 @@ public:
       return SP + kname + " scatterNDKernel_" + opName + ";\n";
    }
 
-   std::string Generate_GPU_ALPAKA(std::string opName) override {
+   std::string Generate_GPU_ALPAKA(std::string opName, const std::vector<std::string> &dynParamNames) override {
       opName = "op_" + opName;
       if (fShapeY.empty())
          throw std::runtime_error("SOFIE ScatterND: Generate_GPU_ALPAKA called before Initialize");
@@ -241,8 +246,10 @@ public:
           << ", scatterNDKernel_" << opName
           << ", alpaka::getPtrNative(deviceBuf_" << fNY << ")"
           << ", alpaka::getPtrNative(deviceBuf_" << fNIndices << ")"
-          << ", alpaka::getPtrNative(deviceBuf_" << fNUpdates << ")"
-          << ", static_cast<Idx>(" << fNumOuter << ")"
+          << ", alpaka::getPtrNative(deviceBuf_" << fNUpdates << ")";
+      for (auto &p : dynParamNames)
+         out << ", static_cast<std::size_t>(" << p << ")";
+      out << ", static_cast<Idx>(" << fNumOuter << ")"
           << ", static_cast<Idx>(" << fSliceSize << "));\n";
       out << SP << "alpaka::enqueue(queue, task_" << opName << ");\n";
 

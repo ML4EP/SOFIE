@@ -1,6 +1,7 @@
 #include "TestAlpakaCommon.h"
 
 #include "SDPA_FromONNX_GPU_ALPAKA.hxx"
+#include "SDPABig_FromONNX_GPU_ALPAKA.hxx"
 #include "MambaScan_FromONNX_GPU_ALPAKA.hxx"
 #include "RWKV_WKV6_FromONNX_GPU_ALPAKA.hxx"
 #include "GriffinRGLRU_FromONNX_GPU_ALPAKA.hxx"
@@ -42,6 +43,75 @@ TEST_F(SofieAlpakaTest, SDPA)
 
     ASSERT_EQ(outputSize, sizeof(SDPA_ExpectedOutput::outputs) / sizeof(float));
     for (std::size_t i = 0; i < outputSize; ++i)
+        EXPECT_LE(std::abs(res[i] - expected[i]), TOLERANCE) << "i=" << i;
+}
+
+TEST_F(SofieAlpakaTest, SDPABig)
+{
+    constexpr float TOLERANCE = 1e-3f;
+    constexpr std::size_t B = 1, H = 2, S = 16, D = 8;
+    constexpr std::size_t qkvSize = B * H * S * D;
+    constexpr std::size_t maskSize = B * H * S * S;
+
+    unsigned rngState = 12345u;
+    auto rnd = [&]() {
+        rngState = 1103515245u * rngState + 12345u;
+        return ((rngState & 0x7fffffffu) / static_cast<float>(0x7fffffffu)) * 2.0f - 1.0f;
+    };
+    std::vector<float> q(qkvSize), k(qkvSize), v(qkvSize), mask(maskSize);
+    for (std::size_t i = 0; i < qkvSize; ++i) {
+        q[i] = rnd();
+        k[i] = rnd();
+        v[i] = rnd();
+    }
+    for (std::size_t i = 0; i < maskSize; ++i)
+        mask[i] = ((i % 5) == 0) ? -1e9f : 0.0f;   // mask out every 5th key
+
+    auto q_d = makeDeviceBuf<float>(host, device, queue, q.data(), qkvSize);
+    auto k_d = makeDeviceBuf<float>(host, device, queue, k.data(), qkvSize);
+    auto v_d = makeDeviceBuf<float>(host, device, queue, v.data(), qkvSize);
+    auto mask_d = makeDeviceBuf<float>(host, device, queue, mask.data(), maskSize);
+    auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{qkvSize}));
+
+    {
+        SOFIE_SDPABig::Session<alpaka::TagGpuCudaRt> session;
+        auto result = session.infer(q_d, k_d, v_d, mask_d);
+        alpaka::wait(queue);
+        cudaDeviceSynchronize();
+        alpaka::memcpy(queue, result_h, result);
+        alpaka::wait(queue);
+    }
+
+    const float scale = 1.0f / std::sqrt(static_cast<float>(D));
+    std::vector<float> expected(qkvSize);
+    for (std::size_t b = 0; b < B; ++b)
+        for (std::size_t h = 0; h < H; ++h)
+            for (std::size_t s = 0; s < S; ++s) {
+                std::vector<double> scores(S);
+                double maxScore = -1e300;
+                for (std::size_t j = 0; j < S; ++j) {
+                    double dot = 0;
+                    for (std::size_t d = 0; d < D; ++d)
+                        dot += q[b*H*S*D + h*S*D + s*D + d] * k[b*H*S*D + h*S*D + j*D + d];
+                    double sc = dot * scale + mask[b*H*S*S + h*S*S + s*S + j];
+                    scores[j] = sc;
+                    maxScore = std::max(maxScore, sc);
+                }
+                double sumExp = 0;
+                for (std::size_t j = 0; j < S; ++j) {
+                    scores[j] = std::exp(scores[j] - maxScore);
+                    sumExp += scores[j];
+                }
+                for (std::size_t d = 0; d < D; ++d) {
+                    double acc = 0;
+                    for (std::size_t j = 0; j < S; ++j)
+                        acc += scores[j] * v[b*H*S*D + h*S*D + j*D + d];
+                    expected[b*H*S*D + h*S*D + s*D + d] = static_cast<float>(acc / sumExp);
+                }
+            }
+
+    const float* res = reinterpret_cast<float*>(alpaka::getPtrNative(result_h));
+    for (std::size_t i = 0; i < qkvSize; ++i)
         EXPECT_LE(std::abs(res[i] - expected[i]), TOLERANCE) << "i=" << i;
 }
 
