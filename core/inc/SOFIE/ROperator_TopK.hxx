@@ -22,6 +22,7 @@ private:
    Dim fTopKCount;      // k clamped to the axis dimension: a number for a static axis, a
                         // std::min(k, axis) expression for a dynamic one
    size_t fRequestedK;  // the model's requested k, unclamped; sizes the GPU register buffers
+   bool fAxisIsDynamic = false;  // true if the axis dim (hence fTopKCount) is only known at runtime
    std::string fNK;
    std::string fNX;
    std::string fNVal;
@@ -77,7 +78,8 @@ public:
             " value exceeds size of tensor " + fNX + " of size " + std::to_string(fShapeX.size()) + " .");
       }
       // fTopKCount cannot be larger than the axis dimension
-      if (fShapeX[fAttrAxis].isParam) {
+      fAxisIsDynamic = fShapeX[fAttrAxis].isParam;
+      if (fAxisIsDynamic) {
          fTopKCount = Dim{std::string("std::min(size_t(" + std::to_string(kval) + "), " + fShapeX[fAttrAxis].GetVal() + ")" ), static_cast<size_t>(-1) };
          // axis size unknown at codegen time - rsV/rsI must be a fixed-size array, so
          // fall back to the empirically-safe cap of 64.
@@ -208,6 +210,25 @@ public:
          : "(v <= vSVals[topKCount-1])";
       std::string kname = "TopKKernel_" + fNVal;
 
+      auto emitLockAcquire = [&](const std::string &ind) {
+         std::string s;
+         s += ind + "{\n";
+         s += ind + SP + "unsigned int ns = 8u;\n";
+         s += ind + SP + "while (alpaka::atomicCas(acc, &sLock, 0, 1, alpaka::hierarchy::Grids{}) != 0) {\n";
+         s += ind + SP + SP + "#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 700\n";
+         s += ind + SP + SP + "__nanosleep(ns);\n";
+         s += ind + SP + SP + "if (ns < 256u) ns <<= 1;\n";
+         s += ind + SP + SP + "#elif defined(__HIP_DEVICE_COMPILE__)\n";
+         s += ind + SP + SP + "__builtin_amdgcn_s_sleep(2);\n";
+         s += ind + SP + SP + "(void)ns;\n";
+         s += ind + SP + SP + "#else\n";
+         s += ind + SP + SP + "(void)ns;\n";
+         s += ind + SP + SP + "#endif\n";
+         s += ind + SP + "}\n";
+         s += ind + "}\n";
+         return s;
+      };
+
       auto emitInsert = [&](const std::string &ind) {
          std::string s;
          s += ind + "if ((std::size_t)sCount < topKCount) {\n";
@@ -222,7 +243,7 @@ public:
          return s;
       };
 
-      std::string op = "\n//------ TopK_KERNEL_ALPAKA (hierarchical: per-thread staging + block-shared merge)\n";
+      std::string op = "\n//------ TopK_KERNEL_ALPAKA\n";
       op += SP + "struct " + kname + " {\n";
       op += SP + SP + "template<typename TAcc, typename T>\n";
       op += SP + SP + "ALPAKA_FN_ACC void operator()(\n";
@@ -271,7 +292,7 @@ public:
       op += SP + SP + SP + SP + SP + "while (p > 0 && v " + CMP + " rsV[p-1]) { rsV[p] = rsV[p-1]; rsI[p] = rsI[p-1]; --p; }\n";
       op += SP + SP + SP + SP + SP + "rsV[p] = v; rsI[p] = (int64_t)idx; rsN++;\n";
       op += SP + SP + SP + SP + SP + "if (rsN == " + B + ") {\n";
-      op += SP + SP + SP + SP + SP + SP + "while (alpaka::atomicCas(acc, &sLock, 0, 1, alpaka::hierarchy::Grids{}) != 0) {}\n";
+      op += emitLockAcquire(SP + SP + SP + SP + SP + SP);
       op += SP + SP + SP + SP + SP + SP + "alpaka::mem_fence(acc, alpaka::memory_scope::Device{});\n";
       op += SP + SP + SP + SP + SP + SP + "for (int r = 0; r < " + B + "; ++r) {\n";
       op += SP + SP + SP + SP + SP + SP + SP + "T v = rsV[r]; int64_t idx = rsI[r];\n";
@@ -287,7 +308,7 @@ public:
       op += SP + SP + SP + "// drain: flush whatever's left, required for correctness in general\n";
       op += SP + SP + SP + "// (e.g. a short axis may never trigger a fill-driven flush above)\n";
       op += SP + SP + SP + "if (rsN > 0) {\n";
-      op += SP + SP + SP + SP + "while (alpaka::atomicCas(acc, &sLock, 0, 1, alpaka::hierarchy::Grids{}) != 0) {}\n";
+      op += emitLockAcquire(SP + SP + SP + SP);
       op += SP + SP + SP + SP + "alpaka::mem_fence(acc, alpaka::memory_scope::Device{});\n";
       op += SP + SP + SP + SP + "for (int r = 0; r < rsN; ++r) {\n";
       op += SP + SP + SP + SP + SP + "T v = rsV[r]; int64_t idx = rsI[r];\n";
@@ -310,6 +331,22 @@ public:
 
    std::string Generate_GPU_Kernel_Definitions_ALPAKA(std::string /*opName*/) override {
       return SP + "TopKKernel_" + fNVal + " topKernel_" + fNVal + ";\n";
+   }
+
+   std::string GenerateInitCode_GPU_ALPAKA() override {
+      if (!fAxisIsDynamic)
+         return "";
+      if (fShapeX.empty())
+         throw std::runtime_error("SOFIE Operator TopK called to Generate without being initialized first");
+
+      size_t axis = fAttrAxis < 0 ? fShapeX.size() + fAttrAxis : fAttrAxis;
+      auto sx = UTILITY::ComputeSliceInfo(fShapeX, axis);
+      std::string maxLen = "((" + sx.nBefore + ") * (" + sx.nAfter + ") * " + std::to_string(fRequestedK) + "u)";
+
+      std::string out;
+      out += SP + "deviceBuf_" + fNVal + " = alpaka::allocBuf<" + fType + ", Idx>(devAcc, Ext1D::all(Idx{" + maxLen + "}));\n";
+      out += SP + "deviceBuf_" + fNInd + " = alpaka::allocBuf<int64_t, Idx>(devAcc, Ext1D::all(Idx{" + maxLen + "}));\n";
+      return out;
    }
 
    std::string Generate_GPU_ALPAKA(std::string opName) override {

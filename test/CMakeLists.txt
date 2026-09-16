@@ -46,15 +46,31 @@ file(GLOB ONNX_FILES "${ONNX_MODELS_DIR}/*.onnx")
 
 set(ALL_CAPTURES "")
 foreach(onnx_file ${ONNX_FILES})
-  get_filename_component(fname ${onnx_file} NAME_WE)
-  string(REPLACE "@1" "${onnx_file}" cap "${CAPTURE_STR}")
-  string(REPLACE "@2" "${fname}" cap "${cap}")
-  string(APPEND ALL_CAPTURES "${cap}")
+    get_filename_component(fname ${onnx_file} NAME_WE)
+    string(REPLACE "@1" "${onnx_file}" cap "${CAPTURE_STR}")
+    string(REPLACE "@2" "${fname}" cap "${cap}")
+    string(APPEND ALL_CAPTURES "${cap}")
 endforeach()
 
+# Normal ONNX tests: preserve the existing behaviour exactly.
 set(EMIT_CAPTURES "${ALL_CAPTURES}")
-
 configure_file(EmitFromONNX.cxx.in EmitFromONNX_all.cxx @ONLY)
+
+# Alpaka tests: use all regular models plus Alpaka-only operator test models.
+set(ALPAKA_CAPTURES "${ALL_CAPTURES}")
+
+file(GLOB ALPAKA_ONLY_ONNX_FILES
+        "${CMAKE_CURRENT_SOURCE_DIR}/input_models/*.onnx"
+)
+
+foreach(onnx_file ${ALPAKA_ONLY_ONNX_FILES})
+    get_filename_component(fname ${onnx_file} NAME_WE)
+    string(REPLACE "@1" "${onnx_file}" cap "${CAPTURE_STR}")
+    string(REPLACE "@2" "${fname}" cap "${cap}")
+    string(APPEND ALPAKA_CAPTURES "${cap}")
+endforeach()
+
+set(EMIT_CAPTURES "${ALPAKA_CAPTURES}")
 configure_file(EmitFromONNX_GPU_ALPAKA.cxx.in EmitFromONNX_GPU_ALPAKA_all.cxx @ONLY)
 
 ROOTTEST_GENERATE_EXECUTABLE(
@@ -114,12 +130,12 @@ if (ENABLE_ALPAKA_TESTS)
   ##########################################################################
   # Alpaka emitter
   ##########################################################################
-  ROOTTEST_GENERATE_EXECUTABLE(
-    emitFromONNXAlpaka
-    EmitFromONNX_GPU_ALPAKA_all.cxx
-    LIBRARIES protobuf::libprotobuf SOFIE_core SOFIE_parsers
-    FIXTURES_SETUP sofie-compile-models-onnx-alpaka-build
-  )
+ROOTTEST_GENERATE_EXECUTABLE(
+      emitFromONNXAlpaka
+      ${CMAKE_CURRENT_BINARY_DIR}/EmitFromONNX_GPU_ALPAKA_all.cxx
+      LIBRARIES protobuf::libprotobuf SOFIE_core SOFIE_parsers
+      FIXTURES_SETUP sofie-compile-models-onnx-alpaka-build
+)
 
   target_compile_options(emitFromONNXAlpaka PRIVATE
     -Wno-unused-parameter
@@ -181,20 +197,13 @@ if (ENABLE_ALPAKA_TESTS)
       ${CMAKE_CURRENT_SOURCE_DIR}
     )
 
-    if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES OR CMAKE_CUDA_ARCHITECTURES STREQUAL "")
-      set(SOFIE_TEST_CUDA_ARCH "75") # RTX 2070 SUPER default
-    else()
-      set(SOFIE_TEST_CUDA_ARCH "${CMAKE_CUDA_ARCHITECTURES}")
-    endif()
-    message(STATUS "SOFIE Alpaka CUDA tests: CUDA architectures = ${SOFIE_TEST_CUDA_ARCH}")
-
     set_target_properties(
-      TestCustomModelsFromONNXForAlpakaCuda
-      PROPERTIES
-        CUDA_SEPARABLE_COMPILATION OFF
-        CUDA_ARCHITECTURES ${SOFIE_TEST_CUDA_ARCH}
-        CUDA_STANDARD 20
-        CUDA_STANDARD_REQUIRED ON
+            TestCustomModelsFromONNXForAlpakaCuda
+            PROPERTIES
+            CUDA_SEPARABLE_COMPILATION OFF
+            CUDA_STANDARD 20
+            CUDA_STANDARD_REQUIRED ON
+            CUDA_ARCHITECTURES "90"
     )
 
     target_compile_definitions(
@@ -210,21 +219,15 @@ if (ENABLE_ALPAKA_TESTS)
         --expt-relaxed-constexpr
         --generate-line-info
         --use_fast_math
-        -g
-        -G
-        # -fsanitize=address
-        -O1
         -Wno-deprecated-gpu-targets
+        $<IF:$<BOOL:${SOFIE_ALPAKA_CUDA_DEBUG}>,-g;-G;-O0,-O3>
       >
       $<$<COMPILE_LANGUAGE:CXX>:
-        -O2
-        -g
-        -G
         -fPIC
         -pthread
+        $<IF:$<BOOL:${SOFIE_ALPAKA_CUDA_DEBUG}>,-g;-O0,-O2>
       >
     )
-  # set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
 
     # ROOT-compatible: plain signature only
     target_link_libraries(
@@ -238,6 +241,7 @@ if (ENABLE_ALPAKA_TESTS)
       TestCustomModelsFromONNXForAlpakaCuda
       EXEC ./TestCustomModelsFromONNXForAlpakaCuda
       FIXTURES_REQUIRED sofie-compile-models-onnx-alpaka;sofie-lowrank-emit;sofie-test-models-onnx-alpaka-build
+      TIMEOUT 1800
     )
 
   elseif (_alpaka_backend STREQUAL "hip")

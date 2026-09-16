@@ -95,6 +95,8 @@ set(sources_cxx
     src/ParseMambaScan.cxx
     src/ParseRWKVWKV6.cxx
     src/ParseGriffinRGLRU.cxx
+    src/ParseNonZero.cxx
+    src/ParseScatterND.cxx
     ${PROTO_SRCS}
   ${DEPENDENCIES}
     ${SOFIE_core}
