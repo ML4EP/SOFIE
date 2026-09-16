@@ -6,6 +6,8 @@
 #include "SOFIE/RModel.hxx"
 
 #include <sstream>
+#include <iomanip>
+#include <limits>
 
 namespace SOFIE{
 
@@ -24,6 +26,25 @@ private:
    bool fIsConstantOfShape = false;
    bool fRuntimeShape = false;
    std::vector<std::string> fRuntimeDims;
+
+   std::string ValueLiteral(T v) const {
+      std::ostringstream s;
+      if (fAttrType == "float" || fAttrType == "double") {
+         s << std::setprecision(fAttrType == "float" ? std::numeric_limits<float>::max_digits10
+                                                       : std::numeric_limits<double>::max_digits10)
+           << v;
+         std::string str = s.str();
+         if (str.find_first_of(".eE") == std::string::npos)
+            str += ".0";
+         if (fAttrType == "float") str += "f";
+         return str;
+      }
+      if (fAttrType == "bool")
+         s << (v ? "true" : "false");
+      else
+         s << v;
+      return s.str();
+   }
 
 public:
    ROperator_Constant(){}
@@ -66,8 +87,8 @@ public:
                outShape.push_back(d);
             if (fValues.size() != 1)
                throw std::runtime_error("SOFIE ConstantOfShape Op value Tensor has invalid size " + std::to_string(fValues.size()));
-            // Register as a dynamic intermediate tensor — values will be filled at runtime
-            model.AddIntermediateTensor(fNY, model.GetTensorType(fNX), outShape);
+            // Register as a dynamic intermediate tensor — values will be filled at runtime.
+            model.AddIntermediateTensor(fNY, GetTemplatedType(T()), outShape);
             // Store shape for code generation (use fShape for rank, values = 0 for symbolic dims)
             fShape.resize(outShape.size());
             for (size_t i = 0; i < outShape.size(); i++)
@@ -144,45 +165,59 @@ public:
       }
    }
 
-   std::string Generate(std::string /*opName*/) override {
-      if (!fRuntimeShape)
+   std::string Generate(std::string /* OpName */) override {
+      // For the static case, values are baked into the tensor at construction.
+      //  But a dynamic ConstantOfShape has a runtime-sized output whose
+      // length isn't known until inference time, so it still needs an explicit fill.
+      if (!fIsConstantOfShape || fIsOutputConstant)
          return "//---------------------------------------\n";
-
       std::stringstream out;
-      out << "\n//------ ConstantOfShape\n";
-
-      for (size_t i = 0; i < fRuntimeDims.size(); ++i)
-         out << SP << "size_t " << fRuntimeDims[i] << " = static_cast<size_t>(tensor_" << fNX << "[" << i << "]);\n";
-
       std::string length = ConvertDimShapeToLength(fDimShape);
-      out << SP << "if (" << length << " > fTensor_" << fNY << ".size()) {\n";
-      out << SP << SP << "fTensor_" << fNY << ".resize(" << length << ");\n";
-      out << SP << SP << "tensor_" << fNY << " = fTensor_" << fNY << ".data();\n";
-      out << SP << "}\n";
-      out << SP << "std::fill(tensor_" << fNY << ", tensor_" << fNY << " + " << length << ", static_cast<" << fAttrType << ">(" << fValues[0] << "));\n";
-
+      out << "\n//------ CONSTANTOFSHAPE (dynamic)\n";
+      out << SP << "for (size_t i = 0; i < " << length << "; i++)\n";
+      out << SP << SP << "tensor_" << fNY << "[i] = " << ValueLiteral(fValues[0]) << ";\n";
       return out.str();
    }
 
-   std::string Generate_GPU_ALPAKA(std::string /*opName*/) override {
-      if (!fRuntimeShape)
+   std::string Generate_GPU_Kernel_ALPAKA(std::string opName) override {
+      if (!fIsConstantOfShape || fIsOutputConstant) return "";
+      opName = "op_" + opName;
+      std::string kname = "ConstantOfShapeFillKernel_" + opName;
+      std::string op;
+      op  = "\n//------ CONSTANTOFSHAPE_FILL_KERNEL_ALPAKA (dynamic)\n";
+      op += SP + "struct " + kname + " {\n";
+      op += SP + SP + "template<typename TAcc, typename T>\n";
+      op += SP + SP + "ALPAKA_FN_ACC void operator()(TAcc const& acc, T* __restrict__ out, T const value, std::size_t const totalElements) const {\n";
+      op += SP + SP + SP + "auto const idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
+      op += SP + SP + SP + "auto const stride = alpaka::getWorkDiv<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
+      op += SP + SP + SP + "for (std::size_t i = idx; i < totalElements; i += stride) out[i] = value;\n";
+      op += SP + SP + "}\n";
+      op += SP + "};\n";
+      return op;
+   }
+
+   std::string Generate_GPU_Kernel_Definitions_ALPAKA(std::string opName) override {
+      if (!fIsConstantOfShape || fIsOutputConstant) return "";
+      opName = "op_" + opName;
+      return SP + "ConstantOfShapeFillKernel_" + opName + " constantOfShapeFillKernel_" + opName + ";\n";
+   }
+
+   std::string Generate_GPU_ALPAKA(std::string opName) override {
+      if (!fIsConstantOfShape || fIsOutputConstant)
          return "//---------------------------------------\n";
+      opName = "op_" + opName;
+      std::string length = ConvertDimShapeToLength(fDimShape);
 
       std::stringstream out;
-      out << "\n//------ ConstantOfShape_GPU_ALPAKA\n";
-      out << SP << "auto constantOfShapeHost_" << fNY << " = alpaka::allocBuf<int64_t, Idx>(hostAcc, Ext1D::all(Idx{" << fRuntimeDims.size() << "}));\n";
-      out << SP << "alpaka::memcpy(queue, constantOfShapeHost_" << fNY << ", deviceBuf_" << fNX << ");\n";
-      out << SP << "alpaka::wait(queue);\n";
-
-      for (size_t i = 0; i < fRuntimeDims.size(); ++i)
-         out << SP << "size_t " << fRuntimeDims[i] << " = static_cast<size_t>(alpaka::getPtrNative(constantOfShapeHost_" << fNY << ")[" << i << "]);\n";
-
-      std::string length = ConvertDimShapeToLength(fDimShape);
-      out << SP << "if (" << length << " > 0) {\n";
-      out << SP << SP << "bufDev_" << fNY << " = alpaka::allocBuf<" << fAttrType << ", Idx>(devAcc, Ext1D::all(Idx{" << length << "}));\n";
-      out << SP << SP << "alpaka::memset(queue, bufDev_" << fNY << ", static_cast<uint8_t>(0));\n";
-      out << SP << "}\n";
-
+      out << "\n//------ CONSTANTOFSHAPE_GPU_ALPAKA (dynamic)\n";
+      out << SP << "auto const elementsPerGrid_" << opName << " = Vec::all(Idx{static_cast<Idx>(" << length << ")});\n";
+      out << SP << "auto const workDiv_" << opName << " = sofie_workdiv(elementsPerGrid_" << opName << ");\n";
+      out << SP << "auto task_" << opName << " = alpaka::createTaskKernel<Acc>(workDiv_" << opName
+          << ", constantOfShapeFillKernel_" << opName
+          << ", alpaka::getPtrNative(deviceBuf_" << fNY << ")"
+          << ", " << ValueLiteral(fValues[0])
+          << ", static_cast<std::size_t>(" << length << "));\n";
+      out << SP << "alpaka::enqueue(queue, task_" << opName << ");\n";
       return out.str();
    }
 };

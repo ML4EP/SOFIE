@@ -326,6 +326,9 @@ public:
                          << ConvertShapeToString(fShapeY) << std::endl;
             }
             // we convert non-dim shapes to Dim shapes
+            // (fShapeA/fShapeB were rank-padded to fShapeY by MultidirectionalBroadcastShape)
+            fDimShapeA = ConvertShapeToDim(fShapeA);
+            fDimShapeB = ConvertShapeToDim(fShapeB);
             fDimShapeY = ConvertShapeToDim(fShapeY);
          }
       } else {
@@ -501,93 +504,68 @@ public:
       return out.str();
    }
 
-   std::string Generate_GPU_Kernel_ALPAKA(std::string opName) {
+   // fDimShapeA/fDimShapeB are rank-padded to fDimShapeY by Initialize, so a broadcast
+   // dim is a literal 1. An input is either fully broadcast (scalar, all dims 1), not
+   // broadcast (same shape as the output), or partially broadcast - only the last case
+   // needs per-dim index decomposition in the kernel.
+   bool IsPartialBroadcast(const std::vector<Dim> &shape) const {
+      return ConvertDimShapeToLength(shape) != "1" && !UTILITY::AreSameShape(shape, fDimShapeY);
+   }
+
+   std::string Generate_GPU_Kernel_ALPAKA(std::string opName, const std::vector<std::string> &dynParamNames) override {
       if (fIsOutputConstant)
          return "";
+      if (fDimShapeY.empty())
+         throw std::runtime_error("SOFIE Operator Basic Binary called to Generate without being initialized first");
+
+      const std::size_t D = fDimShapeY.size();
+      auto stridesY = UTILITY::ComputeStrideFromShape(fDimShapeY);
+      auto stridesA = UTILITY::ComputeStrideFromShape(fDimShapeA);
+      auto stridesB = UTILITY::ComputeStrideFromShape(fDimShapeB);
+      bool isAScalar = ConvertDimShapeToLength(fDimShapeA) == "1";
+      bool isBScalar = ConvertDimShapeToLength(fDimShapeB) == "1";
+      bool isAPartialBroadcast = IsPartialBroadcast(fDimShapeA);
+      bool isBPartialBroadcast = IsPartialBroadcast(fDimShapeB);
 
       std::string op;
       op = "\n//------ "+opName+"_"+BinaryOperatorTrait<T, Op>::Name()+"_KERNEL_ALPAKA\n";
       op += SP + "struct Binary"+opName+BinaryOperatorTrait<T, Op>::Name()+"Kernel {\n";
       op += SP + SP + "template<typename TAcc, typename T>\n";
-      op += SP + SP + "ALPAKA_FN_ACC void operator()(TAcc const & acc, T const * A, T const * B, T * C) const {\n";
+      op += SP + SP + "ALPAKA_FN_ACC void operator()(TAcc const & acc, T const * A, T const * B, T * C";
+      for (auto &p : dynParamNames)
+         op += ", std::size_t const " + p;
+      op += ", std::size_t const totalElements) const {\n";
       op += SP + SP + SP + "auto idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
-      op += SP + SP + SP + "if (idx < " + std::to_string(ConvertShapeToLength(fShapeY)) + ") {\n";
-      auto stridesA = UTILITY::ComputeStrideFromShape(fShapeA);
-      auto stridesB = UTILITY::ComputeStrideFromShape(fShapeB);
+      op += SP + SP + SP + "if (idx < totalElements) {\n";
 
-      for(size_t id_s = 0; id_s < stridesA.size(); ++id_s){
-         if(fShapeA[id_s] == 1)
-            stridesA[id_s] = 0;
-      }
-
-      for(size_t id_s = 0; id_s < stridesB.size(); ++id_s){
-         if(fShapeB[id_s] == 1)
-            stridesB[id_s] = 0;
-      }
-
-      auto stridesY = UTILITY::ComputeStrideFromShape(fShapeY);
-
-      // --- Fast-path index simplifications ---
-      // Check whether A is broadcast (all strides zero → single element)
-      bool isAScalar = true;
-      for (const auto& s : stridesA) { if (s != 0) { isAScalar = false; break; } }
-      // Check whether B is broadcast (all strides zero → single element)
-      bool isBScalar = true;
-      for (const auto& s : stridesB) { if (s != 0) { isBScalar = false; break; } }
-      // Check whether A has the same contiguous layout as Y (no broadcasting)
-      bool isAContiguous = (fShapeA.size() == fShapeY.size());
-      if (isAContiguous) {
-         for (size_t i = 0; i < fShapeA.size(); ++i)
-            if (fShapeA[i] != fShapeY[i]) { isAContiguous = false; break; }
-      }
-      // Check whether B has the same contiguous layout as Y (no broadcasting)
-      bool isBContiguous = (fShapeB.size() == fShapeY.size());
-      if (isBContiguous) {
-         for (size_t i = 0; i < fShapeB.size(); ++i)
-            if (fShapeB[i] != fShapeY[i]) { isBContiguous = false; break; }
-      }
-
-      auto buildBroadcastIndex = [&](const std::vector<size_t> &inputShape, const std::vector<size_t> &inputStrides, bool isScalar, bool isContiguous) {
-         if (isScalar) return std::string("0");
-         if (isContiguous) return std::string("idx");
-
-         if (inputShape.size() > fShapeY.size())
-            throw std::runtime_error("SOFIE BasicBinary input rank exceeds output rank");
-
-         const size_t rankOffset = fShapeY.size() - inputShape.size();
-         std::string indexExpression;
-
-         for (size_t inputDimIdx = 0; inputDimIdx < inputShape.size(); ++inputDimIdx) {
-            if (inputShape[inputDimIdx] == 1) continue;
-
-            const size_t outputDimIdx = rankOffset + inputDimIdx;
-            std::string coordinate;
-
-            if (stridesY[outputDimIdx] == 1)
-               coordinate = "(idx % " + std::to_string(fShapeY[outputDimIdx]) + ")";
-            else
-               coordinate = "((idx / " + std::to_string(stridesY[outputDimIdx]) + ") % " + std::to_string(fShapeY[outputDimIdx]) + ")";
-
-            if (!indexExpression.empty()) indexExpression += " + ";
-            indexExpression += coordinate;
-
-            if (inputStrides[inputDimIdx] != 1)
-               indexExpression += " * " + std::to_string(inputStrides[inputDimIdx]);
+      // decompose idx into output coords, skipping broadcast dims (stride 0)
+      if (isAPartialBroadcast || isBPartialBroadcast) {
+         op += SP + SP + SP + SP + "std::size_t remaining = idx;\n";
+         op += SP + SP + SP + SP + "std::size_t coord;\n";
+         if (isAPartialBroadcast) op += SP + SP + SP + SP + "std::size_t idxA = 0;\n";
+         if (isBPartialBroadcast) op += SP + SP + SP + SP + "std::size_t idxB = 0;\n";
+         for (std::size_t d = 0; d < D; d++) {
+            std::string sY = "(" + stridesY[d].GetVal() + ")";
+            op += SP + SP + SP + SP + "coord = remaining / " + sY + ";\n";
+            if (d + 1 < D)
+               op += SP + SP + SP + SP + "remaining -= coord * " + sY + ";\n";
+            if (isAPartialBroadcast && fDimShapeA[d].GetVal() != "1")
+               op += SP + SP + SP + SP + "idxA += coord * (" + stridesA[d].GetVal() + ");\n";
+            if (isBPartialBroadcast && fDimShapeB[d].GetVal() != "1")
+               op += SP + SP + SP + SP + "idxB += coord * (" + stridesB[d].GetVal() + ");\n";
          }
-
-         return indexExpression.empty() ? std::string("0") : indexExpression;
-      };
-
-      const std::string flattened_index_A = buildBroadcastIndex(fShapeA, stridesA, isAScalar, isAContiguous);
-      const std::string flattened_index_B = buildBroadcastIndex(fShapeB, stridesB, isBScalar, isBContiguous);
-      const std::string a = "A[" + flattened_index_A + "]";
-      const std::string b = "B[" + flattened_index_B + "]";
-
+      }
+      std::string indexA = isAScalar ? "0" : (isAPartialBroadcast ? "idxA" : "idx");
+      std::string indexB = isBScalar ? "0" : (isBPartialBroadcast ? "idxB" : "idx");
+      const std::string a = "A[" + indexA + "]";
+      const std::string b = "B[" + indexB + "]";
       if constexpr (Op == EBasicBinaryOperator::Pow)
-         op += "C[idx] = " + GetPowExpr(a, b) + ";\n";
+         op += SP + SP + SP + SP + "C[idx] = " + GetPowExpr(a, b) + ";\n";
       else
-         op += "C[idx] = " + BinaryOperatorTrait<T, Op>::Op(a, b) + ";\n";
-      op += "}\n}\n};\n";
+         op += SP + SP + SP + SP + "C[idx] = " + BinaryOperatorTrait<T, Op>::Op(a, b) + ";\n";
+      op += SP + SP + SP + "}\n";
+      op += SP + SP + "}\n";
+      op += SP + "};\n";
       return op;
    }
 
@@ -598,7 +576,7 @@ public:
       return SP + "Binary"+OpName+BinaryOperatorTrait<T, Op>::Name()+"Kernel binary" + OpName + "Kernel;\n";
    }
 
-   std::string Generate_GPU_ALPAKA(std::string OpName) {
+   std::string Generate_GPU_ALPAKA(std::string OpName, const std::vector<std::string> &dynParamNames) override {
       if (fIsOutputConstant)
          return "";
 
@@ -613,7 +591,10 @@ public:
       out << SP << "auto const workDiv_" << fNY << " = sofie_workdiv(elementsPerGrid_" << fNY << ");\n";
       out << SP << "auto task_" << OpName << " = alpaka::createTaskKernel<Acc>(workDiv_" << fNY
          << ", binary" << OpName << "Kernel, alpaka::getPtrNative(deviceBuf_" << fNA
-         << "), alpaka::getPtrNative(deviceBuf_" << fNB << "), alpaka::getPtrNative(deviceBuf_" << fNY << "));\n";
+         << "), alpaka::getPtrNative(deviceBuf_" << fNB << "), alpaka::getPtrNative(deviceBuf_" << fNY << ")";
+      for (auto &p : dynParamNames)
+         out << ", static_cast<std::size_t>(" << p << ")";
+      out << ", static_cast<Idx>(" << length << "));\n";
       out << SP << "alpaka::enqueue(queue, task_" << OpName << ");\n";
       return out.str();
    }

@@ -164,7 +164,22 @@ public:
       return out.str();
    }
 
-std::string Generate_GPU_Kernel_ALPAKA(std::string opName) override {
+   // fShapeX left-padded to fShapeY's rank with Dim{1} entries
+   std::vector<Dim> PaddedShapeX() const {
+      std::vector<Dim> padded = fShapeX;
+      if (padded.size() < fShapeY.size())
+         padded.insert(padded.begin(), fShapeY.size() - padded.size(), Dim{1});
+      return padded;
+   }
+
+   bool NeedsBroadcast() const {
+      if (fShapeX.size() != fShapeY.size()) return true;
+      for (size_t i = 0; i < fShapeX.size(); ++i)
+         if (fShapeX[i] != fShapeY[i]) return true;
+      return false;
+   }
+
+std::string Generate_GPU_Kernel_ALPAKA(std::string opName, const std::vector<std::string> &dynParamNames) override {
     if (fIsOutputConstant) return "";
     if (fInitialized) return "";
 
@@ -172,39 +187,13 @@ std::string Generate_GPU_Kernel_ALPAKA(std::string opName) override {
     if (fShapeY.empty())
         throw std::runtime_error("SOFIE Expand Op called to Generate without being initialized first");
 
-    // Can only generate a static kernel if all dimensions are concrete values
-    auto isStatic = [](const std::vector<Dim>& shape) {
-        return std::all_of(shape.begin(), shape.end(),
-                           [](const Dim& d){ return !d.isParam; });
-    };
-    if (!isStatic(fShapeX) || !isStatic(fShapeY)) return "";
-
-    // Check if broadcast is actually needed
-    bool needsBroadcast = (fShapeX.size() != fShapeY.size());
-    if (!needsBroadcast) {
-        needsBroadcast = std::any_of(fShapeX.begin(), fShapeX.end(),
-                          [&](const Dim& d) {
-                              size_t i = &d - fShapeX.data();
-                              return fShapeX[i].dim != fShapeY[i].dim;
-                          });
-    }
-    if (!needsBroadcast) return ""; // same static shape — just a memcpy
+    if (!NeedsBroadcast()) return "";
 
     const std::size_t D = fShapeY.size();
-
-    // Left-pad fShapeX with dim=1 entries to match rank of fShapeY
-    std::vector<size_t> shapeX_padded(D, 1);
-    size_t offset = D - fShapeX.size();
-    for (size_t i = 0; i < fShapeX.size(); ++i)
-        shapeX_padded[offset + i] = fShapeX[i].dim;
-
-    std::vector<size_t> shapeY_int(D);
-    for (size_t i = 0; i < D; ++i)
-        shapeY_int[i] = fShapeY[i].dim;
+    std::vector<Dim> shapeX_padded = PaddedShapeX();
 
     auto stridesX = UTILITY::ComputeStrideFromShape(shapeX_padded);
-    auto stridesY = UTILITY::ComputeStrideFromShape(shapeY_int);
-    std::size_t totalElements = ConvertShapeToLength(shapeY_int);
+    auto stridesY = UTILITY::ComputeStrideFromShape(fShapeY);
 
     std::string kname = "ExpandKernel_" + opName;
 
@@ -215,8 +204,10 @@ std::string Generate_GPU_Kernel_ALPAKA(std::string opName) override {
     op += SP + SP + "ALPAKA_FN_ACC void operator()(\n";
     op += SP + SP + SP + "TAcc const& acc,\n";
     op += SP + SP + SP + "T const* __restrict__ input,\n";
-    op += SP + SP + SP + "T* __restrict__ output,\n";
-    op += SP + SP + SP + "std::size_t const totalElements) const {\n\n";
+    op += SP + SP + SP + "T* __restrict__ output";
+    for (auto &p : dynParamNames)
+        op += ",\n" + SP + SP + SP + "std::size_t const " + p;
+    op += ",\n" + SP + SP + SP + "std::size_t const totalElements) const {\n\n";
 
     op += SP + SP + SP + "auto const global_thread_idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
     op += SP + SP + SP + "if (global_thread_idx >= totalElements) return;\n";
@@ -224,24 +215,23 @@ std::string Generate_GPU_Kernel_ALPAKA(std::string opName) override {
 
     op += SP + SP + SP + "for (std::size_t elem_idx = global_thread_idx; elem_idx < totalElements; elem_idx += grid_thread_extent) {\n\n";
 
-    // Decompose output linear index using compile-time output strides
+    // Decompose output linear index using output strides (literal or symbolic)
     for (std::size_t d = 0; d < D; ++d) {
         op += SP + SP + SP + SP + "std::size_t const out_" + std::to_string(d)
-            + " = (elem_idx / " + std::to_string(stridesY[d]) + "u) % "
-            + std::to_string(shapeY_int[d]) + "u;\n";
+            + " = (elem_idx / static_cast<std::size_t>(" + stridesY[d].GetVal() + ")) % "
+            + "static_cast<std::size_t>(" + fShapeY[d].GetVal() + ");\n";
     }
     op += "\n";
 
-    // Input index: broadcast dims (shapeX_padded[d]==1) contribute 0 —
-    // compiler eliminates zero terms entirely, no runtime branch
+    // Input index: broadcast dims (shapeX_padded[d] == 1) contribute 0
     op += SP + SP + SP + SP + "std::size_t const input_idx =\n";
     for (std::size_t d = 0; d < D; ++d) {
-        if (shapeX_padded[d] == 1) {
+        if (shapeX_padded[d].GetVal() == "1") {
             op += SP + SP + SP + SP + SP + "0u";
         } else {
             op += SP + SP + SP + SP + SP
                 + "out_" + std::to_string(d)
-                + " * " + std::to_string(stridesX[d]) + "u";
+                + " * static_cast<std::size_t>(" + stridesX[d].GetVal() + ")";
         }
         op += (d + 1 < D) ? " +\n" : ";\n\n";
     }
@@ -257,27 +247,14 @@ std::string Generate_GPU_Kernel_ALPAKA(std::string opName) override {
 std::string Generate_GPU_Kernel_Definitions_ALPAKA(std::string opName) override {
     if (fIsOutputConstant) return "";
     if (fInitialized) return "";
-
-    auto isStatic = [](const std::vector<Dim>& shape) {
-        return std::all_of(shape.begin(), shape.end(),
-                           [](const Dim& d){ return !d.isParam; });
-    };
-    if (!isStatic(fShapeX) || !isStatic(fShapeY)) return "";
-
-    // Check if broadcast is actually needed
-    bool needsBroadcast = (fShapeX.size() != fShapeY.size());
-    if (!needsBroadcast) {
-        for (size_t i = 0; i < fShapeX.size(); ++i)
-            if (fShapeX[i].dim != fShapeY[i].dim) { needsBroadcast = true; break; }
-    }
-    if (!needsBroadcast) return "";
+    if (!NeedsBroadcast()) return "";
 
     opName = "op_" + opName;
     std::string kname = "ExpandKernel_" + opName;
     return SP + kname + " expandKernel_" + opName + ";\n";
 }
 
-std::string Generate_GPU_ALPAKA(std::string opName) override {
+std::string Generate_GPU_ALPAKA(std::string opName, const std::vector<std::string> &dynParamNames) override {
     if (fIsOutputConstant) return "";
     opName = "op_" + opName;
     if (fShapeY.empty())
@@ -291,52 +268,27 @@ std::string Generate_GPU_ALPAKA(std::string opName) override {
         return "";
     }
 
-    auto isStatic = [](const std::vector<Dim>& shape) {
-        return std::all_of(shape.begin(), shape.end(),
-                           [](const Dim& d){ return !d.isParam; });
-    };
-    bool staticShapes = isStatic(fShapeX) && isStatic(fShapeY);
-
-    // Check if broadcast is actually needed for static shapes
-    bool needsBroadcast = !staticShapes; // dynamic always needs runtime broadcast
-    if (staticShapes) {
-        needsBroadcast = (fShapeX.size() != fShapeY.size());
-        if (!needsBroadcast) {
-            for (size_t i = 0; i < fShapeX.size(); ++i)
-                if (fShapeX[i].dim != fShapeY[i].dim) { needsBroadcast = true; break; }
-        }
-    }
-
-    if (!needsBroadcast) {
-        // Same static shape — device-to-device copy
+    if (!NeedsBroadcast()) {
+        // Same shape — device-to-device copy
         out << SP << "alpaka::memcpy(queue, deviceBuf_" << fNY
             << ", deviceBuf_" << fNX << ");\n";
         out << SP << "alpaka::wait(queue);\n";
         return out.str();
     }
 
-    if (!staticShapes) {
-        // Dynamic shapes — not yet supported on GPU, throw a clear error
-        throw std::runtime_error(
-            "SOFIE Expand GPU: dynamic shapes are not yet supported for GPU inference. "
-            "Tensor " + fNX + " has a dynamic shape.");
-    }
-
-    // Static broadcast — launch the expand kernel
-    std::vector<size_t> shapeY_int(fShapeY.size());
-    for (size_t i = 0; i < fShapeY.size(); ++i)
-        shapeY_int[i] = fShapeY[i].dim;
-    std::size_t totalElements = ConvertShapeToLength(shapeY_int);
+    std::string totalElements = ConvertDimShapeToLength(fShapeY);
     std::string kname = "expandKernel_" + opName;
 
     out << SP << "auto const elementsPerThread_" << opName << " = Vec::all(static_cast<Idx>(1));\n";
-    out << SP << "auto const elementsPerGrid_"   << opName << " = Vec::all(Idx{" << totalElements << "});\n";
+    out << SP << "auto const elementsPerGrid_"   << opName << " = Vec::all(Idx{static_cast<Idx>(" << totalElements << ")});\n";
     out << SP << "auto const workDiv_" << opName << " = sofie_workdiv(elementsPerGrid_" << opName << ");\n";
     out << SP << "auto task_" << opName << " = alpaka::createTaskKernel<Acc>(workDiv_" << opName
         << ", " << kname
         << ", alpaka::getPtrNative(deviceBuf_" << fNX << ")"
-        << ", alpaka::getPtrNative(deviceBuf_" << fNY << ")"
-        << ", static_cast<Idx>(" << totalElements << "));\n";
+        << ", alpaka::getPtrNative(deviceBuf_" << fNY << ")";
+    for (auto &p : dynParamNames)
+        out << ", static_cast<std::size_t>(" << p << ")";
+    out << ", static_cast<Idx>(" << totalElements << "));\n";
    out << SP <<"alpaka::enqueue(queue, task_" << opName << ");\n";
 
     return out.str();

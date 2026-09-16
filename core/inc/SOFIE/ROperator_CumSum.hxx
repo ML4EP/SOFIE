@@ -149,7 +149,7 @@ public:
       return out.str();
    }
 
-   std::string Generate_GPU_Kernel_ALPAKA(std::string opName) override {
+   std::string Generate_GPU_Kernel_ALPAKA(std::string opName, const std::vector<std::string> &dynParamNames) override {
       opName = "op_" + opName;
       if (fShape.empty())
          throw std::runtime_error("SOFIE CumSum GPU kernel called without initialization");
@@ -159,6 +159,8 @@ public:
 
       std::vector<std::string> dims(fRank);
       for (size_t i = 0; i < fRank; ++i) dims[i] = fShape[i].GetVal();
+
+      auto sz = [](const std::string &e) { return "static_cast<std::size_t>(" + e + ")"; };
 
       std::vector<Dim> outerShape;
       for (size_t i = 0; i < fRank; ++i)
@@ -182,6 +184,8 @@ public:
       op += SP + SP + SP + "TAcc const& acc,\n";
       op += SP + SP + SP + "T const* __restrict__ X,\n";
       op += SP + SP + SP + "T* __restrict__ Y,\n";
+      for (auto &p : dynParamNames)
+         op += SP + SP + SP + "std::size_t const " + p + ",\n";
       op += SP + SP + SP + "std::size_t const outerLen,\n";
       op += SP + SP + SP + "std::size_t const axLen) const {\n\n";
 
@@ -192,7 +196,7 @@ public:
          for (size_t oi = 0; oi < outerDimIdx.size(); ++oi) {
             size_t di = outerDimIdx[oi];
             op += SP + SP + SP + "std::size_t const d_" + std::to_string(di)
-               + " = (tid / " + outerStrides[oi].GetVal() + "u) % " + dims[di] + "u;\n";
+               + " = (tid / " + sz(outerStrides[oi].GetVal()) + ") % " + sz(dims[di]) + ";\n";
          }
          op += "\n";
       }
@@ -201,14 +205,14 @@ public:
       bool firstTerm = true;
       for (size_t di : outerDimIdx) {
          if (!firstTerm) op += " +";
-         op += " d_" + std::to_string(di) + " * " + strides[di].GetVal() + "u";
+         op += " d_" + std::to_string(di) + " * " + sz(strides[di].GetVal());
          firstTerm = false;
       }
       if (firstTerm) op += " 0u";
       op += ";\n\n";
 
       // axis stride
-      op += SP + SP + SP + "std::size_t const ax_stride = " + strides[ax].GetVal() + "u;\n\n";
+      op += SP + SP + SP + "std::size_t const ax_stride = " + sz(strides[ax].GetVal()) + ";\n\n";
 
       // cumsum loop
       std::string excl = (fExclusive ? "true" : "false");
@@ -249,7 +253,7 @@ public:
       return SP + kname + " cumSumKernel_" + opName + ";\n";
    }
 
-   std::string Generate_GPU_ALPAKA(std::string opName) override {
+   std::string Generate_GPU_ALPAKA(std::string opName, const std::vector<std::string> &dynParamNames) override {
       opName = "op_" + opName;
       if (fShape.empty())
          throw std::runtime_error("SOFIE CumSum GPU dispatch called without initialization");
@@ -269,8 +273,10 @@ public:
       out << SP << SP << "auto task_" << opName << " = alpaka::createTaskKernel<Acc>(workDiv_" << opName
           << ", cumSumKernel_" << opName << ", "
           << "alpaka::getPtrNative(deviceBuf_" << fNX << "), "
-          << "alpaka::getPtrNative(deviceBuf_" << fNY << "), "
-          << "static_cast<Idx>(" << outerLen << "), "
+          << "alpaka::getPtrNative(deviceBuf_" << fNY << ")";
+      for (auto &p : dynParamNames)
+         out << ", static_cast<std::size_t>(" << p << ")";
+      out << ", static_cast<Idx>(" << outerLen << "), "
           << "static_cast<Idx>(" << axLen << "));\n";
       out << SP << SP << "alpaka::enqueue(queue, task_" << opName << ");\n";
       out << SP << "}\n";

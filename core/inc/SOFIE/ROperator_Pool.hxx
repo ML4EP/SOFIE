@@ -51,6 +51,9 @@ private:
    std::vector<size_t> fShapeX;
    std::vector<size_t> fShapeY;
 
+   std::string fBatchExpr;
+   std::vector<Dim> fShapeYDim;
+
    std::string fType;
 
    size_t fDim;   // dimension of the MaxPool
@@ -207,12 +210,24 @@ public:
          throw
             std::runtime_error("SOFIE Pool op Input Tensor " + fNX + " is not found in model");
       }
-      fShapeX = model.GetTensorShape(fNX);
-      if (fShapeX.size() < 3 || fShapeX.size()  > 5) {
-         std::cout << fNX << " : " << ConvertShapeToString(fShapeX) << std::endl;
+      auto dimShapeX = model.GetDimTensorShape(fNX);
+      if (dimShapeX.size() < 3 || dimShapeX.size()  > 5) {
+         std::cout << fNX << " : " << ConvertDimShapeToString(dimShapeX) << std::endl;
          throw
             std::runtime_error("SOFIE Pool Op input data tensor" + fNX + " is not of 3,4 or 5 dimensions");
       }
+      // channel and spatial dims must be static (see fBatchExpr's comment); only the
+      // batch dim may be dynamic.
+      for (size_t i = 1; i < dimShapeX.size(); i++) {
+         if (dimShapeX[i].isParam)
+            throw std::runtime_error("SOFIE Pool Op: only the batch (first) dimension of "
+               + fNX + " may be dynamic - channel and spatial dimensions must be static");
+      }
+      fBatchExpr = dimShapeX[0].GetVal();
+      fShapeX.resize(dimShapeX.size());
+      fShapeX[0] = dimShapeX[0].isParam ? size_t(1) : dimShapeX[0].dim;
+      for (size_t i = 1; i < dimShapeX.size(); i++)
+         fShapeX[i] = dimShapeX[i].dim;
        fDim = fShapeX.size() - 2;
       // case of GlobalAveragePool. It is a pool case with kernel shape == image shape
       if (fPoolMode == GlobalAveragePool) {
@@ -229,7 +244,9 @@ public:
       }
       // find shape of Y and add it in the list of intermediate tensors
       fShapeY = ShapeInference({fShapeX})[0];
-      model.AddIntermediateTensor(fNY, model.GetTensorType(fNX), fShapeY);
+      fShapeYDim.assign(fShapeY.begin(), fShapeY.end());
+      fShapeYDim[0] = dimShapeX[0];   // restore the true (possibly symbolic) batch dim
+      model.AddIntermediateTensor(fNY, model.GetTensorType(fNX), fShapeYDim);
 
       // need cmath for INFINITY when using MaxPool
       if (fPoolMode == MaxPool) model.AddNeededStdLib("cmath");
@@ -330,7 +347,7 @@ public:
       if(fDim==1){
          // loop on batches and channels
          out << SP << "size_t outIndex = 0;\n";
-         out << SP << "for (size_t n = 0; n < " << fShapeX[0]*fShapeX[1] << "; n++) {\n";
+         out << SP << "for (size_t n = 0; n < static_cast<size_t>(" << fBatchExpr << ") * " << fShapeX[1] << "; n++) {\n";
          out << SP << SP << "size_t inputOffset = n*" << fShapeX[2] << ";\n";
          out << SP << SP << "for (int i = hmin; i < hmax; i+=" << fAttrStrides[0] << ") {\n";
          // loop on elements of filter region to compute maximum
@@ -372,7 +389,7 @@ public:
       else if(fDim==2){
          // loop on batches and channels
          out << SP << "size_t outIndex = 0;\n";
-         out << SP << "for (size_t n = 0; n < " << fShapeX[0]*fShapeX[1] << "; n++) {\n";
+         out << SP << "for (size_t n = 0; n < static_cast<size_t>(" << fBatchExpr << ") * " << fShapeX[1] << "; n++) {\n";
          out << SP << SP << "size_t inputOffset = n*" << fShapeX[2]*fShapeX[3] << ";\n";
          out << SP << SP << "for (int i = hmin; i < hmax; i+=" << fAttrStrides[0] << ") {\n";
          out << SP << SP << SP << "for (int j = wmin; j < wmax; j+=" << fAttrStrides[1] << ") {\n";
@@ -418,7 +435,7 @@ public:
       else if(fDim==3){
          // loop on batches and channels
          out << SP << "size_t outIndex = 0;\n";
-         out << SP << "for (size_t n = 0; n < " << fShapeX[0]*fShapeX[1] << "; n++) {\n";
+         out << SP << "for (size_t n = 0; n < static_cast<size_t>(" << fBatchExpr << ") * " << fShapeX[1] << "; n++) {\n";
          out << SP << SP << "size_t inputOffset = n*" << fShapeX[2]*fShapeX[3]*fShapeX[4] << ";\n";
          out << SP << SP << "for (int i = hmin; i < hmax; i+=" << fAttrStrides[0] << ") {\n";
          out << SP << SP << SP << "for (int j = wmin; j < wmax; j+=" << fAttrStrides[1] << ") {\n";
@@ -487,7 +504,7 @@ public:
       bool doPadding = false;
       for (auto & e : fAttrPads) doPadding |= (e > 0);
       // count_include_pad == 0 with padding: divide by the in-bounds cells counted
-      // at run time; otherwise by the constant kernel area (CPU Generate above).
+      // at run time; otherwise by the constant kernel area
       const bool runtimeCount = isAvg && fAttrCountIncludePad == 0 && doPadding;
 
       const std::string kname = (isAvg ? "AvgPoolKernel_" : "MaxPoolKernel_") + opName;
@@ -660,13 +677,15 @@ public:
          return "";
 
       const bool isAvg = (fPoolMode == AveragePool);
-      std::size_t totalOut = ConvertShapeToLength(fShapeY);
+      // Use fShapeYDim (the true, possibly-symbolic batch dim), not fShapeY (which
+      // holds a dummy batch value of 1 when the real batch dim is dynamic).
+      std::string totalOut = ConvertDimShapeToLength(fShapeYDim);
       std::string kname = (isAvg ? "avgPoolKernel_" : "maxPoolKernel_") + opName;
 
       std::stringstream out;
       out << "\n//------ " << (isAvg ? "AVGPOOL" : "MAXPOOL") << "_GPU_ALPAKA\n";
       out << SP << "auto const elementsPerThread_" << fNY << " = Vec::all(static_cast<Idx>(1));\n";
-      out << SP << "auto const elementsPerGrid_"   << fNY << " = Vec::all(Idx{" << totalOut << "});\n";
+      out << SP << "auto const elementsPerGrid_"   << fNY << " = Vec::all(Idx{static_cast<Idx>(" << totalOut << ")});\n";
       out << SP << "auto const workDiv_" << fNY << " = sofie_workdiv(elementsPerGrid_" << fNY << ");\n";
 
       out << SP << "auto task_" << fNY << " = alpaka::createTaskKernel<Acc>(workDiv_" << fNY

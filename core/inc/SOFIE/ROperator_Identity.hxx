@@ -19,7 +19,7 @@ private:
    bool fIsInputInitialized = false;
    std::string fNX;
    std::string fNY;
-   std::vector<size_t> fShape;
+   std::vector<Dim> fShape;
 
 public:
    ROperator_Identity(){}
@@ -43,14 +43,14 @@ public:
       if (model.CheckIfTensorAlreadyExist(fNX) == false){
         throw std::runtime_error("SOFIE Identity Op Input Tensor is not found in model");
       }
-      fShape = model.GetTensorShape(fNX);
+      fShape = model.GetDimTensorShape(fNX);
       if (model.IsInitializedTensor(fNX)) {
          // we need to check if is a weight (initialized) or a constant tensor
          // in the first case we need to create a constant tensor with the output, in teh second we
          // need to generate the identy code in the GenerateInitCode
          if (model.IsConstantTensor(fNX)) {
             auto inputData = static_cast<T*>(model.GetInitializedTensorData(fNX).get());
-            model.AddConstantTensor<T>(fNY, fShape, inputData);
+            model.AddConstantTensor<T>(fNY, ConvertShapeToInt(fShape), inputData);
             fIsOutputConstant = true;
          } else {
             fIsInputInitialized = true;
@@ -87,8 +87,6 @@ public:
    }
 
    std::string GenerateInitCode_GPU_ALPAKA() override {
-      // For initialized (weight) tensors: the device buffer for X is already populated by
-      // MoveInitializedTensorsToBuffers_ALPAKA(); copy it into the Y device buffer.
       if (!fIsInputInitialized) return "";
       std::stringstream out;
       out << "\n//------ IDENTITY (init)\n";
@@ -105,9 +103,7 @@ public:
       }
       std::stringstream out;
       out << "\n//------ IDENTITY\n";
-      // Device buffers cannot simply be aliased; perform an explicit device-to-device copy.
       out << SP << "alpaka::memcpy(queue, deviceBuf_" << fNY << ", deviceBuf_" << fNX << ");\n";
-      out << SP << "alpaka::wait(queue);\n";
       return out.str();
    }
 

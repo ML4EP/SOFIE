@@ -28,6 +28,8 @@ private:
 
    std::vector<int64_t> fIndices;  // indices vector in case they are known at initialization
 
+   std::vector<Dim> fOutputShapeData; // in case output is a shape tensor we store here the shape value data (can be parametric)
+
    std::string fType;
 
 public:
@@ -69,19 +71,27 @@ public:
       // case indices tensor is initialized
       if (model.IsInitializedTensor(fNIndices)) {
           // empty shape Indices is a scalar value for the indices
+         bool hasNegativeIndex = false;
          size_t indicesLength = ConvertShapeToLength(model.GetTensorShape(fNIndices));
-         int64_t* indicesData = static_cast<int64_t*>(model.GetInitializedTensorData(fNIndices).get());
+         int64_t* data = static_cast<int64_t*>(model.GetInitializedTensorData(fNIndices).get());
+         // copy in a vector since we may need to update the values in case of negative indices
+         fIndices = std::vector<int64_t>(data, data + indicesLength);
          // update indices data in case of negative dim values
          for (size_t i = 0; i < indicesLength; i++) {
             // move this at generation time?
             if (!fShapeX[fAttrAxis].isParam) {
-               if (indicesData[i] < 0) {
-                  indicesData[i] += fShapeX[fAttrAxis].dim;
+               if (fIndices[i] < 0) {
+                  hasNegativeIndex = true;
+                  fIndices[i] += fShapeX[fAttrAxis].dim;
                }
             }
          }
-         // Save in a vector gather Indices of size q
-         fIndices = std::vector<int64_t>(indicesData, indicesData + indicesLength);
+         // for negative indices we need to add an extra constant tensor
+         if (hasNegativeIndex) {
+            std::string nameIndicesUpdated = fNIndices + "_updated";
+            model.AddConstantTensor(nameIndicesUpdated, model.GetTensorShape(fNIndices), fIndices.data());
+            fNIndices = nameIndicesUpdated;
+         }
       }
       // Output shape
       if (model.Verbose())
@@ -120,17 +130,17 @@ public:
       else if (model.IsShapeTensor(fNX) && q <=1  && fIndices.size() > 0) {
          auto inputData = model.GetShapeTensorValues(fNX);
          // if r == 1 and q<=1 then output length is 1 (is a scalar or tensor of size1)
-         std::vector<Dim> outputData(1);
-         outputData[0] = inputData[fIndices[0]];
-         if (outputData[0].isParam) {
-            fIsOutputConstant = true;
+         fOutputShapeData.resize(1);
+         fOutputShapeData[0] = inputData[fIndices[0]];
+         if (fOutputShapeData[0].isParam) {
+            fIsOutputParamShape = true;
             // shapeY can be scalar or vector of size1
-            model.AddShapeTensor(fNY, outputData, fShapeY.size() == 0);
+            model.AddShapeTensor(fNY, fOutputShapeData, fShapeY.size() == 0);
             if (model.Verbose())
                std::cout << "Gather: " << fNX << " " << ConvertDimShapeToString(fShapeX) << " -> " << fNY << " with shape " << ConvertDimShapeToString(fShapeY)
-                   << " and values " << ConvertDimShapeToString(outputData) << " (shape) " << std::endl;
+                   << " and values " << ConvertDimShapeToString(fOutputShapeData) << " (shape) " << std::endl;
          } else {
-            int64_t value = static_cast<int64_t>(outputData[0].dim);
+            int64_t value = static_cast<int64_t>(fOutputShapeData[0].dim);
             auto shapeY = ConvertShapeToInt(fShapeY);
             model.AddConstantTensor(fNY, shapeY, &value);
             fIsOutputConstant = true;
@@ -139,7 +149,7 @@ public:
                    << " and values {" << value <<  "} (constant) " << std::endl;
          }
       }
-      if (!fIsOutputConstant) {
+      if (!fIsOutputConstant && !fIsOutputParamShape) {
          // Add output tensor
          model.AddIntermediateTensor(fNY, model.GetTensorType(fNX), fShapeY);
          fType = ConvertTypeToString(model.GetTensorType(fNX));
@@ -156,6 +166,13 @@ public:
       if (fIsOutputConstant) {
          // no code to generate here for constant output. Tensor output is defined in Session constructor
          out << "//--------------------(constant)----------\n";
+         return out.str();
+      }
+      if (fIsOutputParamShape) {
+         out << "//--------------------(shape)----------\n";
+         for (int i = 0; i < static_cast<int>(fOutputShapeData.size()); i++) {
+            out << SP << "tensor_" << fNY << "[" << i << " ] = " << fOutputShapeData[i].GetVal() << ";\n";
+         }
          return out.str();
       }
       // The shape of the output is q + r - 1
@@ -276,142 +293,135 @@ public:
       return out.str();
    }
 
-std::string Generate_GPU_Kernel_ALPAKA(std::string opName) override {
-   if (fIsOutputConstant) return "";
-   opName = "op_" + opName;
+std::string Generate_GPU_Kernel_ALPAKA(std::string opName, const std::vector<std::string> &dynParamNames) override {
+    if (fIsOutputConstant || fIsOutputParamShape) return "";
+    opName = "op_" + opName;
+    if (fShapeY.empty())
+        throw std::runtime_error("SOFIE Gather Op called to Generate without being initialized first");
 
-   const std::size_t D = fShapeY.size();
-   const std::size_t r = fShapeX.size();
-   const std::size_t q = fShapeIndices.size();
+    const std::size_t r  = fShapeX.size();
+    const std::size_t q  = fShapeIndices.size();
 
-   std::string kname = "GatherKernel_" + opName;
+    auto stridesY       = UTILITY::ComputeStrideFromShape(fShapeY);
+    auto stridesX       = UTILITY::ComputeStrideFromShape(fShapeX);
+    auto stridesIndices = UTILITY::ComputeStrideFromShape(fShapeIndices);
 
-   std::string op;
-   op = "\n//------ GATHER_KERNEL_ALPAKA\n";
-   op += SP + "struct " + kname + " {\n";
-   op += SP + SP + "template<typename TAcc, typename T>\n";
-   op += SP + SP + "ALPAKA_FN_ACC void operator()(\n";
-   op += SP + SP + SP + "TAcc const& acc,\n";
-   op += SP + SP + SP + "T const* __restrict__ input,\n";
-   op += SP + SP + SP + "int64_t const* __restrict__ indices,\n";
-   op += SP + SP + SP + "T* __restrict__ output,\n";
-   op += SP + SP + SP + "std::array<std::size_t, " + std::to_string(D) + "> const stridesY,\n";
-   op += SP + SP + SP + "std::array<std::size_t, " + std::to_string(D) + "> const shapeY,\n";
-   op += SP + SP + SP + "std::array<std::size_t, " + std::to_string(r) + "> const stridesX,\n";
-   op += SP + SP + SP + "std::array<std::size_t, " + std::to_string(q) + "> const stridesIndices,\n";
-   op += SP + SP + SP + "std::size_t const axisDim,\n";
-   op += SP + SP + SP + "std::size_t const totalElements) const {\n\n";
+    std::string kname = "GatherKernel_" + opName;
 
-   op += SP + SP + SP + "auto const global_thread_idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
-   op += SP + SP + SP + "if (global_thread_idx >= totalElements) return;\n";
-   op += SP + SP + SP + "auto const grid_thread_extent = alpaka::getWorkDiv<alpaka::Grid, alpaka::Threads>(acc)[0];\n\n";
+    std::string op;
+    op  = "\n//------ GATHER_KERNEL_ALPAKA\n";
+    op += SP + "struct " + kname + " {\n";
+    op += SP + SP + "template<typename TAcc, typename T>\n";
+    op += SP + SP + "ALPAKA_FN_ACC void operator()(\n";
+    op += SP + SP + SP + "TAcc const& acc,\n";
+    op += SP + SP + SP + "T const* __restrict__ input,\n";
+    op += SP + SP + SP + "int64_t const* __restrict__ indices,\n";
+    op += SP + SP + SP + "T* __restrict__ output,\n";
+    for (auto &p : dynParamNames)
+        op += SP + SP + SP + "std::size_t const " + p + ",\n";
+    op += SP + SP + SP + "std::size_t const totalElements) const {\n\n";
 
-   op += SP + SP + SP + "for (std::size_t elem_idx = global_thread_idx; elem_idx < totalElements; elem_idx += grid_thread_extent) {\n\n";
+    op += SP + SP + SP + "auto const global_thread_idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
+    op += SP + SP + SP + "if (global_thread_idx >= totalElements) return;\n";
+    op += SP + SP + SP + "auto const grid_thread_extent = alpaka::getWorkDiv<alpaka::Grid, alpaka::Threads>(acc)[0];\n\n";
 
-   for (std::size_t d = 0; d < D; ++d)
-      op += SP + SP + SP + SP + "std::size_t const out_" + std::to_string(d) + " = (elem_idx / stridesY[" + std::to_string(d) + "]) % shapeY[" + std::to_string(d) + "];\n";
+    op += SP + SP + SP + "for (std::size_t elem_idx = global_thread_idx; elem_idx < totalElements; elem_idx += grid_thread_extent) {\n\n";
 
-   op += "\n";
+    EmitOutputCoordsFromThreadIdx(op, SP + SP + SP + SP, stridesY, fShapeY);
+    op += "\n";
 
-   if (q == 0) {
-      op += SP + SP + SP + SP + "std::size_t const i_index = 0u;\n";
-   } else {
-      op += SP + SP + SP + SP + "std::size_t const i_index =\n";
-      for (std::size_t i = 0; i < q; ++i) {
-         op += SP + SP + SP + SP + SP + "out_" + std::to_string(fAttrAxis + i) + " * stridesIndices[" + std::to_string(i) + "]";
-         op += (i + 1 < q) ? " +\n" : ";\n";
-      }
-   }
+    // Output dims [axis ... axis+q) correspond to the indices tensor dims [0 ... q)
+    // so i_index = sum over i in [0,q): out_{axis+i} * stridesIndices[i]
+    if (q == 0) {
+        op += SP + SP + SP + SP + "std::size_t const i_index = 0u;\n";
+    } else {
+        op += SP + SP + SP + SP + "std::size_t const i_index =\n";
+        for (std::size_t i = 0; i < q; ++i) {
+            op += SP + SP + SP + SP + SP
+                + "out_" + std::to_string(fAttrAxis + i)
+                + " * (" + stridesIndices[i].GetVal() + ")";
+            op += (i + 1 < q) ? " +\n" : ";\n";
+        }
+    }
+    op += "\n";
 
-   op += "\n";
-   op += SP + SP + SP + SP + "int64_t k = indices[i_index];\n";
-   op += SP + SP + SP + SP + "if (k < 0) k += static_cast<int64_t>(axisDim);\n";
-   op += SP + SP + SP + SP + "if (k < 0) k = 0;\n";
-   op += SP + SP + SP + SP + "if (k >= static_cast<int64_t>(axisDim)) k = static_cast<int64_t>(axisDim) - 1;\n\n";
+    op += SP + SP + SP + SP + "int64_t k = indices[i_index];\n";
+    op += SP + SP + SP + SP + "if (k < 0) k += (" + fShapeX[fAttrAxis].GetVal() + ");\n";
+    op += SP + SP + SP + SP + "if (k < 0) k = 0;\n";
+    op += SP + SP + SP + SP + "if (k >= static_cast<int64_t>(" + fShapeX[fAttrAxis].GetVal() + ")) "
+        + "k = static_cast<int64_t>(" + fShapeX[fAttrAxis].GetVal() + ") - 1;\n\n";
 
-   op += SP + SP + SP + SP + "std::size_t const input_idx =\n";
-   op += SP + SP + SP + SP + SP + "static_cast<std::size_t>(k) * stridesX[" + std::to_string(fAttrAxis) + "]";
-   for (std::size_t j = 0; j < static_cast<std::size_t>(fAttrAxis); ++j)
-      op += " +\n" + SP + SP + SP + SP + SP + "out_" + std::to_string(j) + " * stridesX[" + std::to_string(j) + "]";
-   for (std::size_t j = fAttrAxis + 1; j < r; ++j)
-      op += " +\n" + SP + SP + SP + SP + SP + "out_" + std::to_string(q + j - 1) + " * stridesX[" + std::to_string(j) + "]";
-   op += ";\n\n";
+    // x_index = k * stridesX[axis]
+    //         + sum over j in [0, axis):   out_j          * stridesX[j]
+    //         + sum over j in [axis+1, r): out_{j-1+q}    * stridesX[j]
+    // (the dims after axis in Y are shifted by q-1 relative to X)
+    op += SP + SP + SP + SP + "std::size_t const input_idx =\n";
+    op += SP + SP + SP + SP + SP + "static_cast<std::size_t>(k) * (" + stridesX[fAttrAxis].GetVal() + ")";
+    for (std::size_t j = 0; j < static_cast<std::size_t>(fAttrAxis); ++j) {
+        op += " +\n" + SP + SP + SP + SP + SP
+            + "out_" + std::to_string(j) + " * (" + stridesX[j].GetVal() + ")";
+    }
+    for (std::size_t j = fAttrAxis + 1; j < r; ++j) {
+        // in Y, the coord for X's dim j lives at output dim q + j - 1
+        op += " +\n" + SP + SP + SP + SP + SP
+            + "out_" + std::to_string(q + j - 1) + " * (" + stridesX[j].GetVal() + ")";
+    }
+    op += ";\n\n";
 
-   op += SP + SP + SP + SP + "output[elem_idx] = input[input_idx];\n";
-   op += SP + SP + SP + "}\n";
-   op += SP + SP + "}\n";
-   op += SP + "};\n";
+    op += SP + SP + SP + SP + "output[elem_idx] = input[input_idx];\n";
+    op += SP + SP + SP + "}\n";
+    op += SP + SP + "}\n";
+    op += SP + "};\n";
 
-   return op;
+    return op;
 }
 
 std::string Generate_GPU_Kernel_Definitions_ALPAKA(std::string opName) override {
-    if (fIsOutputConstant) return "";
+    if (fIsOutputConstant || fIsOutputParamShape) return "";
     opName = "op_" + opName;
     std::string kname = "GatherKernel_" + opName;
     return SP + kname + " gatherKernel_" + opName + ";\n";
 }
 
-std::string Generate_GPU_ALPAKA(std::string opName) override {
-   if (fIsOutputConstant) return "";
-   opName = "op_" + opName;
+std::string Generate_GPU_ALPAKA(std::string opName, const std::vector<std::string> &dynParamNames) override {
+    if (fIsOutputConstant) return "";
+    if (fIsOutputParamShape) {
+        std::stringstream out;
+        out << "\n//------ GATHER (shape) GPU\n";
+        for (int i = 0; i < static_cast<int>(fOutputShapeData.size()); i++) {
+            out << SP << "tensor_" << fNY << "[" << i << "] = " << fOutputShapeData[i].GetVal() << ";\n";
+        }
+        out << SP << "auto hostBuf_" << fNY << " = alpaka::createView(hostAcc, tensor_" << fNY
+            << ", " << fOutputShapeData.size() << ");\n";
+        out << SP << "alpaka::memcpy(queue, deviceBuf_" << fNY << ", hostBuf_" << fNY << ");\n";
+        return out.str();
+    }
+    opName = "op_" + opName;
+    if (fShapeY.empty())
+        throw std::runtime_error("SOFIE Gather Op called to Generate without being initialized first");
 
-   auto stridesY = UTILITY::ComputeStrideFromShape(fShapeY);
-   auto stridesX = UTILITY::ComputeStrideFromShape(fShapeX);
-   auto stridesIndices = UTILITY::ComputeStrideFromShape(fShapeIndices);
-   std::string totalElements = ConvertDimShapeToLength(fShapeY);
-   std::string kname = "gatherKernel_" + opName;
+    auto totalElements = ConvertDimShapeToLength(fShapeY);
+    std::string kname = "gatherKernel_" + opName;
 
-   std::stringstream out;
-   out << "\n//------ GATHER_GPU_ALPAKA\n";
-
-   out << SP << "std::array<std::size_t, " << fShapeY.size() << "> stridesY_" << opName << " = {";
-   for (size_t i = 0; i < stridesY.size(); ++i) {
-      if (i > 0) out << ", ";
-      out << stridesY[i].GetVal();
-   }
-   out << "};\n";
-
-   out << SP << "std::array<std::size_t, " << fShapeY.size() << "> shapeY_" << opName << " = {";
-   for (size_t i = 0; i < fShapeY.size(); ++i) {
-      if (i > 0) out << ", ";
-      out << fShapeY[i].GetVal();
-   }
-   out << "};\n";
-
-   out << SP << "std::array<std::size_t, " << fShapeX.size() << "> stridesX_" << opName << " = {";
-   for (size_t i = 0; i < stridesX.size(); ++i) {
-      if (i > 0) out << ", ";
-      out << stridesX[i].GetVal();
-   }
-   out << "};\n";
-
-   out << SP << "std::array<std::size_t, " << fShapeIndices.size() << "> stridesIndices_" << opName << " = {";
-   for (size_t i = 0; i < stridesIndices.size(); ++i) {
-      if (i > 0) out << ", ";
-      out << stridesIndices[i].GetVal();
-   }
-   out << "};\n";
-
-   out << SP << "auto const elementsPerGrid_" << opName << " = Vec::all(Idx{" << totalElements << "});\n";
-   out << SP << "auto const workDiv_" << opName << " = sofie_workdiv(elementsPerGrid_" << opName << ");\n";
-   out << SP << "auto task_" << opName << " = alpaka::createTaskKernel<Acc>(workDiv_" << opName
-       << ", " << kname
-       << ", alpaka::getPtrNative(deviceBuf_" << fNX << ")"
-       << ", alpaka::getPtrNative(deviceBuf_" << fNIndices << ")"
-       << ", alpaka::getPtrNative(deviceBuf_" << fNY << ")"
-       << ", stridesY_" << opName
-       << ", shapeY_" << opName
-       << ", stridesX_" << opName
-       << ", stridesIndices_" << opName
-       << ", static_cast<std::size_t>(" << fShapeX[fAttrAxis].GetVal() << ")"
-       << ", static_cast<Idx>(" << totalElements << "));\n";
-   out << SP << "alpaka::enqueue(queue, task_" << opName << ");\n";
-
-   return out.str();
+    std::stringstream out;
+    out << "\n//------ GATHER_GPU_ALPAKA\n";
+    out << SP << "auto const elementsPerThread_" << opName << " = Vec::all(static_cast<Idx>(1));\n";
+    out << SP << "auto const elementsPerGrid_"   << opName << " = Vec::all(Idx{" << totalElements << "});\n";
+    out << SP << "auto const workDiv_" << opName << " = sofie_workdiv(elementsPerGrid_" << opName << ");\n";
+    out << SP << "auto task_" << opName << " = alpaka::createTaskKernel<Acc>(workDiv_" << opName
+        << ", " << kname
+        << ", alpaka::getPtrNative(deviceBuf_" << fNX << ")"
+        << ", alpaka::getPtrNative(deviceBuf_" << fNIndices << ")"
+        << ", alpaka::getPtrNative(deviceBuf_" << fNY << ")";
+    for (auto &p : dynParamNames)
+        out << ", static_cast<std::size_t>(" << p << ")";
+    out << ", static_cast<Idx>(" << totalElements << "));\n";
+    out << SP << "alpaka::enqueue(queue, task_" << opName << ");\n";
+    return out.str();
 }
+
 };
 
 }//SOFIE
 
-#endif //SOFIE_ROPERATOR_RELU
+#endif //SOFIE_ROPERATOR_GATHER

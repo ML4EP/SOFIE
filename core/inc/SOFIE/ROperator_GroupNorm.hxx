@@ -149,12 +149,18 @@ public:
       return out.str();
    }
 
+   // Threads cooperating on one (n,g) group. A group's gn_gs*gn_spatial elements are
+   // contiguous in memory (c = g*gn_gs+ci, address = n*C*spatial + c*spatial + s =
+   // (row base) + ci*spatial + s, and ci*spatial+s enumerates [0, gn_gs*spatial)
+   // contiguously)
+   static constexpr size_t kBlockSize = 256;
+
    std::string Generate_GPU_Kernel_ALPAKA(std::string opName) override {
       opName = "op_" + opName;
       if (fShapeX.empty())
          throw std::runtime_error("SOFIE GroupNorm GPU kernel called without initialization");
 
-      std::string G   = std::to_string(fNumGroups);
+      std::string bs  = std::to_string(kBlockSize);
       std::string eps = std::to_string(fAttrEpsilon);
       std::string kname = "GroupNormKernel_" + opName;
 
@@ -169,50 +175,64 @@ public:
       if (!fNBias.empty())
          op += SP + SP + SP + "T const* __restrict__ bias,\n";
       op += SP + SP + SP + "T* __restrict__ Y,\n";
-      op += SP + SP + SP + "std::size_t const gn_N,\n";
       op += SP + SP + SP + "std::size_t const gn_C,\n";
       op += SP + SP + SP + "std::size_t const gn_spatial,\n";
-      op += SP + SP + SP + "std::size_t const gn_G) const {\n\n";
+      op += SP + SP + SP + "std::size_t const gn_G,\n";
+      op += SP + SP + SP + "std::size_t const numRows) const {\n\n";
 
-      op += SP + SP + SP + "auto const tid = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
-      op += SP + SP + SP + "std::size_t const total = gn_N * gn_G;\n";
-      op += SP + SP + SP + "if (tid >= total) return;\n\n";
-      op += SP + SP + SP + "std::size_t const n = tid / gn_G;\n";
-      op += SP + SP + SP + "std::size_t const g = tid % gn_G;\n";
-      op += SP + SP + SP + "std::size_t const gn_gs = gn_C / gn_G;\n";
+      // one block per (n,g) row - a block-shared reduction buffer, reused across the
+      // mean and variance passes
+      op += SP + SP + SP + "auto& sred = alpaka::declareSharedVar<T[" + bs + "], __COUNTER__>(acc);\n";
+      op += SP + SP + SP + "auto const row = alpaka::getIdx<alpaka::Grid, alpaka::Blocks>(acc)[0];\n";
+      op += SP + SP + SP + "auto const tid = alpaka::getIdx<alpaka::Block, alpaka::Threads>(acc)[0];\n";
+      op += SP + SP + SP + "if (row >= numRows) return;\n\n";
+
+      op += SP + SP + SP + "std::size_t const gn_gs   = gn_C / gn_G;\n";
+      op += SP + SP + SP + "std::size_t const rowLen  = gn_gs * gn_spatial;\n";
+      op += SP + SP + SP + "std::size_t const g       = row % gn_G;\n";
+      op += SP + SP + SP + "std::size_t const base    = row * rowLen;\n";
       op += SP + SP + SP + "T const gn_eps = static_cast<T>(" + eps + ");\n\n";
 
-      op += SP + SP + SP + "// mean\n";
-      op += SP + SP + SP + "T mean = static_cast<T>(0);\n";
-      op += SP + SP + SP + "for (std::size_t ci = 0; ci < gn_gs; ++ci) {\n";
-      op += SP + SP + SP + SP + "std::size_t c = g * gn_gs + ci;\n";
-      op += SP + SP + SP + SP + "for (std::size_t s = 0; s < gn_spatial; ++s)\n";
-      op += SP + SP + SP + SP + SP + "mean += X[n * gn_C * gn_spatial + c * gn_spatial + s];\n";
-      op += SP + SP + SP + "}\n";
-      op += SP + SP + SP + "mean /= static_cast<T>(gn_gs * gn_spatial);\n\n";
+      auto treeReduce = [&](const std::string & ind) {
+         std::string s;
+         size_t half = kBlockSize / 2;
+         while (half > 0) {
+            s += ind + "if (tid < " + std::to_string(half) + "u) sred[tid] += sred[tid + " + std::to_string(half) + "u];\n";
+            s += ind + "alpaka::syncBlockThreads(acc);\n";
+            half >>= 1;
+         }
+         return s;
+      };
 
-      op += SP + SP + SP + "// variance\n";
-      op += SP + SP + SP + "T var = static_cast<T>(0);\n";
-      op += SP + SP + SP + "for (std::size_t ci = 0; ci < gn_gs; ++ci) {\n";
-      op += SP + SP + SP + SP + "std::size_t c = g * gn_gs + ci;\n";
-      op += SP + SP + SP + SP + "for (std::size_t s = 0; s < gn_spatial; ++s) {\n";
-      op += SP + SP + SP + SP + SP + "T d = X[n * gn_C * gn_spatial + c * gn_spatial + s] - mean;\n";
-      op += SP + SP + SP + SP + SP + "var += d * d;\n";
-      op += SP + SP + SP + SP + "}\n";
+      op += SP + SP + SP + "// mean: per-thread partial sum, then block-shared tree reduction\n";
+      op += SP + SP + SP + "T sum = static_cast<T>(0);\n";
+      op += SP + SP + SP + "for (std::size_t l = tid; l < rowLen; l += " + bs + "u) sum += X[base + l];\n";
+      op += SP + SP + SP + "sred[tid] = sum;\n";
+      op += SP + SP + SP + "alpaka::syncBlockThreads(acc);\n";
+      op += treeReduce(SP + SP + SP);
+      op += SP + SP + SP + "T const mean = sred[0] / static_cast<T>(rowLen);\n";
+      op += SP + SP + SP + "alpaka::syncBlockThreads(acc);\n\n"; // all reads of sred[0] done before sred is reused below
+
+      op += SP + SP + SP + "// variance: same pattern, from deviations around mean\n";
+      op += SP + SP + SP + "T devsq = static_cast<T>(0);\n";
+      op += SP + SP + SP + "for (std::size_t l = tid; l < rowLen; l += " + bs + "u) {\n";
+      op += SP + SP + SP + SP + "T d = X[base + l] - mean;\n";
+      op += SP + SP + SP + SP + "devsq += d * d;\n";
       op += SP + SP + SP + "}\n";
-      op += SP + SP + SP + "var /= static_cast<T>(gn_gs * gn_spatial);\n";
+      op += SP + SP + SP + "sred[tid] = devsq;\n";
+      op += SP + SP + SP + "alpaka::syncBlockThreads(acc);\n";
+      op += treeReduce(SP + SP + SP);
+      op += SP + SP + SP + "T const var = sred[0] / static_cast<T>(rowLen);\n";
       op += SP + SP + SP + "T const inv_std = static_cast<T>(1) / sqrt(acc, var + gn_eps);\n\n";
 
       op += SP + SP + SP + "// normalize + scale + bias\n";
-      op += SP + SP + SP + "for (std::size_t ci = 0; ci < gn_gs; ++ci) {\n";
-      op += SP + SP + SP + SP + "std::size_t c = g * gn_gs + ci;\n";
-      op += SP + SP + SP + SP + "for (std::size_t s = 0; s < gn_spatial; ++s) {\n";
-      op += SP + SP + SP + SP + SP + "std::size_t idx = n * gn_C * gn_spatial + c * gn_spatial + s;\n";
-      op += SP + SP + SP + SP + SP + "T v = (X[idx] - mean) * inv_std * scale[c];\n";
+      op += SP + SP + SP + "for (std::size_t l = tid; l < rowLen; l += " + bs + "u) {\n";
+      op += SP + SP + SP + SP + "std::size_t idx = base + l;\n";
+      op += SP + SP + SP + SP + "std::size_t c = g * gn_gs + l / gn_spatial;\n";
+      op += SP + SP + SP + SP + "T v = (X[idx] - mean) * inv_std * scale[c];\n";
       if (!fNBias.empty())
-         op += SP + SP + SP + SP + SP + "v += bias[c];\n";
-      op += SP + SP + SP + SP + SP + "Y[idx] = v;\n";
-      op += SP + SP + SP + SP + "}\n";
+         op += SP + SP + SP + SP + "v += bias[c];\n";
+      op += SP + SP + SP + SP + "Y[idx] = v;\n";
       op += SP + SP + SP + "}\n";
 
       op += SP + SP + "}\n";
@@ -232,23 +252,24 @@ public:
          throw std::runtime_error("SOFIE GroupNorm GPU dispatch called without initialization");
 
       std::string G = std::to_string(fNumGroups);
+      std::string numRows = "static_cast<Idx>((" + fN + ") * " + G + ")";
       std::string args =
          "alpaka::getPtrNative(deviceBuf_" + fNX + "), "
          "alpaka::getPtrNative(deviceBuf_" + fNScale + "), ";
       if (!fNBias.empty())
          args += "alpaka::getPtrNative(deviceBuf_" + fNBias + "), ";
       args += "alpaka::getPtrNative(deviceBuf_" + fNY + "), "
-              "static_cast<Idx>(" + fN + "), "
               "static_cast<Idx>(" + fC + "), "
               "static_cast<Idx>(" + fSpatial + "), "
-              "static_cast<Idx>(" + G + ")";
-
-      std::string totalWork = "static_cast<Idx>((" + fN + ") * " + G + ")";
+              "static_cast<Idx>(" + G + "), "
+              + numRows;
 
       std::stringstream out;
       out << "\n//------ GROUPNORM_GPU_ALPAKA\n";
-      out << SP << "auto const elementsPerGrid_" << opName << " = Vec::all(Idx{" << totalWork << "});\n";
-      out << SP << "auto const workDiv_" << opName << " = sofie_workdiv(elementsPerGrid_" << opName << ");\n";
+      out << SP << "alpaka::WorkDivMembers<Dim, Idx> workDiv_" << opName << "(\n";
+      out << SP << SP << "Vec::all(" << numRows << "),\n";
+      out << SP << SP << "Vec::all(Idx{" << kBlockSize << "u}),\n";
+      out << SP << SP << "Vec::all(Idx{1u}));\n";
       out << SP << "auto task_" << opName << " = alpaka::createTaskKernel<Acc>(workDiv_" << opName
           << ", groupNormKernel_" << opName << ", " << args << ");\n";
       out << SP << "alpaka::enqueue(queue, task_" << opName << ");\n";

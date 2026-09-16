@@ -12,7 +12,6 @@
 #include <vector>
 #include <cassert>
 
-
 namespace SOFIE{
 
 enum EReduceOpMode { ReduceMean, ReduceSum, ReduceSumSquare, ReduceProd, ReduceL2, ReduceMax, InvalidReduceOp };
@@ -22,16 +21,43 @@ class ROperator_Reduce final : public ROperator
 {
 private:
     /* Attributes*/
+    bool fInputDimShape = false;
     int fkeepdims = 1; //default value
     std::vector<int64_t> fAttrAxes;
     EReduceOpMode fReduceOpMode;
     std::string fNX;
     std::string fNAxes;
     std::string fNY;
-    std::vector<size_t> fShapeX;
-    std::vector<size_t> fShapeY;
-    std::vector<size_t> fShapeYNotPruned; // needed for fKeepdims=0
-    bool fInitialized = false;
+    std::vector<Dim> fShapeX;
+    std::vector<Dim> fShapeY;
+    std::vector<Dim> fShapeYNotPruned; // needed for fKeepdims=0
+
+    // GPU kernel launch tuning parameters
+    struct GpuLaunchParams { std::size_t blockSize = 256; std::size_t groups = 1; };
+
+
+    GpuLaunchParams ComputeGpuLaunchParams() const {
+       GpuLaunchParams p;
+       if (fInputDimShape || fShapeX.empty() || fShapeY.empty())
+          return p;
+       std::size_t inLen  = std::stoul(ConvertDimShapeToLength(fShapeX));
+       std::size_t outLen = std::stoul(ConvertDimShapeToLength(fShapeY));
+       if (outLen == 0)
+          return p;
+       std::size_t redLen = inLen / outLen;
+
+       std::size_t bs = 32;
+       while (bs < redLen && bs < 256) bs *= 2;
+       p.blockSize = bs;
+
+       constexpr std::size_t kTargetBlocks = 132;
+       if (outLen < kTargetBlocks) {
+          std::size_t maxGroups       = kTargetBlocks / outLen;
+          std::size_t chunksAvailable = (redLen + bs - 1) / bs;
+          p.groups = std::max<std::size_t>(1, std::min(maxGroups, chunksAvailable));
+       }
+       return p;
+    }
 
 
 public:
@@ -47,11 +73,12 @@ public:
    }
 
    std::vector<std::string> GetStdLibs() override {
+      std::vector<std::string> libs = { std::string("memory") };
       if (fReduceOpMode == ReduceL2)
-         return { std::string("cmath") };
+         libs.push_back("cmath");
       if (fReduceOpMode == ReduceMax)
-         return { std::string("limits") };
-      return {};
+         libs.push_back("limits");
+      return libs;
    }
 
    ROperator_Reduce(){}
@@ -73,29 +100,32 @@ public:
    }
 
    // shape of output tensors given input tensors
-   std::vector<std::vector<size_t>> ShapeInference(std::vector<std::vector<size_t>> input) override {
-      auto ret = input; //suggest copy to compiler
-      auto & outputShape = ret[0];
+   using ROperator::ShapeInference;
+   std::vector<Dim> ShapeInference(const std::vector<Dim> & input) {
+      auto ret = input;
+      auto & outputShape = ret;
       for (size_t j = 0; j < fAttrAxes.size(); j++) {
          if (fAttrAxes[j] < 0) fAttrAxes[j] += outputShape.size();
-         if (fAttrAxes[j] < 0 || (size_t) fAttrAxes[j] >= outputShape.size() )
+         if (fAttrAxes[j] < 0 || (size_t) fAttrAxes[j] >= outputShape.size())
             throw std::runtime_error("SOFIE Reduce Op - invalid axes values " + std::to_string(fAttrAxes[j]));
-         // set to 1 the reduced dims
-         outputShape[fAttrAxes[j]] = 1;
+         outputShape[fAttrAxes[j]] = Dim{1};
       }
       fShapeYNotPruned = outputShape;
-      // in case of pruning dimension we need to sort axes attributes
       if (fkeepdims == 0) {
          auto ax = fAttrAxes;
          std::sort(ax.begin(), ax.end());
          for (size_t j = 0; j < ax.size(); j++) {
-            outputShape.erase(outputShape.begin() + ax[j]);
-            for (size_t k = j + 1; k < ax.size(); k++)
-               ax[k] -= 1;  // decrease by one since we have removed a value
+            // erase reduced dimensions, but keep last one
+            if (outputShape.size() > 1) {
+               outputShape.erase(outputShape.begin() + ax[j]);
+               for (size_t k = j+1; k < ax.size(); k++)
+                  ax[k] -= 1;
+            }
          }
       }
       return ret;
    }
+
    void Initialize(RModel& model) override {
 
       fUseSession = model.UseSession();
@@ -104,7 +134,9 @@ public:
          // input must be a graph input, or already initialized intermediate tensor
          throw std::runtime_error("SOFIE Reduce Op Input Tensor " + fNX + " is not found in model");
       }
-      fShapeX = model.GetTensorShape(fNX);
+      fShapeX = model.GetDimTensorShape(fNX);
+      if (model.IsDynamicTensor(fNX))
+         fInputDimShape = true;
       // check if tensor with axes is provided
       if (!fNAxes.empty()) {
          auto ax_shptr = model.GetInitializedTensorData(fNAxes);
@@ -119,18 +151,29 @@ public:
             fAttrAxes[i] = i;
       }
       // find shape of Y and add it in the list of intermediate tensors
-      fShapeY = ShapeInference({fShapeX})[0];
+      fShapeY = ShapeInference(fShapeX);
       model.AddIntermediateTensor(fNY, model.GetTensorType(fNX), fShapeY);
       if (model.Verbose()){
-         std::cout << Name() << " : " << fNX << " -> " << fNY << " shape " << ConvertShapeToString(fShapeY) << std::endl;
+         std::cout << Name() << " : " << fNX << " -> " << fNY << " shape " << ConvertDimShapeToString(fShapeY) << std::endl;
       }
       model.AddNeededStdLib("algorithm");
-      fInitialized = true;
+   }
+
+   bool IsReducedAxis(size_t d) const {
+      return std::find(fAttrAxes.begin(), fAttrAxes.end(), (int64_t)d) != fAttrAxes.end();
+   }
+
+   // number of input elements reduced into each output element, as generated-code text;
+   // used by the CPU loops and passed to the GPU kernel by the launch
+   std::string ReducedLengthExpr() const {
+      return "(" + ConvertDimShapeToLength(fShapeX) + ") / (" + ConvertDimShapeToLength(fShapeY) + ")";
    }
 
    EFusionMappingType GetFusionMappingType() const override
    {
-      return fInitialized ? EFusionMappingType::ManyToMany : EFusionMappingType::Unsupported;
+      if (fInputDimShape || fShapeX.empty() || fShapeY.empty())
+         return EFusionMappingType::Unsupported;
+      return EFusionMappingType::ManyToMany;
    }
 
    std::vector<size_t> GetFusionDataInputIndices() const override
@@ -138,7 +181,7 @@ public:
       return {0};
    }
 
-   bool IsFusionReduction() const override { return fInitialized; }
+   bool IsFusionReduction() const override { return !fInputDimShape && !fShapeX.empty() && !fShapeY.empty(); }
 
    std::string GetFusionReductionInitExpr() const override
    {
@@ -178,18 +221,36 @@ public:
       return accumulator;
    }
 
+   // this fusion path only supports fully static shapes: fShapeX/fShapeYNotPruned are
+   // Dim-valued to support the dynamic-shape codegen above, but the generic fusion
+   // planner (RModel_Fusion_ALPAKA.cxx) only ever calls this once GetFusionMappingType
+   // has confirmed the operator is static, so converting them down to plain sizes here
+   // is safe.
    std::string GetFusionReductionInputIndexExpr(const std::string &outputIndex, const std::string &reductionIndex,
       const std::vector<size_t> &inputShape, const std::vector<size_t> &outputShape) const override
    {
-      if (!fInitialized || inputShape != fShapeX || outputShape != fShapeY)
+      if (fInputDimShape || fShapeX.empty() || fShapeY.empty())
          return "";
 
-      const auto inputStrides = UTILITY::ComputeStrideFromShape(fShapeX);
-      const auto outputStrides = UTILITY::ComputeStrideFromShape(fShapeYNotPruned);
+      std::vector<size_t> shapeX(fShapeX.size());
+      for (size_t i = 0; i < fShapeX.size(); ++i)
+         shapeX[i] = fShapeX[i].dim;
+      std::vector<size_t> shapeYNotPruned(fShapeYNotPruned.size());
+      for (size_t i = 0; i < fShapeYNotPruned.size(); ++i)
+         shapeYNotPruned[i] = fShapeYNotPruned[i].dim;
+
+      if (inputShape != shapeX || outputShape.size() != fShapeY.size())
+         return "";
+      for (size_t i = 0; i < outputShape.size(); ++i)
+         if (outputShape[i] != fShapeY[i].dim)
+            return "";
+
+      const auto inputStrides = UTILITY::ComputeStrideFromShape(shapeX);
+      const auto outputStrides = UTILITY::ComputeStrideFromShape(shapeYNotPruned);
       std::vector<size_t> reducedAxes;
 
-      for (size_t dim = 0; dim < fShapeX.size(); ++dim) {
-         if (std::find(fAttrAxes.begin(), fAttrAxes.end(), static_cast<int64_t>(dim)) != fAttrAxes.end())
+      for (size_t dim = 0; dim < shapeX.size(); ++dim) {
+         if (IsReducedAxis(dim))
             reducedAxes.push_back(dim);
       }
 
@@ -198,21 +259,21 @@ public:
 
       std::vector<size_t> reductionStrides(reducedAxes.size(), 1);
       for (int axisIdx = static_cast<int>(reducedAxes.size()) - 2; axisIdx >= 0; --axisIdx)
-         reductionStrides[axisIdx] = reductionStrides[axisIdx + 1] * fShapeX[reducedAxes[axisIdx + 1]];
+         reductionStrides[axisIdx] = reductionStrides[axisIdx + 1] * shapeX[reducedAxes[axisIdx + 1]];
 
       std::string expression;
 
-      for (size_t dim = 0; dim < fShapeX.size(); ++dim) {
+      for (size_t dim = 0; dim < shapeX.size(); ++dim) {
          const auto reducedIt = std::find(reducedAxes.begin(), reducedAxes.end(), dim);
          std::string coordinate;
 
          if (reducedIt != reducedAxes.end()) {
             const size_t reducedIdx = static_cast<size_t>(std::distance(reducedAxes.begin(), reducedIt));
             coordinate = "((" + reductionIndex + " / " + std::to_string(reductionStrides[reducedIdx]) + "u) % " +
-                         std::to_string(fShapeX[dim]) + "u)";
+                         std::to_string(shapeX[dim]) + "u)";
          } else {
             coordinate = "((" + outputIndex + " / " + std::to_string(outputStrides[dim]) + "u) % " +
-                         std::to_string(fShapeYNotPruned[dim]) + "u)";
+                         std::to_string(shapeYNotPruned[dim]) + "u)";
          }
 
          if (!expression.empty())
@@ -228,13 +289,12 @@ public:
 
    std::string Generate(std::string opName) override {
       opName = "op_" + opName;
-      if (!fInitialized) {
+      if (fShapeX.empty() || fShapeY.empty()) {
          throw std::runtime_error("SOFIE Reduce Op called to Generate without being initialized first");
       }
 
-      size_t inputLength = SOFIE::ConvertShapeToLength(fShapeX);
-      size_t outputLength = SOFIE::ConvertShapeToLength(fShapeY);
-      const std::string typeName = ConvertTypeToString(GetTemplatedType(T{}));
+      std::string inputLength = SOFIE::ConvertDimShapeToLength(fShapeX);
+      std::string outputLength = SOFIE::ConvertDimShapeToLength(fShapeY);
 
       auto inputStrides = SOFIE::UTILITY::ComputeStrideFromShape(fShapeX);
       // output stride (or not pruned vector)
@@ -256,7 +316,7 @@ public:
       int kmin = fShapeX.size()-fAttrAxes.size();
       for (int k = fShapeX.size()-1; k >= kmin; k--) {
          // if k is not a reduced axis is not last ones
-         if (std::find(fAttrAxes.begin(), fAttrAxes.end(), k) == fAttrAxes.end()) {
+         if (!IsReducedAxis(k)) {
             reduceDims = kMiddle;
             break;
          }
@@ -266,18 +326,21 @@ public:
          // check if at the beginning
          for (size_t k = 0; k < fAttrAxes.size(); k++) {
             // if k is not a reduced axis is not first ones
-            if (std::find(fAttrAxes.begin(), fAttrAxes.end(), k) == fAttrAxes.end()) {
+            if (!IsReducedAxis(k)) {
                reduceDims = kMiddle;
                break;
             }
          }
       }
-      size_t reducedLength = inputLength / outputLength;
+      std::string reducedLength;
+      if (fInputDimShape) {
+         reducedLength = "reducedLength_" + opName;
+         out << SP << "size_t " << reducedLength << " = " << ReducedLengthExpr() << ";\n";
+      } else {
+         int rLength = std::stoi(inputLength) / std::stoi(outputLength);
+         reducedLength = std::to_string(rLength);
+      }
       if (reduceDims == kLast) {
-         //std::cout << "reduction for operator " << opName << " is last" << std::endl;
-         // new faster implementation using a single loop
-         // faster to loop first on reduced dimension and then output
-         // reset output tensors
 
          // loop on output dimensions
          out << SP << "for (size_t i = 0; i < " << outputLength << "; i++) {\n";
@@ -285,7 +348,7 @@ public:
          if (fReduceOpMode == ReduceProd)
             out << SP << SP << "tensor_" << fNY << "[i] = 1;\n";
          else if (fReduceOpMode == ReduceMax)
-            out << SP << SP << "tensor_" << fNY << "[i] = std::numeric_limits<" << typeName << ">::lowest();\n";
+            out << SP << SP << "tensor_" << fNY << "[i] = std::numeric_limits<float>::lowest();\n";
          else
             out << SP << SP << "tensor_" << fNY << "[i] = 0;\n";
          out << SP << SP << "for (size_t j = 0; j < " << reducedLength << "; j++) {\n";
@@ -302,7 +365,7 @@ public:
                 << SP << SP << SP << SP << "tensor_" << fNY << "[i] = tensor_" << fNX << "[i * " << reducedLength << " + j];\n";
          out << SP << SP << "}\n"; // end j loop
          if(fReduceOpMode == ReduceMean)
-            out << SP << SP << "tensor_" << fNY << "[i] /= static_cast<" << typeName << ">(" << reducedLength << ");\n";
+            out << SP << SP << "tensor_" << fNY << "[i] /= static_cast<float>(" << reducedLength << ");\n";
          else if (fReduceOpMode == ReduceL2)
             out << SP << SP << "tensor_" << fNY << "[i] = std::sqrt(tensor_" << fNY << "[i]);\n";
 
@@ -314,8 +377,8 @@ public:
          if (fReduceOpMode == ReduceProd)
             out << SP << "std::fill(tensor_" << fNY <<", tensor_"<< fNY <<" + "<< outputLength << ", 1);\n";
          else if (fReduceOpMode == ReduceMax)
-            out << SP << "std::fill(tensor_" << fNY << ", tensor_" << fNY << " + " << outputLength
-                      << ", std::numeric_limits<" << typeName << ">::lowest());\n";
+            out << SP << "std::fill(tensor_" << fNY <<", tensor_"<< fNY <<" + "<< outputLength
+                      << ", std::numeric_limits<float>::lowest());\n";
          else
             out << SP << "std::fill(tensor_" << fNY <<", tensor_"<< fNY <<" + "<< outputLength << ", 0);\n";
 
@@ -336,7 +399,7 @@ public:
          out << SP  << "}\n"; // end i loop
          if(fReduceOpMode == ReduceMean) {
             out << SP  << "for (size_t j = 0; j < " << outputLength << "; j++) {\n";
-            out << SP << SP << "tensor_" << fNY << "[j] /= static_cast<" << typeName << ">(" << reducedLength << ");\n";
+            out << SP << SP << "tensor_" << fNY << "[j] /= static_cast<float>(" << reducedLength << ");\n";
             out << SP << "}\n"; // end j loop
          } else if (fReduceOpMode == ReduceL2) {
             out << SP  << "for (size_t j = 0; j < " << outputLength << "; j++) {\n";
@@ -351,8 +414,8 @@ public:
          if (fReduceOpMode == ReduceProd)
             out << SP << "std::fill(tensor_" << fNY <<", tensor_"<< fNY <<" + "<< outputLength << ", 1);\n";
          else if (fReduceOpMode == ReduceMax)
-            out << SP << "std::fill(tensor_" << fNY << ", tensor_" << fNY << " + " << outputLength
-                      << ", std::numeric_limits<" << typeName << ">::lowest());\n";
+            out << SP << "std::fill(tensor_" << fNY <<", tensor_"<< fNY <<" + "<< outputLength
+                      << ", std::numeric_limits<float>::lowest());\n";
          else
             out << SP << "std::fill(tensor_" << fNY <<", tensor_"<< fNY <<" + "<< outputLength << ",0);\n";
 
@@ -363,10 +426,10 @@ public:
          // here we find output index
          out << SP << SP << "size_t outputIndex = 0;\n";
          for (size_t k = 0; k < dim; k++) {
-            if (std::find(fAttrAxes.begin(), fAttrAxes.end(), k) == fAttrAxes.end()) {
+            if (!IsReducedAxis(k)) {
                // do for not reducing axes
-               out << SP << SP << "size_t i_" << k << " = i / " << inputStrides[k] << " % " << fShapeX[k] << ";\n";
-               out << SP << SP << "outputIndex += i_" << k << " * " << outputStrides[k] << ";\n";
+               out << SP << SP << "size_t i_" << k << " = i / (" << inputStrides[k].GetVal() << ") % (" << fShapeX[k].GetVal() << ");\n";
+               out << SP << SP << "outputIndex += i_" << k << " * (" << outputStrides[k].GetVal() << ");\n";
             }
          }
          // now compute reduction
@@ -386,7 +449,7 @@ public:
          // post-processing passes
          if (fReduceOpMode == ReduceMean) {
             out << SP << "for (size_t i = 0; i < " << outputLength << "; i++) {\n";
-            out << SP << SP << "tensor_" << fNY << "[i] /= static_cast<" << typeName << ">(" << reducedLength << ");\n";
+            out << SP << SP << "tensor_" << fNY << "[i] /= static_cast<float>(" << reducedLength << ");\n";
             out << SP << "}\n";
          } else if (fReduceOpMode == ReduceL2) {
             out << SP << "for (size_t i = 0; i < " << outputLength << "; i++) {\n";
@@ -398,38 +461,53 @@ public:
       return out.str();
    }
 
-   // ---------------------------------------------------------------------------
-   // GPU kernel: one block per output element, 256 threads cooperatively reduce
-   // the slice via shared-memory tree reduction.
-   // This replaces the previous naive "one thread per output element" approach
-   // which serialised the entire reduction loop inside a single thread.
-   // ---------------------------------------------------------------------------
-   std::string Generate_GPU_Kernel_ALPAKA(std::string /*opName*/) override {
-      if (!fInitialized)
+   std::string Generate_GPU_Kernel_ALPAKA(std::string /*opName*/, const std::vector<std::string> &dynParamNames) override {
+      if (fShapeX.empty() || fShapeY.empty())
          throw std::runtime_error("SOFIE Reduce Op called to Generate without being initialized first");
 
       const std::size_t Dx        = fShapeX.size();
       auto inputStrides            = UTILITY::ComputeStrideFromShape(fShapeX);
       auto outputStrides           = UTILITY::ComputeStrideFromShape(fShapeYNotPruned);
-      std::size_t inputLength      = ConvertShapeToLength(fShapeX);
-      std::size_t outputLength     = ConvertShapeToLength(fShapeY);
-      std::size_t reducedLength    = inputLength / outputLength;
 
       // Partition axes into keep (non-reduced) and reduce sets.
       std::vector<std::size_t> redAxes, keepAxes;
       for (std::size_t d = 0; d < Dx; ++d) {
-         if (std::find(fAttrAxes.begin(), fAttrAxes.end(), (int64_t)d) != fAttrAxes.end())
+         if (IsReducedAxis(d))
             redAxes.push_back(d);
          else
             keepAxes.push_back(d);
       }
 
-      // Row-major strides for decomposing the flat reduction index r into
-      // per-axis coordinates.
+
+      enum EReduceDim { kFirst, kLast, kMiddle };
+      EReduceDim reduceDims = kLast;
+      {
+         int kmin = (int)Dx - (int)redAxes.size();
+         for (int k = (int)Dx - 1; k >= kmin; k--) {
+            if (!IsReducedAxis(k)) { reduceDims = kMiddle; break; }
+         }
+      }
+      if (reduceDims == kMiddle) {
+         reduceDims = kFirst;
+         for (std::size_t k = 0; k < redAxes.size(); k++) {
+            if (!IsReducedAxis(k)) { reduceDims = kMiddle; break; }
+         }
+      }
+
+      // row-major strides for decomposing the flat reduction index into coordinates
       // redStrides[i] = product of fShapeX[redAxes[j]] for j > i
-      std::vector<std::size_t> redStrides(redAxes.size(), 1);
+      std::vector<std::string> redStrides(redAxes.size(), "1");
       for (int ri = (int)redAxes.size() - 2; ri >= 0; --ri)
-         redStrides[ri] = redStrides[ri + 1] * fShapeX[redAxes[ri + 1]];
+         redStrides[ri] = "(" + redStrides[ri + 1] + " * " + fShapeX[redAxes[ri + 1]].GetVal() + ")";
+
+      bool dyn = fInputDimShape;
+      GpuLaunchParams lp = ComputeGpuLaunchParams();
+      // Dynamic shapes always take the groups-capable, symbolic-block-size
+      // form since the split decision can only be made at runtime.
+      bool useGroupsDecomp = dyn || lp.groups > 1;
+      std::string bsExpr     = dyn ? "blockDim"      : (std::to_string(lp.blockSize) + "u");
+      std::string halfBsExpr = dyn ? "(blockDim / 2)" : (std::to_string(lp.blockSize / 2) + "u");
+      std::string shmemCap   = dyn ? "256"            : std::to_string(lp.blockSize);
 
       std::string kname = "ReduceKernel_" + Name() + "_" + fNY;
 
@@ -442,26 +520,47 @@ public:
       op += SP + SP + SP + "T const* __restrict__ input,\n";
       op += SP + SP + SP + "T* __restrict__ output,\n";
       op += SP + SP + SP + "std::size_t const reducedLength,\n";
-      op += SP + SP + SP + "std::size_t const outputLength) const {\n\n";
+      op += SP + SP + SP + "std::size_t const outputLength";
+      if (useGroupsDecomp)
+         op += ",\n" + SP + SP + SP + "std::size_t const groups";
+      for (auto &p : dynParamNames)
+         op += ",\n" + SP + SP + SP + "std::size_t const " + p;
+      op += ") const {\n\n";
 
-      // ---- shared memory (fixed 256 slots, matches block size) ----
-      op += SP + SP + SP + "auto& shmem = alpaka::declareSharedVar<T[256], __COUNTER__>(acc);\n\n";
+      // ---- shared memory ----
+      op += SP + SP + SP + "auto& shmem = alpaka::declareSharedVar<T[" + shmemCap + "], __COUNTER__>(acc);\n\n";
 
       // ---- block/thread addressing ----
-      // One block per output element; threads cooperate within the block.
-      op += SP + SP + SP + "auto const out_idx   = alpaka::getIdx<alpaka::Grid,  alpaka::Blocks  >(acc)[0];\n";
+      // groups == 1: one block per output element; output is the final Y buffer.
+      // groups  > 1: `groups` blocks cooperate per output element, each over a
+      // slice of the reduction axis; output is an unfinalized scratch buffer of
+      // size outputLength*groups, combined by ReduceFinalizeKernel below.
       op += SP + SP + SP + "auto const thread_id = alpaka::getIdx<alpaka::Block, alpaka::Threads >(acc)[0];\n";
-      op += SP + SP + SP + "if (out_idx >= outputLength) return;\n\n";
+      if (dyn)
+         op += SP + SP + SP + "auto const blockDim = alpaka::getWorkDiv<alpaka::Block, alpaka::Threads>(acc)[0];\n";
+      if (useGroupsDecomp) {
+         op += SP + SP + SP + "auto const flat_block = alpaka::getIdx<alpaka::Grid, alpaka::Blocks >(acc)[0];\n";
+         op += SP + SP + SP + "auto const out_idx    = flat_block % outputLength;\n";
+         op += SP + SP + SP + "auto const group_id   = flat_block / outputLength;\n";
+         op += SP + SP + SP + "if (flat_block >= outputLength * groups) return;\n\n";
+      } else {
+         op += SP + SP + SP + "auto const out_idx = alpaka::getIdx<alpaka::Grid, alpaka::Blocks >(acc)[0];\n";
+         op += SP + SP + SP + "if (out_idx >= outputLength) return;\n\n";
+      }
 
       // ---- decode output (keep-axis) coordinates from out_idx ----
-      for (std::size_t d = 0; d < Dx; ++d) {
-         if (std::find(redAxes.begin(), redAxes.end(), d) == redAxes.end()) {
-            op += SP + SP + SP + "std::size_t const oy_" + std::to_string(d)
-                  + " = (out_idx / " + std::to_string(outputStrides[d]) + "u) % "
-                  + std::to_string(fShapeYNotPruned[d]) + "u;\n";
+      // (only needed for the generic kMiddle path; kFirst/kLast compute
+      // in_idx directly from out_idx without per-axis coordinates)
+      if (reduceDims == kMiddle) {
+         for (std::size_t d = 0; d < Dx; ++d) {
+            if (!IsReducedAxis(d)) {
+               op += SP + SP + SP + "std::size_t const oy_" + std::to_string(d)
+                     + " = (out_idx / (" + outputStrides[d].GetVal() + ")) % ("
+                     + fShapeYNotPruned[d].GetVal() + ");\n";
+            }
          }
+         op += "\n";
       }
-      op += "\n";
 
       // ---- thread-stride partial accumulation over reduction axis ----
       std::string startVal;
@@ -469,23 +568,36 @@ public:
       else if (Op == ReduceMax)   startVal = "std::numeric_limits<T>::lowest()";
       else                        startVal = "static_cast<T>(0)";
       op += SP + SP + SP + "T partial = " + startVal + ";\n";
-      op += SP + SP + SP + "for (std::size_t r = thread_id; r < reducedLength; r += 256u) {\n";
+      if (useGroupsDecomp)
+         op += SP + SP + SP + "for (std::size_t r = thread_id + group_id * " + bsExpr + "; r < reducedLength; r += "
+               + bsExpr + " * groups) {\n";
+      else
+         op += SP + SP + SP + "for (std::size_t r = thread_id; r < reducedLength; r += " + bsExpr + ") {\n";
 
-      // Decode flat reduction index r into per-axis coordinates.
-      for (std::size_t ri = 0; ri < redAxes.size(); ++ri) {
-         std::size_t rd = redAxes[ri];
-         op += SP + SP + SP + SP + "std::size_t const r_" + std::to_string(rd)
-               + " = (r / " + std::to_string(redStrides[ri]) + "u) % "
-               + std::to_string(fShapeX[rd]) + "u;\n";
-      }
+      if (reduceDims == kLast) {
+         // reduced axes are the trailing contiguous axes: input is laid out
+         // as [outputLength, reducedLength] row-major.
+         op += SP + SP + SP + SP + "std::size_t const in_idx = out_idx * reducedLength + r;\n";
+      } else if (reduceDims == kFirst) {
+         // reduced axes are the leading contiguous axes: input is laid out
+         // as [reducedLength, outputLength] row-major.
+         op += SP + SP + SP + SP + "std::size_t const in_idx = r * outputLength + out_idx;\n";
+      } else {
+         // Decode flat reduction index r into per-axis coordinates.
+         for (std::size_t ri = 0; ri < redAxes.size(); ++ri) {
+            std::size_t rd = redAxes[ri];
+            op += SP + SP + SP + SP + "std::size_t const r_" + std::to_string(rd)
+                  + " = (r / (" + redStrides[ri] + ")) % ("
+                  + fShapeX[rd].GetVal() + ");\n";
+         }
 
-      // Compute flat input index.
-      op += SP + SP + SP + SP + "std::size_t const in_idx =\n";
-      for (std::size_t d = 0; d < Dx; ++d) {
-         bool isReduced = std::find(redAxes.begin(), redAxes.end(), d) != redAxes.end();
-         std::string coord = isReduced ? "r_" + std::to_string(d) : "oy_" + std::to_string(d);
-         op += SP + SP + SP + SP + SP + coord + " * " + std::to_string(inputStrides[d]) + "u";
-         op += (d + 1 < Dx) ? " +\n" : ";\n";
+         // Compute flat input index.
+         op += SP + SP + SP + SP + "std::size_t const in_idx =\n";
+         for (std::size_t d = 0; d < Dx; ++d) {
+            std::string coord = IsReducedAxis(d) ? "r_" + std::to_string(d) : "oy_" + std::to_string(d);
+            op += SP + SP + SP + SP + SP + coord + " * (" + inputStrides[d].GetVal() + ")";
+            op += (d + 1 < Dx) ? " +\n" : ";\n";
+         }
       }
 
       // Partial accumulation step.
@@ -504,8 +616,12 @@ public:
       op += SP + SP + SP + "shmem[thread_id] = partial;\n";
       op += SP + SP + SP + "alpaka::syncBlockThreads(acc);\n\n";
 
-      // ---- binary tree reduction within the block ----
-      op += SP + SP + SP + "for (std::size_t s = 128u; s > 0u; s >>= 1u) {\n";
+      // ---- shared-memory tree reduction down to one warp's worth of partials ----
+      // Stops once the active thread count fits in a single warp; the final
+      // warp-width combine below uses shuffles instead of shared memory.
+      op += SP + SP + SP + "std::int32_t const warpSize = alpaka::warp::getSize(acc);\n";
+      op += SP + SP + SP + "for (std::size_t s = " + halfBsExpr
+            + "; s >= static_cast<std::size_t>(warpSize); s >>= 1u) {\n";
       op += SP + SP + SP + SP + "if (thread_id < s) {\n";
       if (Op == ReduceProd)
          op += SP + SP + SP + SP + SP + "shmem[thread_id] *= shmem[thread_id + s];\n";
@@ -517,49 +633,239 @@ public:
       op += SP + SP + SP + SP + "alpaka::syncBlockThreads(acc);\n";
       op += SP + SP + SP + "}\n\n";
 
-      // ---- thread 0 writes the final result ----
-      op += SP + SP + SP + "if (thread_id == 0u) {\n";
-      op += SP + SP + SP + SP + "T result = shmem[0];\n";
-      if (Op == ReduceMean)
-         op += SP + SP + SP + SP + "result /= static_cast<T>(" + std::to_string(reducedLength) + "u);\n";
-      else if (Op == ReduceL2)
-         op += SP + SP + SP + SP + "result = std::sqrt(result);\n";
-      op += SP + SP + SP + SP + "output[out_idx] = result;\n";
-      op += SP + SP + SP + "}\n";
+      op += SP + SP + SP + "if (thread_id < static_cast<std::size_t>(warpSize)) {\n";
+      op += SP + SP + SP + SP + "T val = shmem[thread_id];\n";
+      op += SP + SP + SP + SP + "for (std::int32_t offset = warpSize / 2; offset > 0; offset >>= 1) {\n";
+      op += SP + SP + SP + SP + SP
+            + "T const other = alpaka::warp::shfl_down(acc, val, static_cast<std::uint32_t>(offset));\n";
+      if (Op == ReduceProd)
+         op += SP + SP + SP + SP + SP + "val *= other;\n";
+      else if (Op == ReduceMax)
+         op += SP + SP + SP + SP + SP + "if (other > val) val = other;\n";
+      else
+         op += SP + SP + SP + SP + SP + "val += other;\n";
+      op += SP + SP + SP + SP + "}\n\n";
+
+      op += SP + SP + SP + SP + "if (thread_id == 0u) {\n";
+      if (dyn) {
+         op += SP + SP + SP + SP + SP + "T result = val;\n";
+         op += SP + SP + SP + SP + SP + "if (groups == 1u) {\n";
+         if (Op == ReduceMean)
+            op += SP + SP + SP + SP + SP + SP + "result /= static_cast<T>(reducedLength);\n";
+         else if (Op == ReduceL2)
+            op += SP + SP + SP + SP + SP + SP + "result = std::sqrt(result);\n";
+         op += SP + SP + SP + SP + SP + "}\n";
+         op += SP + SP + SP + SP + SP + "output[flat_block] = result;\n";
+      } else if (lp.groups > 1) {
+         op += SP + SP + SP + SP + SP + "output[flat_block] = val;\n";
+      } else {
+         op += SP + SP + SP + SP + SP + "T result = val;\n";
+         if (Op == ReduceMean)
+            op += SP + SP + SP + SP + SP + "result /= static_cast<T>(reducedLength);\n";
+         else if (Op == ReduceL2)
+            op += SP + SP + SP + SP + SP + "result = std::sqrt(result);\n";
+         op += SP + SP + SP + SP + SP + "output[out_idx] = result;\n";
+      }
+      op += SP + SP + SP + SP + "}\n";
+      op += SP + SP + SP + "}\n"; // end if (thread_id < warpSize)
 
       op += SP + SP + "}\n"; // end operator()
       op += SP + "};\n";     // end struct
+
+      if (useGroupsDecomp) {
+         std::string kname2 = "ReduceFinalizeKernel_" + Name() + "_" + fNY;
+         std::string groupsDesc = dyn ? "a runtime-determined number of" : std::to_string(lp.groups);
+         op += "\n//------ " + Name() + "_FINALIZE_KERNEL_ALPAKA (combine " + groupsDesc
+               + " partial blocks per output)\n";
+         op += SP + "struct " + kname2 + " {\n";
+         op += SP + SP + "template<typename TAcc, typename T>\n";
+         op += SP + SP + "ALPAKA_FN_ACC void operator()(\n";
+         op += SP + SP + SP + "TAcc const& acc,\n";
+         op += SP + SP + SP + "T const* __restrict__ partial,\n";
+         op += SP + SP + SP + "T* __restrict__ output,\n";
+         op += SP + SP + SP + "std::size_t const reducedLength,\n";
+         op += SP + SP + SP + "std::size_t const outputLength,\n";
+         op += SP + SP + SP + "std::size_t const groups) const {\n\n";
+         op += SP + SP + SP + "auto const out_idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
+         op += SP + SP + SP + "if (out_idx >= outputLength) return;\n\n";
+         op += SP + SP + SP + "T result = " + startVal + ";\n";
+         op += SP + SP + SP + "for (std::size_t g = 0; g < groups; ++g) {\n";
+         op += SP + SP + SP + SP + "T const v = partial[g * outputLength + out_idx];\n";
+         if (Op == ReduceProd)
+            op += SP + SP + SP + SP + "result *= v;\n";
+         else if (Op == ReduceMax)
+            op += SP + SP + SP + SP + "if (v > result) result = v;\n";
+         else
+            op += SP + SP + SP + SP + "result += v;\n";
+         op += SP + SP + SP + "}\n\n";
+         if (Op == ReduceMean)
+            op += SP + SP + SP + "result /= static_cast<T>(reducedLength);\n";
+         else if (Op == ReduceL2)
+            op += SP + SP + SP + "result = std::sqrt(result);\n";
+         op += SP + SP + SP + "output[out_idx] = result;\n";
+         op += SP + SP + "}\n"; // end operator()
+         op += SP + "};\n";     // end struct
+      }
+
       return op;
    }
 
    std::string Generate_GPU_Kernel_Definitions_ALPAKA(std::string /*opName*/) override {
+      bool dyn = fInputDimShape;
+      GpuLaunchParams lp = ComputeGpuLaunchParams();
+      bool needsScratch = dyn || lp.groups > 1;
       std::string kname = "ReduceKernel_" + Name() + "_" + fNY;
-      return SP + kname + " reduceKernel_" + Name() + "_" + fNY + ";\n";
+      std::string op = SP + kname + " reduceKernel_" + Name() + "_" + fNY + ";\n";
+      if (needsScratch) {
+         std::string kname2 = "ReduceFinalizeKernel_" + Name() + "_" + fNY;
+         op += SP + kname2 + " reduceFinalizeKernel_" + Name() + "_" + fNY + ";\n";
+         op += SP + "std::unique_ptr<BufF1D> reduceScratch_" + fNY + ";\n";
+         op += SP + "std::size_t reduceScratchCapacity_" + fNY + " = 0;\n";
+      }
+      return op;
    }
 
-   std::string Generate_GPU_ALPAKA(std::string /*opName*/) override {
-      if (!fInitialized)
+   std::string Generate_GPU_ALPAKA(std::string /*opName*/, const std::vector<std::string> &dynParamNames) override {
+      if (fShapeX.empty() || fShapeY.empty())
          throw std::runtime_error("SOFIE Reduce Op called to Generate without being initialized first");
 
-      std::size_t inputLength   = ConvertShapeToLength(fShapeX);
-      std::size_t outputLength  = ConvertShapeToLength(fShapeY);
-      std::size_t reducedLength = inputLength / outputLength;
+      std::string outputLength  = ConvertDimShapeToLength(fShapeY);
+      std::string reducedLength = ReducedLengthExpr();
       std::string kname = "reduceKernel_" + Name() + "_" + fNY;
+
+      bool dyn = fInputDimShape;
+      GpuLaunchParams lp = ComputeGpuLaunchParams();
+      std::string bs = std::to_string(lp.blockSize);
+
+      std::string dynArgs;
+      for (auto &p : dynParamNames) dynArgs += ", static_cast<std::size_t>(" + p + ")";
 
       std::stringstream out;
       out << "\n//------ " << Name() << "_GPU_ALPAKA\n";
-      // Grid: one block per output element; Block: 256 threads cooperate to
-      // reduce the corresponding slice.
-      out << SP << "alpaka::WorkDivMembers<Dim, Idx> workDiv_" << fNY << "(\n";
-      out << SP << SP << "Vec::all(Idx{" << outputLength << "u}),\n";
-      out << SP << SP << "Vec::all(Idx{256u}),\n";
-      out << SP << SP << "Vec::all(Idx{1u}));\n";
-      out << SP << "alpaka::exec<Acc>(queue, workDiv_" << fNY
-          << ", " << kname
-          << ", alpaka::getPtrNative(deviceBuf_" << fNX << ")"
-          << ", alpaka::getPtrNative(deviceBuf_" << fNY << ")"
-          << ", static_cast<std::size_t>(" << reducedLength << "u)"
-          << ", static_cast<std::size_t>(" << outputLength << "u));\n";
+
+      if (dyn) {
+         std::string rl = "reduceLaunch_" + fNY;
+         out << SP << "std::size_t const " << rl << "_reducedLength = " << reducedLength << ";\n";
+         out << SP << "std::size_t const " << rl << "_outputLength  = " << outputLength << ";\n";
+         out << SP << "std::size_t " << rl << "_blockSize = 32u;\n";
+         out << SP << "while (" << rl << "_blockSize < " << rl << "_reducedLength && " << rl
+             << "_blockSize < 256u) " << rl << "_blockSize *= 2u;\n";
+         out << SP << "std::size_t " << rl << "_groups = 1u;\n";
+         out << SP << "if (" << rl << "_outputLength > 0 && " << rl << "_outputLength < 132u) {\n";
+         out << SP << SP << "std::size_t const " << rl << "_maxGroups = 132u / " << rl << "_outputLength;\n";
+         out << SP << SP << "std::size_t const " << rl << "_chunks    = (" << rl << "_reducedLength + " << rl
+             << "_blockSize - 1u) / " << rl << "_blockSize;\n";
+         out << SP << SP << rl << "_groups = std::max<std::size_t>(1u, std::min(" << rl << "_maxGroups, " << rl
+             << "_chunks));\n";
+         out << SP << "}\n\n";
+
+         out << SP << "if (" << rl << "_groups > 1u) {\n";
+         out << SP << SP << "std::size_t const " << rl << "_capacity = " << rl << "_outputLength * " << rl
+             << "_groups;\n";
+         out << SP << SP << "if (!reduceScratch_" << fNY << " || reduceScratchCapacity_" << fNY << " < " << rl
+             << "_capacity) {\n";
+         out << SP << SP << SP << "reduceScratch_" << fNY
+             << " = std::make_unique<BufF1D>(alpaka::allocBuf<float, Idx>(devAcc, Ext1D::all(Idx{" << rl
+             << "_capacity})));\n";
+         out << SP << SP << SP << "reduceScratchCapacity_" << fNY << " = " << rl << "_capacity;\n";
+         out << SP << SP << "}\n";
+         out << SP << SP << "alpaka::WorkDivMembers<Dim, Idx> workDiv_" << fNY << "(\n";
+         out << SP << SP << SP << "Vec::all(Idx{" << rl << "_capacity}),\n";
+         out << SP << SP << SP << "Vec::all(Idx{" << rl << "_blockSize}),\n";
+         out << SP << SP << SP << "Vec::all(Idx{1u}));\n";
+         out << SP << SP << "alpaka::exec<Acc>(queue, workDiv_" << fNY
+             << ", " << kname
+             << ", alpaka::getPtrNative(deviceBuf_" << fNX << ")"
+             << ", alpaka::getPtrNative(*reduceScratch_" << fNY << ")"
+             << ", " << rl << "_reducedLength"
+             << ", " << rl << "_outputLength"
+             << ", " << rl << "_groups"
+             << dynArgs << ");\n\n";
+
+         std::string kname2 = "reduceFinalizeKernel_" + Name() + "_" + fNY;
+         out << SP << SP << "auto const elementsPerThread_" << fNY << "_finalize = Vec::all(static_cast<Idx>(1));\n";
+         out << SP << SP << "auto const elementsPerGrid_" << fNY << "_finalize   = Vec::all(Idx{" << rl
+             << "_outputLength});\n";
+         out << SP << SP << "auto const workDiv_" << fNY << "_finalize = sofie_workdiv(elementsPerGrid_" << fNY
+             << "_finalize);\n";
+         out << SP << SP << "alpaka::exec<Acc>(queue, workDiv_" << fNY << "_finalize"
+             << ", " << kname2
+             << ", alpaka::getPtrNative(*reduceScratch_" << fNY << ")"
+             << ", alpaka::getPtrNative(deviceBuf_" << fNY << ")"
+             << ", " << rl << "_reducedLength"
+             << ", " << rl << "_outputLength"
+             << ", " << rl << "_groups);\n";
+         out << SP << "} else {\n";
+         out << SP << SP << "alpaka::WorkDivMembers<Dim, Idx> workDiv_" << fNY << "(\n";
+         out << SP << SP << SP << "Vec::all(Idx{" << rl << "_outputLength}),\n";
+         out << SP << SP << SP << "Vec::all(Idx{" << rl << "_blockSize}),\n";
+         out << SP << SP << SP << "Vec::all(Idx{1u}));\n";
+         out << SP << SP << "alpaka::exec<Acc>(queue, workDiv_" << fNY
+             << ", " << kname
+             << ", alpaka::getPtrNative(deviceBuf_" << fNX << ")"
+             << ", alpaka::getPtrNative(deviceBuf_" << fNY << ")"
+             << ", " << rl << "_reducedLength"
+             << ", " << rl << "_outputLength"
+             << ", " << rl << "_groups"
+             << dynArgs << ");\n";
+         out << SP << "}\n";
+      } else if (lp.groups > 1) {
+         // Two-pass reduction: split the reduction axis across `groups` blocks
+         // per output element so a small number of outputs (which would
+         // otherwise launch just outputLength blocks total, badly
+         // under-occupying the GPU) still gets enough parallel work. Pass 1
+         // writes unfinalized partials to a scratch buffer; pass 2 combines the
+         // `groups` partials per output and applies the finalization. The
+         // buffer size is a fixed literal for static shapes, so this cache
+         // check allocates exactly once (on the first infer() call) and
+         // every later call just reuses it.
+         std::string totalBlocks = std::to_string(std::stoul(outputLength) * lp.groups);
+         out << SP << "if (!reduceScratch_" << fNY << ") {\n";
+         out << SP << SP << "reduceScratch_" << fNY
+             << " = std::make_unique<BufF1D>(alpaka::allocBuf<float, Idx>(devAcc, Ext1D::all(Idx{" << totalBlocks
+             << "})));\n";
+         out << SP << SP << "reduceScratchCapacity_" << fNY << " = " << totalBlocks << ";\n";
+         out << SP << "}\n";
+
+         out << SP << "alpaka::WorkDivMembers<Dim, Idx> workDiv_" << fNY << "(\n";
+         out << SP << SP << "Vec::all(Idx{" << totalBlocks << "u}),\n";
+         out << SP << SP << "Vec::all(Idx{" << bs << "u}),\n";
+         out << SP << SP << "Vec::all(Idx{1u}));\n";
+         out << SP << "alpaka::exec<Acc>(queue, workDiv_" << fNY
+             << ", " << kname
+             << ", alpaka::getPtrNative(deviceBuf_" << fNX << ")"
+             << ", alpaka::getPtrNative(*reduceScratch_" << fNY << ")"
+             << ", static_cast<std::size_t>(" << reducedLength << ")"
+             << ", static_cast<std::size_t>(" << outputLength << ")"
+             << ", static_cast<std::size_t>(" << lp.groups << "u)"
+             << dynArgs << ");\n";
+
+         std::string kname2 = "reduceFinalizeKernel_" + Name() + "_" + fNY;
+         out << SP << "auto const elementsPerThread_" << fNY << "_finalize = Vec::all(static_cast<Idx>(1));\n";
+         out << SP << "auto const elementsPerGrid_" << fNY << "_finalize   = Vec::all(Idx{" << outputLength << "});\n";
+         out << SP << "auto const workDiv_" << fNY << "_finalize = sofie_workdiv(elementsPerGrid_" << fNY << "_finalize);\n";
+         out << SP << "alpaka::exec<Acc>(queue, workDiv_" << fNY << "_finalize"
+             << ", " << kname2
+             << ", alpaka::getPtrNative(*reduceScratch_" << fNY << ")"
+             << ", alpaka::getPtrNative(deviceBuf_" << fNY << ")"
+             << ", static_cast<std::size_t>(" << reducedLength << ")"
+             << ", static_cast<std::size_t>(" << outputLength << ")"
+             << ", static_cast<std::size_t>(" << lp.groups << "u));\n";
+      } else {
+         // Grid: one block per output element; Block: threads cooperate to
+         // reduce the corresponding slice.
+         out << SP << "alpaka::WorkDivMembers<Dim, Idx> workDiv_" << fNY << "(\n";
+         out << SP << SP << "Vec::all(Idx{" << outputLength << "}),\n";
+         out << SP << SP << "Vec::all(Idx{" << bs << "u}),\n";
+         out << SP << SP << "Vec::all(Idx{1u}));\n";
+         out << SP << "alpaka::exec<Acc>(queue, workDiv_" << fNY
+             << ", " << kname
+             << ", alpaka::getPtrNative(deviceBuf_" << fNX << ")"
+             << ", alpaka::getPtrNative(deviceBuf_" << fNY << ")"
+             << ", static_cast<std::size_t>(" << reducedLength << ")"
+             << ", static_cast<std::size_t>(" << outputLength << ")"
+             << dynArgs << ");\n";
+      }
 
       return out.str();
    }

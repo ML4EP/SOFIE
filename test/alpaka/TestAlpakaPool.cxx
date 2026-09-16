@@ -14,6 +14,96 @@
 #include "input_models/references/AvgPoolCountIncludePad.ref.hxx"
 #include "GlobalAvgPool2d_FromONNX_GPU_ALPAKA.hxx"
 #include "input_models/references/GlobalAvgPool2d.ref.hxx"
+#include "DynamicMaxPool_FromONNX_GPU_ALPAKA.hxx"
+#include "DynamicPad_FromONNX_GPU_ALPAKA.hxx"
+
+TEST_F(SofieAlpakaTest, DynamicMaxPool)
+{
+    constexpr float TOLERANCE = DEFAULT_TOLERANCE;
+
+    for (std::size_t N : {std::size_t(1), std::size_t(3)}) {
+        std::vector<float> input(N * 16);
+        for (std::size_t i = 0; i < input.size(); ++i) input[i] = static_cast<float>(i % 17) - 8.0f;
+
+        auto input_d = makeDeviceBuf<float>(host, device, queue, input.data(), input.size());
+        auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{N * 4}));
+        {
+            SOFIE_DynamicMaxPool::Session<alpaka::TagGpuCudaRt> session("DynamicMaxPool_FromONNX_GPU_ALPAKA.dat", N);
+            auto result = session.infer(N, input_d);
+            cudaDeviceSynchronize();
+            alpaka::memcpy(queue, result_h, result);
+            alpaka::wait(queue);
+        }
+
+        float* res = reinterpret_cast<float*>(alpaka::getPtrNative(result_h));
+        for (std::size_t n = 0; n < N; ++n) {
+            const float* img = input.data() + n * 16;
+            float expected[4];
+            for (int oh = 0; oh < 2; ++oh)
+                for (int ow = 0; ow < 2; ++ow) {
+                    float m = -1e30f;
+                    for (int kh = 0; kh < 2; ++kh)
+                        for (int kw = 0; kw < 2; ++kw)
+                            m = std::max(m, img[(oh * 2 + kh) * 4 + (ow * 2 + kw)]);
+                    expected[oh * 2 + ow] = m;
+                }
+            for (int i = 0; i < 4; ++i)
+                EXPECT_LE(std::abs(res[n * 4 + i] - expected[i]), TOLERANCE) << "n=" << n << " i=" << i << " N=" << N;
+        }
+    }
+}
+
+// Pad on a tensor with dynamic dims [N, 3, n_pf], pads = (1,0,2 ; 1,0,3), constant_value = -1
+TEST_F(SofieAlpakaTest, DynamicPad)
+{
+    constexpr float TOLERANCE = DEFAULT_TOLERANCE;
+    constexpr std::size_t C = 3;
+    constexpr int64_t padBeforeN = 1, padAfterN = 1;
+    constexpr int64_t padBeforeC = 0, padAfterC = 0;
+    constexpr int64_t padBeforeP = 2, padAfterP = 3;
+    constexpr float CONST_VALUE = -1.0f;
+
+    const std::size_t Ns[] = {1, 8};
+    const std::size_t Ps[] = {1, 5};   // n_pf
+    for (int t = 0; t < 2; ++t) {
+        const std::size_t N = Ns[t], P = Ps[t];
+        const std::size_t inSize = N * C * P;
+        const std::size_t outN = N + padBeforeN + padAfterN;
+        const std::size_t outP = P + padBeforeP + padAfterP;
+        const std::size_t outSize = outN * C * outP;
+
+        std::vector<float> input(inSize);
+        for (std::size_t i = 0; i < inSize; ++i) input[i] = static_cast<float>(i % 10) - 5.0f;
+
+        auto input_d = makeDeviceBuf<float>(host, device, queue, input.data(), inSize);
+        auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{outSize}));
+
+        {
+            SOFIE_DynamicPad::Session<alpaka::TagGpuCudaRt> session("DynamicPad_FromONNX_GPU_ALPAKA.dat", N, P);
+            auto result = session.infer(N, P, input_d);
+            cudaDeviceSynchronize();
+            alpaka::memcpy(queue, result_h, result);
+            alpaka::wait(queue);
+        }
+
+        float* res = reinterpret_cast<float*>(alpaka::getPtrNative(result_h));
+        for (std::size_t n = 0; n < outN; ++n)
+            for (std::size_t c = 0; c < C; ++c)
+                for (std::size_t p = 0; p < outP; ++p) {
+                    float expected = CONST_VALUE;
+                    bool interior = (n >= static_cast<std::size_t>(padBeforeN)) && (n < static_cast<std::size_t>(padBeforeN) + N) &&
+                                    (c >= static_cast<std::size_t>(padBeforeC)) && (c < static_cast<std::size_t>(padBeforeC) + C) &&
+                                    (p >= static_cast<std::size_t>(padBeforeP)) && (p < static_cast<std::size_t>(padBeforeP) + P);
+                    if (interior) {
+                        std::size_t in_n = n - padBeforeN, in_c = c - padBeforeC, in_p = p - padBeforeP;
+                        expected = input[in_n * C * P + in_c * P + in_p];
+                    }
+                    std::size_t idx = n * C * outP + c * outP + p;
+                    EXPECT_LE(std::abs(res[idx] - expected), TOLERANCE)
+                        << "N=" << N << " P=" << P << " n=" << n << " c=" << c << " p=" << p;
+                }
+    }
+}
 
 TEST_F(SofieAlpakaTest, MaxPool2d)
 {
@@ -251,8 +341,6 @@ TEST_F(SofieAlpakaTest, AvgPoolCountIncludePad)
 }
 
 // GlobalAveragePool: one output per channel = the mean of the whole channel.
-// Input x[1,2,3,3] = iota 0..17, so the channel means are 4 and 13.
-
 TEST_F(SofieAlpakaTest, GlobalAvgPool2d)
 {
    constexpr float TOLERANCE = DEFAULT_TOLERANCE;

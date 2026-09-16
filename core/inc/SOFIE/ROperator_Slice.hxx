@@ -32,8 +32,6 @@ private:
    std::vector<Dim> fShapeOutput;   // output shape
    std::vector<Dim> fOutputShapeData;   // output shape data in case output is a shape param tensor
 
-   // saved Start/End.Steps are corrected from initial ONNX for negative/default values
-   // and are available for each axis
    std::vector<Dim> fStart;         // starting values of slices for all axes
    std::vector<Dim> fEnd;           // End values of slices for all axes
    std::vector<Dim> fSteps;         // step values of slices for all axes
@@ -502,18 +500,22 @@ public:
       return out.str();
    }
 
-   std::string Generate_GPU_Kernel_ALPAKA(std::string opName) override {
+   std::string Generate_GPU_Kernel_ALPAKA(std::string opName, const std::vector<std::string> &dynParamNames) override {
       if (fIsOutputConstant) return "";
       opName = "op_" + opName;
       if (fShapeInput.empty() || fShapeOutput.empty())
          throw std::runtime_error("SOFIE Slice Op called to Generate without being initialized first");
+
+      if (fIsStartUndef || fIsEndUndef)
+         throw std::runtime_error("SOFIE Slice Op " + opName +
+            ": GPU codegen does not support start/end supplied by a runtime tensor's data "
+            "(as opposed to a named dynamic shape dimension) - only CPU codegen supports this case");
 
       const std::size_t D = fShapeInput.size();
 
       auto inputStrides = UTILITY::ComputeStrideFromShape(fShapeInput);
       auto outputStrides = UTILITY::ComputeStrideFromShape(fShapeOutput);
 
-      std::size_t totalElements = ConvertShapeToLength(fShapeOutput);
       std::string kname = "SliceKernel_" + opName;
 
       std::string op;
@@ -524,9 +526,8 @@ public:
       op += SP + SP + SP + "TAcc const& acc,\n";
       op += SP + SP + SP + "T const* __restrict__ input,\n";
       op += SP + SP + SP + "T* __restrict__ output,\n";
-      op += SP + SP + SP + "std::array<std::size_t, " + std::to_string(D) + "> const inputStrides,\n";
-      op += SP + SP + SP + "std::array<std::size_t, " + std::to_string(D) + "> const outputStrides,\n";
-      op += SP + SP + SP + "std::array<std::size_t, " + std::to_string(D) + "> const outputShape,\n";
+      for (auto &p : dynParamNames)
+         op += SP + SP + SP + "std::size_t const " + p + ",\n";
       op += SP + SP + SP + "std::size_t const totalElements) const {\n\n";
 
       op += SP + SP + SP + "auto const global_thread_idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
@@ -535,26 +536,18 @@ public:
 
       op += SP + SP + SP + "for (std::size_t elem_idx = global_thread_idx; elem_idx < totalElements; elem_idx += grid_thread_extent) {\n\n";
 
-      for (std::size_t d = 0; d < D; ++d) {
-         op += SP + SP + SP + SP + "std::size_t const out_" + std::to_string(d)
-               + " = (elem_idx / outputStrides[" + std::to_string(d) + "]) % outputShape["
-               + std::to_string(d) + "];\n";
-      }
+      EmitOutputCoordsFromThreadIdx(op, SP + SP + SP + SP, outputStrides, fShapeOutput);
       op += "\n";
 
-      // Map each output coord back to input coord:
-      //   input_coord[d] = fStart[d] + out_d * fSteps[d]
-      // Negative steps are supported naturally since fStart/fEnd/fSteps are
-      // already corrected for negative/default values during Initialize().
       op += SP + SP + SP + SP + "std::size_t const input_idx =\n";
       for (std::size_t d = 0; d < D; ++d) {
          // input coordinate for this dim: start + out_d * step
-         std::string input_coord = "(" + fStart[d].GetVal()
-               + " + out_" + std::to_string(d)
-               + " * " + fSteps[d].GetVal() + ")";
+         std::string input_coord = "((" + fStart[d].GetVal()
+               + ") + out_" + std::to_string(d)
+               + " * (" + fSteps[d].GetVal() + "))";
          op += SP + SP + SP + SP + SP
-            + "static_cast<std::size_t>(" + input_coord + ")"
-            + " * inputStrides[" + std::to_string(d) + "]";
+               + "static_cast<std::size_t>(" + input_coord + ")"
+               + " * (" + inputStrides[d].GetVal() + ")";
          op += (d + 1 < D) ? " +\n" : ";\n\n";
       }
 
@@ -572,15 +565,13 @@ public:
       return SP + kname + " sliceKernel_" + opName + ";\n";
    }
 
-   std::string Generate_GPU_ALPAKA(std::string opName) override {
+   std::string Generate_GPU_ALPAKA(std::string opName, const std::vector<std::string> &dynParamNames) override {
       if (fIsOutputConstant) return "";
       opName = "op_" + opName;
       if (fShapeInput.empty() || fShapeOutput.empty())
          throw std::runtime_error("SOFIE Slice Op called to Generate without being initialized first");
 
-      auto inputStrides = UTILITY::ComputeStrideFromShape(fShapeInput);
-      auto outputStrides = UTILITY::ComputeStrideFromShape(fShapeOutput);
-      std::string totalElements = ConvertDimShapeToLength(fShapeOutput);
+      auto totalElements = ConvertDimShapeToLength(fShapeOutput);
       std::string kname = "sliceKernel_" + opName;
 
       const std::string inputBuffer =
@@ -597,37 +588,16 @@ public:
              << ", Idx>(devAcc, Ext1D::all(Idx{" << totalElements << "}));\n";
       }
 
-      out << SP << "std::array<std::size_t, " << fShapeInput.size() << "> inputStrides_" << opName << " = {";
-      for (size_t i = 0; i < inputStrides.size(); ++i) {
-         if (i > 0) out << ", ";
-         out << inputStrides[i].GetVal();
-      }
-      out << "};\n";
-
-      out << SP << "std::array<std::size_t, " << fShapeOutput.size() << "> outputStrides_" << opName << " = {";
-      for (size_t i = 0; i < outputStrides.size(); ++i) {
-         if (i > 0) out << ", ";
-         out << outputStrides[i].GetVal();
-      }
-      out << "};\n";
-
-      out << SP << "std::array<std::size_t, " << fShapeOutput.size() << "> outputShape_" << opName << " = {";
-      for (size_t i = 0; i < fShapeOutput.size(); ++i) {
-         if (i > 0) out << ", ";
-         out << fShapeOutput[i].GetVal();
-      }
-      out << "};\n";
       out << SP << "auto const elementsPerThread_" << opName << " = Vec::all(static_cast<Idx>(1));\n";
       out << SP << "auto const elementsPerGrid_"   << opName << " = Vec::all(Idx{" << totalElements << "});\n";
       out << SP << "auto const workDiv_" << opName << " = sofie_workdiv(elementsPerGrid_" << opName << ");\n";
       out << SP << "alpaka::exec<Acc>(queue, workDiv_" << opName
          << ", " << kname
          << ", alpaka::getPtrNative(" << inputBuffer << ")"
-         << ", alpaka::getPtrNative(" << outputBuffer << ")"
-         << ", inputStrides_" << opName
-         << ", outputStrides_" << opName
-         << ", outputShape_" << opName
-         << ", static_cast<Idx>(" << totalElements << "));\n";
+         << ", alpaka::getPtrNative(" << outputBuffer << ")";
+      for (auto &p : dynParamNames)
+         out << ", static_cast<std::size_t>(" << p << ")";
+      out << ", static_cast<Idx>(" << totalElements << "));\n";
 
       return out.str();
    }

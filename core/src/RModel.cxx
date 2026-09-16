@@ -1140,15 +1140,17 @@ std::string typeForOutput(ETensorType t) {
    return ConvertTypeToString(t);
 }
 
-std::string memberNameForDimShape(std::string name)
+}
+
+// Session member holding the construction-time value of a shape parameter (N -> fN);
+// shared by the CPU and GPU session generators
+std::string GetMemberNameForDimShape(std::string name)
 {
    if (!name.empty()) {
       name[0] = std::toupper(static_cast<unsigned char>(name[0]));
    }
    name = "f" + name;
    return name;
-}
-
 }
 
 void RModel::GenerateOutput()
@@ -1203,7 +1205,7 @@ void RModel::GenerateOutput()
             if (dim.isParam && IsIdentifier(dim.param) && !IsInputTensorShapeParam(dim.param))
                hasRuntimeParam = true;
          }
-         n = hasRuntimeParam ? memberNameForDimShape(dimLen) : dimLen;
+         n = hasRuntimeParam ? GetMemberNameForDimShape(dimLen) : dimLen;
       }
       std::string outputName = "output_tensor_" + name;
       fGC += SP + "std::vector<" + typeForOutput(GetTensorType(name)) + " > " + outputName + "(" + n + ");\n";
@@ -1229,7 +1231,7 @@ void RModel::GenerateOutput()
          for (auto &d : shape) {
             std::string pName = d.param;
             if (d.isParam && input_params_checked.count(pName) == 0) {
-               std::string memberName = memberNameForDimShape(d.param);
+               std::string memberName = GetMemberNameForDimShape(d.param);
                dynamic_parameters_check += d.param + " > " + memberName + " || ";
                input_params_checked.insert(pName);
                fGC += SP + "if (" + d.param + " > " + memberName + ") {\n";
@@ -1352,7 +1354,7 @@ void RModel::GenerateSessionCode()
       auto dimShapeNames = fDimShapeNames;
       std::sort(dimShapeNames.begin(), dimShapeNames.end());
       for (const auto &p : dimShapeNames) {
-         fGC += "size_t " + memberNameForDimShape(p) + ";\n";
+         fGC += "size_t " + GetMemberNameForDimShape(p) + ";\n";
       }
    }
 
@@ -1402,7 +1404,7 @@ void RModel::GenerateSessionCode()
          fGC += "\n\n";
          std::sort(fDimShapeNames.begin(), fDimShapeNames.end());
          for (const auto &p : fDimShapeNames) {
-            fGC += "   " + memberNameForDimShape(p) + " = " + p + ";\n";
+            fGC += "   " + GetMemberNameForDimShape(p) + " = " + p + ";\n";
          }
       }
       // add some extra code needed for initialization of dynamic parameters

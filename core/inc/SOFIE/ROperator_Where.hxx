@@ -38,7 +38,7 @@ private:
    std::vector<Dim> fDimShapeY;
    std::vector<Dim> fDimShapeZ;
 
-   // Broadcast flag: mirrors convention of BasicBinary
+   // Broadcast flag:
    //   bit 0: broadcast Y->X (Y needs expanding)
    //   bit 1: broadcast X->Y (X needs expanding)
    //   bit 2: broadcast C->Z (C needs expanding)
@@ -490,34 +490,43 @@ public:
    }
 
 
-   std::string Generate_GPU_Kernel_ALPAKA(std::string opName) override {
+   // fDimShapeX/Y/C are not necessarily rank-padded to fDimShapeZ (only the dynamic
+   // Initialize() branch pads them; the static branch may leave a shorter, unpadded
+   // shape when broadcasting is done purely via strides rather than materialized data)
+   static std::vector<Dim> PadToRank(const std::vector<Dim> &shape, std::size_t rank) {
+      std::vector<Dim> padded = shape;
+      if (padded.size() < rank)
+         padded.insert(padded.begin(), rank - padded.size(), Dim{1});
+      return padded;
+   }
+
+   bool IsPartialBroadcast(const std::vector<Dim> &shape) const {
+      return ConvertDimShapeToLength(shape) != "1" && !UTILITY::AreSameShape(shape, fDimShapeZ);
+   }
+
+   std::string Generate_GPU_Kernel_ALPAKA(std::string opName, const std::vector<std::string> &dynParamNames) override {
       if (fIsOutputConstant) return "";
       opName = "op_" + opName;
-      if (fShapeZ.empty())
+      if (fDimShapeZ.empty())
          throw std::runtime_error("SOFIE Where Op called to Generate without being initialized first");
 
-      const std::size_t D = fShapeZ.size();
-      std::size_t totalElements = ConvertShapeToLength(fShapeZ);
+      const std::size_t D = fDimShapeZ.size();
+      auto shapeX = PadToRank(fDimShapeX, D);
+      auto shapeY = PadToRank(fDimShapeY, D);
+      auto shapeC = PadToRank(fDimShapeC, D);
+      auto stridesX = UTILITY::ComputeStrideFromShape(shapeX);
+      auto stridesY = UTILITY::ComputeStrideFromShape(shapeY);
+      auto stridesC = UTILITY::ComputeStrideFromShape(shapeC);
+      auto stridesZ = UTILITY::ComputeStrideFromShape(fDimShapeZ);
 
-      std::vector<size_t> shapeA_padded(D, 1);
-      std::vector<size_t> shapeB_padded(D, 1);
-      std::vector<size_t> shapeC_padded(D, 1);
-      {
-         size_t offA = D - fShapeX.size();
-         for (size_t i = 0; i < fShapeX.size(); ++i) shapeA_padded[offA + i] = fShapeX[i];
-         size_t offB = D - fShapeY.size();
-         for (size_t i = 0; i < fShapeY.size(); ++i) shapeB_padded[offB + i] = fShapeY[i];
-         size_t offC = D - fShapeC.size();
-         for (size_t i = 0; i < fShapeC.size(); ++i) shapeC_padded[offC + i] = fShapeC[i];
-      }
+      bool isXScalar = ConvertDimShapeToLength(fDimShapeX) == "1";
+      bool isYScalar = ConvertDimShapeToLength(fDimShapeY) == "1";
+      bool isCScalar = ConvertDimShapeToLength(fDimShapeC) == "1";
+      bool isXPartial = IsPartialBroadcast(fDimShapeX);
+      bool isYPartial = IsPartialBroadcast(fDimShapeY);
+      bool isCPartial = IsPartialBroadcast(fDimShapeC);
 
-      auto stridesA = UTILITY::ComputeStrideFromShape(shapeA_padded);
-      auto stridesB = UTILITY::ComputeStrideFromShape(shapeB_padded);
-      auto stridesC = UTILITY::ComputeStrideFromShape(shapeC_padded);
-      auto stridesZ = UTILITY::ComputeStrideFromShape(fShapeZ);
-
-      std::string typeName = TensorType<T>::Name();
-      std::string kname    = "WhereKernel_" + opName;
+      std::string kname = "WhereKernel_" + opName;
 
       std::string op;
       op  = "\n//------ WHERE_KERNEL_ALPAKA\n";
@@ -528,56 +537,40 @@ public:
       op += SP + SP + SP + "T const* __restrict__ x,\n";
       op += SP + SP + SP + "T const* __restrict__ y,\n";
       op += SP + SP + SP + "uint8_t const* __restrict__ cond,\n";
-      op += SP + SP + SP + "T* __restrict__ output,\n";
-      op += SP + SP + SP + "std::size_t const totalElements) const {\n\n";
+      op += SP + SP + SP + "T* __restrict__ output";
+      for (auto &p : dynParamNames)
+         op += ",\n" + SP + SP + SP + "std::size_t const " + p;
+      op += ",\n" + SP + SP + SP + "std::size_t const totalElements) const {\n\n";
 
       op += SP + SP + SP + "auto const global_thread_idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
-      op += SP + SP + SP + "if (global_thread_idx >= totalElements) return;\n";
       op += SP + SP + SP + "auto const grid_thread_extent = alpaka::getWorkDiv<alpaka::Grid, alpaka::Threads>(acc)[0];\n\n";
 
       op += SP + SP + SP + "for (std::size_t elem_idx = global_thread_idx; elem_idx < totalElements; elem_idx += grid_thread_extent) {\n\n";
 
-      for (std::size_t d = 0; d < D; ++d) {
-         op += SP + SP + SP + SP + "std::size_t const out_" + std::to_string(d)
-               + " = (elem_idx / " + std::to_string(stridesZ[d]) + "u) % "
-               + std::to_string(fShapeZ[d]) + "u;\n";
+      if (isXPartial || isYPartial || isCPartial) {
+         op += SP + SP + SP + SP + "std::size_t remaining = elem_idx;\n";
+         op += SP + SP + SP + SP + "std::size_t coord;\n";
+         if (isXPartial) op += SP + SP + SP + SP + "std::size_t idxX = 0;\n";
+         if (isYPartial) op += SP + SP + SP + SP + "std::size_t idxY = 0;\n";
+         if (isCPartial) op += SP + SP + SP + SP + "std::size_t idxC = 0;\n";
+         for (std::size_t d = 0; d < D; d++) {
+            std::string sZ = "(" + stridesZ[d].GetVal() + ")";
+            op += SP + SP + SP + SP + "coord = remaining / " + sZ + ";\n";
+            if (d + 1 < D)
+               op += SP + SP + SP + SP + "remaining -= coord * " + sZ + ";\n";
+            if (isXPartial && shapeX[d].GetVal() != "1")
+               op += SP + SP + SP + SP + "idxX += coord * (" + stridesX[d].GetVal() + ");\n";
+            if (isYPartial && shapeY[d].GetVal() != "1")
+               op += SP + SP + SP + SP + "idxY += coord * (" + stridesY[d].GetVal() + ");\n";
+            if (isCPartial && shapeC[d].GetVal() != "1")
+               op += SP + SP + SP + SP + "idxC += coord * (" + stridesC[d].GetVal() + ");\n";
+         }
       }
-      op += "\n";
+      std::string indexX = isXScalar ? "0" : (isXPartial ? "idxX" : "elem_idx");
+      std::string indexY = isYScalar ? "0" : (isYPartial ? "idxY" : "elem_idx");
+      std::string indexC = isCScalar ? "0" : (isCPartial ? "idxC" : "elem_idx");
 
-      op += SP + SP + SP + SP + "std::size_t const c_idx =\n";
-      for (std::size_t d = 0; d < D; ++d) {
-         if (shapeC_padded[d] == 1)
-               op += SP + SP + SP + SP + SP + "0u";
-         else
-               op += SP + SP + SP + SP + SP
-                  + "out_" + std::to_string(d)
-                  + " * " + std::to_string(stridesC[d]) + "u";
-         op += (d + 1 < D) ? " +\n" : ";\n\n";
-      }
-
-      op += SP + SP + SP + SP + "std::size_t const x_idx =\n";
-      for (std::size_t d = 0; d < D; ++d) {
-         if (shapeA_padded[d] == 1)
-               op += SP + SP + SP + SP + SP + "0u";
-         else
-               op += SP + SP + SP + SP + SP
-                  + "out_" + std::to_string(d)
-                  + " * " + std::to_string(stridesA[d]) + "u";
-         op += (d + 1 < D) ? " +\n" : ";\n\n";
-      }
-
-      op += SP + SP + SP + SP + "std::size_t const y_idx =\n";
-      for (std::size_t d = 0; d < D; ++d) {
-         if (shapeB_padded[d] == 1)
-               op += SP + SP + SP + SP + SP + "0u";
-         else
-               op += SP + SP + SP + SP + SP
-                  + "out_" + std::to_string(d)
-                  + " * " + std::to_string(stridesB[d]) + "u";
-         op += (d + 1 < D) ? " +\n" : ";\n\n";
-      }
-
-      op += SP + SP + SP + SP + "output[elem_idx] = cond[c_idx] ? x[x_idx] : y[y_idx];\n";
+      op += SP + SP + SP + SP + "output[elem_idx] = cond[" + indexC + "] ? x[" + indexX + "] : y[" + indexY + "];\n";
       op += SP + SP + SP + "}\n";
       op += SP + SP + "}\n";
       op += SP + "};\n";
@@ -592,27 +585,29 @@ public:
       return SP + kname + " whereKernel_" + opName + ";\n";
    }
 
-   std::string Generate_GPU_ALPAKA(std::string opName) override {
+   std::string Generate_GPU_ALPAKA(std::string opName, const std::vector<std::string> &dynParamNames) override {
       if (fIsOutputConstant) return "";
       opName = "op_" + opName;
-      if (fShapeZ.empty())
+      if (fDimShapeZ.empty())
          throw std::runtime_error("SOFIE Where Op called to Generate without being initialized first");
 
-      std::size_t totalElements = ConvertShapeToLength(fShapeZ);
+      std::string totalElements = ConvertDimShapeToLength(fDimShapeZ);
       std::string kname = "whereKernel_" + opName;
 
       std::stringstream out;
       out << "\n//------ WHERE_GPU_ALPAKA\n";
       out << SP << "auto const elementsPerThread_" << opName << " = Vec::all(static_cast<Idx>(1));\n";
-      out << SP << "auto const elementsPerGrid_"   << opName << " = Vec::all(Idx{" << totalElements << "});\n";
+      out << SP << "auto const elementsPerGrid_"   << opName << " = Vec::all(Idx{static_cast<Idx>(" << totalElements << ")});\n";
       out << SP << "auto const workDiv_" << opName << " = sofie_workdiv(elementsPerGrid_" << opName << ");\n";
       out << SP << "alpaka::exec<Acc>(queue, workDiv_" << opName
          << ", " << kname
          << ", alpaka::getPtrNative(deviceBuf_" << fNX << ")"
          << ", alpaka::getPtrNative(deviceBuf_" << fNY << ")"
          << ", alpaka::getPtrNative(deviceBuf_" << fNC << ")"
-         << ", alpaka::getPtrNative(deviceBuf_" << fNZ << ")"
-         << ", static_cast<Idx>(" << totalElements << "));\n";
+         << ", alpaka::getPtrNative(deviceBuf_" << fNZ << ")";
+      for (auto &p : dynParamNames)
+         out << ", static_cast<std::size_t>(" << p << ")";
+      out << ", static_cast<std::size_t>(" << totalElements << "));\n";
 
       return out.str();
    }
