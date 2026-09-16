@@ -107,6 +107,14 @@ public:
       return out.str();
    }
 
+   bool IsElementwise() const override {
+      return !fIsOutputConstant && !fIsInputInitialized;
+   }
+
+   std::string GetElementwiseExpr(const std::string &inputVar) const override {
+      return inputVar;
+   }
+
 };
 
 }//SOFIE

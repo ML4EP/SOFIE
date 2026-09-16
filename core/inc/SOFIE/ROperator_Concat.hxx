@@ -60,8 +60,8 @@
             if(fnewAxis == 0){
                for (size_t i = 0; i < inputs.size(); i++) {
                   if (i > 0 && inputs[i].size() != inputs[i - 1].size())
-                     throw std::runtime_error("SOFIE Concat Op - input tensors have different shapes " +
-                                              ConvertShapeToString(inputs[i]) + " and " + ConvertShapeToString(inputs[i - 1]));
+                     throw std::runtime_error("SOFIE Concat Op - input tensors have different shapes " + fInputs[i] + " : " +
+                                              ConvertShapeToString(inputs[i]) + " and " + fInputs[i-1] + " : " + ConvertShapeToString(inputs[i - 1]));
                   for (size_t iaxis = 0; iaxis < inputs[i].size(); iaxis++) {
                      if ((int)iaxis == fAxis)
                         concat_dim += inputs[i][iaxis];
@@ -483,7 +483,10 @@
             out << SP << "std::array<const float *, " << fInputs.size() << "> input_ptrs_" << OpName << " = {"; break;
          case ETensorType::INT64:
             out << SP << "std::array<const int64_t *, " << fInputs.size() << "> input_ptrs_" << OpName << " = {"; break;
-         default: 
+         case ETensorType::BOOL:
+         case ETensorType::UINT8:
+            out << SP << "std::array<const uint8_t *, " << fInputs.size() << "> input_ptrs_" << OpName << " = {"; break;
+         default:
             throw std::runtime_error("Data type for Concat operator is not yet supported.");
       }
       for(size_t i=0; i<fInputs.size(); ++i){
@@ -503,6 +506,84 @@
       out << SP << "alpaka::enqueue(queue, task_" << OpName << ");\n";
       return out.str();
    }
+
+EFusionMappingType GetFusionMappingType() const override
+{
+   if (fIsOutputConstant || fIsOutputParamShape || fnewAxis != 0 || fInputs.size() < 2 || fInputShapes.empty() || fOutputShape.empty())
+      return EFusionMappingType::Unsupported;
+
+   const auto isStatic = [](const std::vector<Dim> &shape) {
+      return std::all_of(shape.begin(), shape.end(), [](const Dim &dim) { return !dim.isParam; });
+   };
+
+   if (!isStatic(fOutputShape))
+      return EFusionMappingType::Unsupported;
+
+   for (const auto &shape : fInputShapes) {
+      if (!isStatic(shape))
+         return EFusionMappingType::Unsupported;
+   }
+
+   return EFusionMappingType::ManyToMany;
+}
+
+bool SupportsFusionTypes(const std::vector<ETensorType> &inputTypes, ETensorType outputType) const override
+{
+   return !inputTypes.empty() && std::all_of(inputTypes.begin(), inputTypes.end(), [&](ETensorType type) { return type == outputType; });
+}
+
+std::string GetFusionExpr(const std::vector<std::string> &inputs) const override
+{
+   if (GetFusionMappingType() != EFusionMappingType::ManyToMany || inputs.size() != 1)
+      return "";
+
+   return inputs[0];
+}
+
+std::string GetFusionInputConditionExpr(size_t inputIndex, const std::string &outputIndex, const std::vector<size_t> &inputShape, const std::vector<size_t> &outputShape) const override
+{
+   if (GetFusionMappingType() != EFusionMappingType::ManyToMany || inputIndex >= fInputShapes.size() || inputShape.size() != outputShape.size())
+      return "";
+
+   const size_t axis = static_cast<size_t>(fAxis);
+   const auto outputStrides = UTILITY::ComputeStrideFromShape(outputShape);
+   const size_t innerSize = outputStrides[axis];
+   const size_t outputBlockSize = outputShape[axis] * innerSize;
+   size_t prefixElements = 0;
+
+   for (size_t k = 0; k < inputIndex; ++k)
+      prefixElements += fInputShapes[k][axis].dim * innerSize;
+
+   const size_t inputBlockSize = inputShape[axis] * innerSize;
+   const std::string withinOuter = "((" + outputIndex + ") % " + std::to_string(outputBlockSize) + "u)";
+
+   if (prefixElements == 0)
+      return "(" + withinOuter + " < " + std::to_string(inputBlockSize) + "u)";
+
+   return "(" + withinOuter + " >= " + std::to_string(prefixElements) + "u && " + withinOuter + " < " + std::to_string(prefixElements + inputBlockSize) + "u)";
+}
+
+std::string GetFusionInputIndexExpr(size_t inputIndex, const std::string &outputIndex, const std::vector<size_t> &inputShape, const std::vector<size_t> &outputShape) const override
+{
+   if (GetFusionMappingType() != EFusionMappingType::ManyToMany || inputIndex >= fInputShapes.size() || inputShape.size() != outputShape.size())
+      return "";
+
+   const size_t axis = static_cast<size_t>(fAxis);
+   const auto outputStrides = UTILITY::ComputeStrideFromShape(outputShape);
+   const size_t innerSize = outputStrides[axis];
+   const size_t outputBlockSize = outputShape[axis] * innerSize;
+   size_t prefixElements = 0;
+
+   for (size_t k = 0; k < inputIndex; ++k)
+      prefixElements += fInputShapes[k][axis].dim * innerSize;
+
+   const size_t inputBlockSize = inputShape[axis] * innerSize;
+   const std::string outerIndex = "((" + outputIndex + ") / " + std::to_string(outputBlockSize) + "u)";
+   const std::string withinOuter = "((" + outputIndex + ") % " + std::to_string(outputBlockSize) + "u)";
+
+   return "(" + outerIndex + " * " + std::to_string(inputBlockSize) + "u + (" + withinOuter + " - " + std::to_string(prefixElements) + "u))";
+}
+
 
  };
  }//SOFIE

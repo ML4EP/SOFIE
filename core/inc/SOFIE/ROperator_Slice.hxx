@@ -42,6 +42,10 @@ private:
 
    std::vector<std::vector<IType>> fAttributes; // attributes for the version <=10 case
 
+   ETensorType fDataType = ETensorType::UNDEFINED;
+   bool fInputIsDynamic = false;
+   bool fInputIsAlias = false;
+   bool fOutputIsDynamic = false;
 
 public:
 
@@ -80,6 +84,9 @@ public:
 
       std::vector<std::vector<Dim>> shapes;
       fShapeInput = model.GetDimTensorShape(fNData);
+      fDataType = model.GetTensorType(fNData);
+      fInputIsDynamic = model.IsDynamicTensor(fNData);
+      fInputIsAlias = model.IsAliasTensor(fNData);
       shapes.push_back(fShapeInput);
 
       std::vector<std::vector<IType>> itensors(4);
@@ -243,6 +250,11 @@ public:
             } else {
                fEnd[fAxes[i]] = fEndDims[i];
             }
+            if (fEnd[fAxes[i]].GetVal() != fShapeInput[fAxes[i]].GetVal()) {
+               std::string clamped = "std::min<size_t>(" + fEnd[fAxes[i]].GetVal() + ", " +
+                                      fShapeInput[fAxes[i]].GetVal() + ")";
+               fEnd[fAxes[i]] = Dim{clamped, size_t(-1)};
+            }
 
             fSteps[fAxes[i]] = fStepDims[i];
          }
@@ -365,6 +377,7 @@ public:
          }
 
          model.AddIntermediateTensor(fNOutput, model.GetTensorType(fNData), fShapeOutput);
+         fOutputIsDynamic = model.IsDynamicTensor(fNOutput);
          //if (fIdentitySlice)  model.AddAliasTensor(fNOutput, fNData);
 
          if (model.Verbose()) {
@@ -566,15 +579,25 @@ public:
       auto totalElements = ConvertDimShapeToLength(fShapeOutput);
       std::string kname = "sliceKernel_" + opName;
 
+      const std::string inputBuffer = "deviceBuf_" + fNData;
+      const std::string outputBuffer = "deviceBuf_" + fNOutput;
+
       std::stringstream out;
       out << "\n//------ SLICE_GPU_ALPAKA\n";
+
+      if (fOutputIsDynamic) {
+         out << SP << "deviceBuf_" << fNOutput
+             << " = alpaka::allocBuf<" << ConvertTypeToString(fDataType)
+             << ", Idx>(devAcc, Ext1D::all(Idx{" << totalElements << "}));\n";
+      }
+
       out << SP << "auto const elementsPerThread_" << opName << " = Vec::all(static_cast<Idx>(1));\n";
       out << SP << "auto const elementsPerGrid_"   << opName << " = Vec::all(Idx{" << totalElements << "});\n";
       out << SP << "auto const workDiv_" << opName << " = sofie_workdiv(elementsPerGrid_" << opName << ");\n";
       out << SP << "alpaka::exec<Acc>(queue, workDiv_" << opName
          << ", " << kname
-         << ", alpaka::getPtrNative(deviceBuf_" << fNData << ")"
-         << ", alpaka::getPtrNative(deviceBuf_" << fNOutput << ")";
+         << ", alpaka::getPtrNative(" << inputBuffer << ")"
+         << ", alpaka::getPtrNative(" << outputBuffer << ")";
       for (auto &p : dynParamNames)
          out << ", static_cast<std::size_t>(" << p << ")";
       out << ", static_cast<Idx>(" << totalElements << "));\n";
@@ -582,8 +605,73 @@ public:
       return out.str();
    }
 
-};
+      EFusionMappingType GetFusionMappingType() const override
+   {
+      if (fIsOutputConstant || fIsOutputParamShape || fShapeInput.empty() || fShapeOutput.empty())
+         return EFusionMappingType::Unsupported;
 
+      const auto isStatic = [](const std::vector<Dim> &values) {
+         return std::all_of(values.begin(), values.end(), [](const Dim &value) { return !value.isParam; });
+      };
+
+      if (!isStatic(fShapeInput) || !isStatic(fShapeOutput) || !isStatic(fStart) || !isStatic(fEnd) || !isStatic(fSteps))
+         return EFusionMappingType::Unsupported;
+
+      return EFusionMappingType::Shuffle;
+   }
+
+   std::vector<size_t> GetFusionDataInputIndices() const override
+   {
+      return {0};
+   }
+
+   bool SupportsFusionTypes(const std::vector<ETensorType> &inputTypes, ETensorType outputType) const override
+   {
+      return inputTypes.size() == 1 && inputTypes[0] == outputType;
+   }
+
+   std::string GetFusionExpr(const std::vector<std::string> &inputs) const override
+   {
+      if (GetFusionMappingType() != EFusionMappingType::Shuffle || inputs.size() != 1)
+         return "";
+
+      return inputs[0];
+   }
+
+   std::string GetFusionInputIndexExpr(size_t inputIndex, const std::string &outputIndex, const std::vector<size_t> &inputShape, const std::vector<size_t> &outputShape) const override
+   {
+      if (inputIndex != 0 || GetFusionMappingType() != EFusionMappingType::Shuffle)
+         return "";
+
+      if (inputShape.size() != outputShape.size() || fStart.size() != inputShape.size() || fSteps.size() != inputShape.size())
+         return "";
+
+      const auto inputStrides = UTILITY::ComputeStrideFromShape(inputShape);
+      const auto outputStrides = UTILITY::ComputeStrideFromShape(outputShape);
+      std::string expression;
+
+      for (size_t d = 0; d < outputShape.size(); ++d) {
+         std::string coordinate;
+
+         if (outputStrides[d] == 1)
+            coordinate = "((" + outputIndex + ") % " + std::to_string(outputShape[d]) + "u)";
+         else
+            coordinate = "(((" + outputIndex + ") / " + std::to_string(outputStrides[d]) + "u) % " + std::to_string(outputShape[d]) + "u)";
+
+         const std::string inputCoordinate = "(" + fStart[d].GetVal() + " + static_cast<int64_t>(" + coordinate + ") * " + fSteps[d].GetVal() + ")";
+
+         if (!expression.empty())
+            expression += " + ";
+
+         expression += "static_cast<std::size_t>(" + inputCoordinate + ")";
+
+         if (inputStrides[d] != 1)
+            expression += " * " + std::to_string(inputStrides[d]) + "u";
+      }
+
+      return "(" + expression + ")";
+   }
+};
 }//SOFIE
 
 

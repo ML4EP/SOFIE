@@ -23,8 +23,12 @@ private:
 
    std::string fNData;
    std::string fNOutput;
-   std::vector<Dim> fDimShapeData;
-   std::vector<Dim> fDimShapeOutput;
+   std::vector<size_t> fShapeData;    // used for initialized (constant) tensor case
+   std::vector<size_t> fShapeOutput;  // used for initialized (constant) tensor case
+   std::vector<Dim> fDimShapeData;    // used for dynamic/runtime tensor case
+   std::vector<Dim> fDimShapeOutput;  // used for dynamic/runtime tensor case
+   bool fDynamicInput = false;
+   bool fDynamicOutput = false;
 
 public:
 
@@ -109,6 +113,7 @@ public:
          }
       } else {
          // Non-initialized (runtime/dynamic) tensor: use Dim-aware shapes
+         fDynamicInput = model.IsDynamicTensor(fNData);
          fDimShapeData = model.GetDimTensorShape(fNData);
          size_t rank = fDimShapeData.size();
          if (fAttrPerm.empty()){
@@ -121,7 +126,18 @@ public:
          for (size_t i = 0; i < fAttrPerm.size(); i++){
             fDimShapeOutput[i] = fDimShapeData[fAttrPerm[i]];
          }
+         try {
+            fShapeData = model.GetTensorShape(fNData);
+            fShapeOutput.resize(fAttrPerm.size());
+
+            for (size_t i = 0; i < fAttrPerm.size(); ++i)
+               fShapeOutput[i] = fShapeData[fAttrPerm[i]];
+         } catch (...) {
+            fShapeData.clear();
+            fShapeOutput.clear();
+         }
          model.AddIntermediateTensor(fNOutput, model.GetTensorType(fNData), fDimShapeOutput);
+         fDynamicOutput = model.IsDynamicTensor(fNOutput);
          if (model.Verbose()) {
             std::cout << "Transpose ---> " << fNOutput << " " << ConvertDimShapeToString(fDimShapeOutput) << std::endl;
          }
@@ -176,6 +192,11 @@ public:
       if (fIsOutputConstant) return "";
       std::string op;
       OpName = "op_" + OpName;
+
+      auto dimShapeData = fDimShapeData.empty() ? ConvertShapeToDim(fShapeData) : fDimShapeData;
+      auto dimShapeOutput = fDimShapeOutput.empty() ? ConvertShapeToDim(fShapeOutput) : fDimShapeOutput;
+      const size_t rank = dimShapeData.size();
+
       op = "\n//------ TRANSPOSE_KERNEL_ALPAKA\n";
       op += SP + "struct TransposeKernel_" + OpName + " {\n";
       op += SP + SP + "template<typename TAcc, typename T>\n";
@@ -183,16 +204,16 @@ public:
       for (auto &p : dynParamNames)
          op += "const std::size_t " + p + ",";
       op += "const std::size_t totalElements) const {\n";
-      op += SP + SP + SP + SP + "auto const idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
-      op += SP + SP + SP + SP + "if(idx >= totalElements) return;\n";
-      op += SP + SP + SP + SP + "std::size_t input_idx = 0;\n";
-      op += SP + SP + SP + SP + "std::size_t remaining = idx;\n";
-      op += SP + SP + SP + SP + "std::size_t coord;\n";
+      op += SP + SP + SP + "auto const idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
+      op += SP + SP + SP + "if (idx >= totalElements) return;\n";
+      op += SP + SP + SP + "std::size_t input_idx = 0;\n";
+      op += SP + SP + SP + "std::size_t remaining = idx;\n";
+      op += SP + SP + SP + "std::size_t coord;\n";
 
-      auto inputStrides  = UTILITY::ComputeStrideFromShape(fDimShapeData);
-      auto outputStrides = UTILITY::ComputeStrideFromShape(fDimShapeOutput);
+      auto inputStrides  = UTILITY::ComputeStrideFromShape(dimShapeData);
+      auto outputStrides = UTILITY::ComputeStrideFromShape(dimShapeOutput);
 
-      for (size_t k = 0; k < fDimShapeData.size(); k++) {
+      for (size_t k = 0; k < rank; k++) {
          op += SP + SP + SP + SP + "coord = remaining / ("
                + outputStrides[k].GetVal() + ");\n";
          op += SP + SP + SP + SP + "remaining = remaining - coord * ("
@@ -201,9 +222,9 @@ public:
                + inputStrides[fAttrPerm[k]].GetVal() + ");\n";
       }
 
-      op += SP + SP + SP + SP + "output[idx] = input[input_idx];\n";
-      op += SP + SP + SP + "}\n";
-      op += SP + SP + SP + "};\n";
+      op += SP + SP + SP + "output[idx] = input[input_idx];\n";
+      op += SP + SP + "}\n";
+      op += SP + "};\n";
 
       return op;
    }
@@ -215,24 +236,90 @@ public:
 
    std::string Generate_GPU_ALPAKA(std::string OpName, const std::vector<std::string> &dynParamNames) override {
       if (fIsOutputConstant) return "";
-      if (fDimShapeOutput.empty()) {
+      auto dimShapeData = fDimShapeData.empty() ? ConvertShapeToDim(fShapeData) : fDimShapeData;
+      auto dimShapeOutput = fDimShapeOutput.empty() ? ConvertShapeToDim(fShapeOutput) : fDimShapeOutput;
+      if (dimShapeOutput.empty())
          throw std::runtime_error("SOFIE Operator Transpose called to Generate without being initialized first");
-      }
-      std::stringstream out;
-      std::string length = ConvertDimShapeToLength(fDimShapeOutput);
 
+      std::string length = ConvertDimShapeToLength(dimShapeOutput);
+      std::string inputBuffer = "deviceBuf_" + fNData;
+      std::string outputBuffer = "deviceBuf_" + fNOutput;
+
+      std::stringstream out;
       out << "\n//------ TRANSPOSE_GPU_ALPAKA\n";
-      out << SP << "auto const elementsPerThread_"<<fNOutput<<" = Vec::all(static_cast<Idx>(1));\n";
-      out << SP << "auto const elementsPerGrid_"<<fNOutput<<" = Vec::all(Idx{"<< length << "});\n";
+
+      if (fDynamicOutput) {
+         out << SP << outputBuffer << " = alpaka::allocBuf<"
+             << ConvertTypeToString(GetTemplatedType(T())) << ", Idx>(devAcc, Ext1D::all(Idx{"
+             << "static_cast<Idx>(" << length << ")}));\n";
+      }
+
+      out << SP << "auto const elementsPerThread_" << fNOutput << " = Vec::all(static_cast<Idx>(1));\n";
+      out << SP << "auto const elementsPerGrid_" << fNOutput << " = Vec::all(Idx{" << length << "});\n";
       out << SP << "auto const workDiv_" << fNOutput << " = sofie_workdiv(elementsPerGrid_" << fNOutput << ");\n";
       out << SP << "auto task_" << OpName << " = alpaka::createTaskKernel<Acc>(workDiv_" << fNOutput
-         << ", transposeKernel_" << OpName << ", alpaka::getPtrNative(deviceBuf_" << fNData
-         << "), alpaka::getPtrNative(deviceBuf_" << fNOutput << ")";
+         << ", transposeKernel_" << OpName << ", alpaka::getPtrNative(" << inputBuffer
+         << "), alpaka::getPtrNative(" << outputBuffer << ")";
       for (auto &p : dynParamNames)
          out << ", static_cast<std::size_t>(" << p << ")";
       out << ", static_cast<Idx>(" << length << "));\n";
-      out << SP <<"alpaka::enqueue(queue, task_" << OpName << ");\n";
+      out << SP << "alpaka::enqueue(queue, task_" << OpName << ");\n";
       return out.str();
+   }
+
+   EFusionMappingType GetFusionMappingType() const override
+   {
+      if (fIsOutputConstant || fAttrPerm.empty())
+         return EFusionMappingType::Unsupported;
+
+      return EFusionMappingType::Shuffle;
+   }
+
+   bool SupportsFusionTypes(const std::vector<ETensorType> &inputTypes, ETensorType outputType) const override
+   {
+      return inputTypes.size() == 1 && inputTypes[0] == outputType;
+   }
+
+   std::string GetFusionExpr(const std::vector<std::string> &inputs) const override
+   {
+      if (GetFusionMappingType() != EFusionMappingType::Shuffle || inputs.size() != 1)
+         return "";
+
+      return inputs[0];
+   }
+
+   std::string GetFusionInputIndexExpr(size_t inputIndex, const std::string &outputIndex,
+                                    const std::vector<size_t> &inputShape,
+                                    const std::vector<size_t> &outputShape) const override
+   {
+      if (inputIndex != 0 || GetFusionMappingType() != EFusionMappingType::Shuffle)
+         return "";
+
+      if (inputShape.size() != outputShape.size() || fAttrPerm.size() != outputShape.size())
+         return "";
+
+      const auto inputStrides = UTILITY::ComputeStrideFromShape(inputShape);
+      const auto outputStrides = UTILITY::ComputeStrideFromShape(outputShape);
+
+      std::string expression;
+
+      for (size_t outputAxis = 0; outputAxis < outputShape.size(); ++outputAxis) {
+         const auto inputAxisValue = fAttrPerm[outputAxis];
+
+         if (inputAxisValue < 0 || static_cast<size_t>(inputAxisValue) >= inputShape.size())
+            return "";
+
+         const size_t inputAxis = static_cast<size_t>(inputAxisValue);
+
+         if (!expression.empty())
+            expression += " + ";
+
+         expression += "(((" + outputIndex + ") / " + std::to_string(outputStrides[outputAxis]) + "u) % " +
+              std::to_string(outputShape[outputAxis]) + "u) * " +
+              std::to_string(inputStrides[inputAxis]) + "u";
+      }
+
+      return "(" + expression + ")";
    }
 
 };

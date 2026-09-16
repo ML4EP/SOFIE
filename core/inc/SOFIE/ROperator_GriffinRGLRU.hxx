@@ -101,7 +101,7 @@ public:
       out += SP + SP + SP + SP + "T const a_val = A[b*L*D + t*D + d];\n";
       out += SP + SP + SP + SP + "T const x_val = X[b*L*D + t*D + d];\n";
       out += SP + SP + SP + SP + "T h_val = state[b*D + d];\n";
-      out += SP + SP + SP + SP + "T h_new = a_val * h_val + sqrt(acc, static_cast<T>(1) - a_val * a_val) * x_val;\n";
+      out += SP + SP + SP + SP + "T h_new = a_val * h_val + SOFIE_DEVICE_sqrt(acc, static_cast<T>(1) - a_val * a_val) * x_val;\n";
       out += SP + SP + SP + SP + "state[b*D + d] = h_new;\n";
       out += SP + SP + SP + SP + "Y[b*L*D + t*D + d] = h_new;\n";
       out += SP + SP + SP + "}\n";
@@ -121,6 +121,10 @@ public:
 
    std::string GenerateResetStateCode_GPU_ALPAKA() override {
       return SP + "alpaka::memset(queue, deviceBuf_" + fNState + ", 0);\n";
+   }
+
+   std::vector<std::string> GetPersistentTensorNames_GPU_ALPAKA() const override {
+      return {fNState};
    }
 
    std::string Generate_GPU_ALPAKA(std::string opName) override {

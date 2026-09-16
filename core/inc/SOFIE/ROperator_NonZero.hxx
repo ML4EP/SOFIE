@@ -71,6 +71,7 @@ public:
       fShapeY = {Dim{fRank}, Dim{fCountName, size_t(-1)}};
       model.AddDynamicTensor(fNY, ETensorType::INT64, fShapeY);
       model.AddIntermediateTensor(fCountScratchName, ETensorType::INT64, {Dim{1}});
+      model.RegisterInternalDynamicParam(fCountName);
    }
 
    std::string Generate(std::string /*opName*/) override {
@@ -184,6 +185,11 @@ public:
              << ", alpaka::getPtrNative(deviceBuf_" << fNX << "), alpaka::getPtrNative(deviceBuf_" << fNY << "), " << countPtr << ");\n";
       }
       out << SP << "alpaka::enqueue(queue, taskNonZero_" << fNY << ");\n";
+
+      out << SP << "auto nonZeroCountHost_" << fNY << " = alpaka::allocBuf<int64_t, Idx>(hostAcc, Ext1D::all(Idx{1}));\n";
+      out << SP << "alpaka::memcpy(queue, nonZeroCountHost_" << fNY << ", deviceBuf_" << fCountScratchName << ");\n";
+      out << SP << "alpaka::wait(queue);\n";
+      out << SP << "size_t " << fCountName << " = static_cast<size_t>(*alpaka::getPtrNative(nonZeroCountHost_" << fNY << "));\n";
       return out.str();
    }
 

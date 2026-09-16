@@ -152,6 +152,8 @@ public:
       }
       // find shape of Y and add it in the list of intermediate tensors
       fShapeY = ShapeInference(fShapeX);
+      if (fkeepdims == 0 && fAttrAxes.size() == fShapeX.size())
+         model.MarkScalarTensor(fNY);
       model.AddIntermediateTensor(fNY, model.GetTensorType(fNX), fShapeY);
       if (model.Verbose()){
          std::cout << Name() << " : " << fNX << " -> " << fNY << " shape " << ConvertDimShapeToString(fShapeY) << std::endl;
@@ -167,6 +169,124 @@ public:
    // used by the CPU loops and passed to the GPU kernel by the launch
    std::string ReducedLengthExpr() const {
       return "(" + ConvertDimShapeToLength(fShapeX) + ") / (" + ConvertDimShapeToLength(fShapeY) + ")";
+   }
+
+   EFusionMappingType GetFusionMappingType() const override
+   {
+      if (fInputDimShape || fShapeX.empty() || fShapeY.empty())
+         return EFusionMappingType::Unsupported;
+      return EFusionMappingType::ManyToMany;
+   }
+
+   std::vector<size_t> GetFusionDataInputIndices() const override
+   {
+      return {0};
+   }
+
+   bool IsFusionReduction() const override { return !fInputDimShape && !fShapeX.empty() && !fShapeY.empty(); }
+
+   std::string GetFusionReductionInitExpr() const override
+   {
+      if (fReduceOpMode == ReduceProd)
+         return "static_cast<T>(1)";
+      if (fReduceOpMode == ReduceMax)
+         return "std::numeric_limits<T>::lowest()";
+      return "static_cast<T>(0)";
+   }
+
+   std::string GetFusionReductionAccumulateExpr(const std::string &accumulator, const std::string &value) const override
+   {
+      if (fReduceOpMode == ReduceProd)
+         return "((" + accumulator + ") * (" + value + "))";
+      if (fReduceOpMode == ReduceSumSquare || fReduceOpMode == ReduceL2)
+         return "((" + accumulator + ") + (" + value + ") * (" + value + "))";
+      if (fReduceOpMode == ReduceMax)
+         return "((" + value + ") > (" + accumulator + ") ? (" + value + ") : (" + accumulator + "))";
+      return "((" + accumulator + ") + (" + value + "))";
+   }
+
+   std::string GetFusionReductionCombineExpr(const std::string &left, const std::string &right) const override
+   {
+      if (fReduceOpMode == ReduceProd)
+         return "((" + left + ") * (" + right + "))";
+      if (fReduceOpMode == ReduceMax)
+         return "((" + right + ") > (" + left + ") ? (" + right + ") : (" + left + "))";
+      return "((" + left + ") + (" + right + "))";
+   }
+
+   std::string GetFusionReductionFinalizeExpr(const std::string &accumulator, size_t reducedLength) const override
+   {
+      if (fReduceOpMode == ReduceMean)
+         return "((" + accumulator + ") / static_cast<T>(" + std::to_string(reducedLength) + "u))";
+      if (fReduceOpMode == ReduceL2)
+         return "std::sqrt(" + accumulator + ")";
+      return accumulator;
+   }
+
+   // this fusion path only supports fully static shapes: fShapeX/fShapeYNotPruned are
+   // Dim-valued to support the dynamic-shape codegen above, but the generic fusion
+   // planner (RModel_Fusion_ALPAKA.cxx) only ever calls this once GetFusionMappingType
+   // has confirmed the operator is static, so converting them down to plain sizes here
+   // is safe.
+   std::string GetFusionReductionInputIndexExpr(const std::string &outputIndex, const std::string &reductionIndex,
+      const std::vector<size_t> &inputShape, const std::vector<size_t> &outputShape) const override
+   {
+      if (fInputDimShape || fShapeX.empty() || fShapeY.empty())
+         return "";
+
+      std::vector<size_t> shapeX(fShapeX.size());
+      for (size_t i = 0; i < fShapeX.size(); ++i)
+         shapeX[i] = fShapeX[i].dim;
+      std::vector<size_t> shapeYNotPruned(fShapeYNotPruned.size());
+      for (size_t i = 0; i < fShapeYNotPruned.size(); ++i)
+         shapeYNotPruned[i] = fShapeYNotPruned[i].dim;
+
+      if (inputShape != shapeX || outputShape.size() != fShapeY.size())
+         return "";
+      for (size_t i = 0; i < outputShape.size(); ++i)
+         if (outputShape[i] != fShapeY[i].dim)
+            return "";
+
+      const auto inputStrides = UTILITY::ComputeStrideFromShape(shapeX);
+      const auto outputStrides = UTILITY::ComputeStrideFromShape(shapeYNotPruned);
+      std::vector<size_t> reducedAxes;
+
+      for (size_t dim = 0; dim < shapeX.size(); ++dim) {
+         if (IsReducedAxis(dim))
+            reducedAxes.push_back(dim);
+      }
+
+      if (reducedAxes.empty())
+         return "";
+
+      std::vector<size_t> reductionStrides(reducedAxes.size(), 1);
+      for (int axisIdx = static_cast<int>(reducedAxes.size()) - 2; axisIdx >= 0; --axisIdx)
+         reductionStrides[axisIdx] = reductionStrides[axisIdx + 1] * shapeX[reducedAxes[axisIdx + 1]];
+
+      std::string expression;
+
+      for (size_t dim = 0; dim < shapeX.size(); ++dim) {
+         const auto reducedIt = std::find(reducedAxes.begin(), reducedAxes.end(), dim);
+         std::string coordinate;
+
+         if (reducedIt != reducedAxes.end()) {
+            const size_t reducedIdx = static_cast<size_t>(std::distance(reducedAxes.begin(), reducedIt));
+            coordinate = "((" + reductionIndex + " / " + std::to_string(reductionStrides[reducedIdx]) + "u) % " +
+                         std::to_string(shapeX[dim]) + "u)";
+         } else {
+            coordinate = "((" + outputIndex + " / " + std::to_string(outputStrides[dim]) + "u) % " +
+                         std::to_string(shapeYNotPruned[dim]) + "u)";
+         }
+
+         if (!expression.empty())
+            expression += " + ";
+
+         expression += coordinate;
+         if (inputStrides[dim] != 1)
+            expression += " * " + std::to_string(inputStrides[dim]) + "u";
+      }
+
+      return expression;
    }
 
    std::string Generate(std::string opName) override {
@@ -413,10 +533,6 @@ public:
       op += SP + SP + SP + "auto& shmem = alpaka::declareSharedVar<T[" + shmemCap + "], __COUNTER__>(acc);\n\n";
 
       // ---- block/thread addressing ----
-      // groups == 1: one block per output element; output is the final Y buffer.
-      // groups  > 1: `groups` blocks cooperate per output element, each over a
-      // slice of the reduction axis; output is an unfinalized scratch buffer of
-      // size outputLength*groups, combined by ReduceFinalizeKernel below.
       op += SP + SP + SP + "auto const thread_id = alpaka::getIdx<alpaka::Block, alpaka::Threads >(acc)[0];\n";
       if (dyn)
          op += SP + SP + SP + "auto const blockDim = alpaka::getWorkDiv<alpaka::Block, alpaka::Threads>(acc)[0];\n";
@@ -601,7 +717,11 @@ public:
       if (needsScratch) {
          std::string kname2 = "ReduceFinalizeKernel_" + Name() + "_" + fNY;
          op += SP + kname2 + " reduceFinalizeKernel_" + Name() + "_" + fNY + ";\n";
-         op += SP + "std::unique_ptr<BufF1D> reduceScratch_" + fNY + ";\n";
+         // The scratch buffer holds partial reduction results, so it must be
+         // T's actual element type — a boolean-derived reduction like ReduceSum
+         // over an int64 tensor would otherwise get a float scratch buffer,
+         // which fails to compile against the int64 input/output kernel args.
+         op += SP + "std::unique_ptr<alpaka::Buf<Acc, " + ConvertTypeToString(GetTemplatedType(T())) + ", Dim, Idx>> reduceScratch_" + fNY + ";\n";
          op += SP + "std::size_t reduceScratchCapacity_" + fNY + " = 0;\n";
       }
       return op;
@@ -647,7 +767,8 @@ public:
          out << SP << SP << "if (!reduceScratch_" << fNY << " || reduceScratchCapacity_" << fNY << " < " << rl
              << "_capacity) {\n";
          out << SP << SP << SP << "reduceScratch_" << fNY
-             << " = std::make_unique<BufF1D>(alpaka::allocBuf<float, Idx>(devAcc, Ext1D::all(Idx{" << rl
+             << " = std::make_unique<alpaka::Buf<Acc, " << ConvertTypeToString(GetTemplatedType(T())) << ", Dim, Idx>>(alpaka::allocBuf<"
+             << ConvertTypeToString(GetTemplatedType(T())) << ", Idx>(devAcc, Ext1D::all(Idx{" << rl
              << "_capacity})));\n";
          out << SP << SP << SP << "reduceScratchCapacity_" << fNY << " = " << rl << "_capacity;\n";
          out << SP << SP << "}\n";
@@ -692,19 +813,11 @@ public:
              << dynArgs << ");\n";
          out << SP << "}\n";
       } else if (lp.groups > 1) {
-         // Two-pass reduction: split the reduction axis across `groups` blocks
-         // per output element so a small number of outputs (which would
-         // otherwise launch just outputLength blocks total, badly
-         // under-occupying the GPU) still gets enough parallel work. Pass 1
-         // writes unfinalized partials to a scratch buffer; pass 2 combines the
-         // `groups` partials per output and applies the finalization. The
-         // buffer size is a fixed literal for static shapes, so this cache
-         // check allocates exactly once (on the first infer() call) and
-         // every later call just reuses it.
          std::string totalBlocks = std::to_string(std::stoul(outputLength) * lp.groups);
          out << SP << "if (!reduceScratch_" << fNY << ") {\n";
          out << SP << SP << "reduceScratch_" << fNY
-             << " = std::make_unique<BufF1D>(alpaka::allocBuf<float, Idx>(devAcc, Ext1D::all(Idx{" << totalBlocks
+             << " = std::make_unique<alpaka::Buf<Acc, " << ConvertTypeToString(GetTemplatedType(T())) << ", Dim, Idx>>(alpaka::allocBuf<"
+             << ConvertTypeToString(GetTemplatedType(T())) << ", Idx>(devAcc, Ext1D::all(Idx{" << totalBlocks
              << "})));\n";
          out << SP << SP << "reduceScratchCapacity_" << fNY << " = " << totalBlocks << ";\n";
          out << SP << "}\n";

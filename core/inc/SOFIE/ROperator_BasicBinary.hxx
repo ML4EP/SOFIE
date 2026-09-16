@@ -5,6 +5,9 @@
 #include "SOFIE/ROperator.hxx"
 #include "SOFIE/RModel.hxx"
 
+#include <cmath>
+#include <cstdint>
+#include <limits>
 #include <sstream>
 
 namespace SOFIE {
@@ -79,6 +82,9 @@ private:
    std::string fNBroadcastedB;
    std::string fNY;
 
+   bool fHasConstantIntegerExponent = false;
+   int64_t fConstantIntegerExponent = 0;
+
    std::vector<size_t> fShapeA;
    std::vector<size_t> fShapeB;
    std::vector<size_t> fShapeY;
@@ -86,6 +92,35 @@ private:
    std::vector<Dim> fDimShapeA;
    std::vector<Dim> fDimShapeB;
    std::vector<Dim> fDimShapeY;
+
+   std::string GetPowExpr(const std::string &base, const std::string &exponent) const
+   {
+      if (!fHasConstantIntegerExponent)
+         return "std::pow(" + base + "," + exponent + ")";
+
+      const int64_t n = fConstantIntegerExponent;
+
+      if (n == 0)
+         return "static_cast<T>(1)";
+      if (n == 1)
+         return base;
+      if (n == -1)
+         return "(static_cast<T>(1) / (" + base + "))";
+      if (n == 2)
+         return "((" + base + ") * (" + base + "))";
+      if (n == 3)
+         return "((" + base + ") * (" + base + ") * (" + base + "))";
+      if (n == 4)
+         return "(((" + base + ") * (" + base + ")) * ((" + base + ") * (" + base + ")))";
+
+      const std::string magnitude =
+         "std::pow(std::abs(" + base + "), static_cast<T>(" + std::to_string(n) + "))";
+
+      if (n % 2 == 0)
+         return magnitude;
+
+      return "std::copysign(" + magnitude + ", " + base + ")";
+   }
 
 public:
    ROperator_BasicBinary() {}
@@ -131,6 +166,21 @@ public:
          fShapeB = model.GetTensorShape(fNB);
          fDimShapeB = ConvertShapeToDim(fShapeB);
       }
+
+      if constexpr (Op == EBasicBinaryOperator::Pow) {
+         if (model.IsInitializedTensor(fNB) && ConvertShapeToLength(fShapeB) == 1) {
+            const auto *data = static_cast<T *>(model.GetInitializedTensorData(fNB).get());
+            const T exponent = data[0];
+
+            if (std::isfinite(exponent) && std::trunc(exponent) == exponent &&
+                exponent >= static_cast<T>(std::numeric_limits<int64_t>::min()) &&
+                exponent <= static_cast<T>(std::numeric_limits<int64_t>::max())) {
+               fHasConstantIntegerExponent = true;
+               fConstantIntegerExponent = static_cast<int64_t>(exponent);
+            }
+         }
+      }
+
       if (dynamicInputs & 1 && model.Verbose())
          std::cout << BinaryOperatorTrait<T, Op>::Name() << " : input " << fNA << " is dynamic "
                    << ConvertDimShapeToString(fDimShapeA) << std::endl;
@@ -507,7 +557,12 @@ public:
       }
       std::string indexA = isAScalar ? "0" : (isAPartialBroadcast ? "idxA" : "idx");
       std::string indexB = isBScalar ? "0" : (isBPartialBroadcast ? "idxB" : "idx");
-      op += SP + SP + SP + SP + "C[idx] = " + BinaryOperatorTrait<T, Op>::Op("A["+indexA+"]", "B["+indexB+"]") + ";\n";
+      const std::string a = "A[" + indexA + "]";
+      const std::string b = "B[" + indexB + "]";
+      if constexpr (Op == EBasicBinaryOperator::Pow)
+         op += SP + SP + SP + SP + "C[idx] = " + GetPowExpr(a, b) + ";\n";
+      else
+         op += SP + SP + SP + SP + "C[idx] = " + BinaryOperatorTrait<T, Op>::Op(a, b) + ";\n";
       op += SP + SP + SP + "}\n";
       op += SP + SP + "}\n";
       op += SP + "};\n";
@@ -551,6 +606,36 @@ public:
       } else {
          return {};
       }
+   }
+
+   EFusionMappingType GetFusionMappingType() const override
+   {
+      if (fIsOutputConstant)
+         return EFusionMappingType::Unsupported;
+
+      // Initial generic fusion support is restricted to static,
+      // equal-shape binary elementwise operations.
+      if (!fShapeY.empty() && fShapeA == fShapeB && fShapeA == fShapeY)
+         return EFusionMappingType::OneToOne;
+
+      // Broadcasting maps one input value to multiple output positions.
+      if (!fShapeY.empty())
+         return EFusionMappingType::OneToMany;
+
+      // Dynamic-shape cases are not supported by the first implementation.
+      return EFusionMappingType::Unsupported;
+   }
+
+   std::string GetFusionExpr(const std::vector<std::string> &inputs) const override
+   {
+      if (fIsOutputConstant || inputs.size() != 2) return "";
+      const auto mapping = GetFusionMappingType();
+      if (mapping != EFusionMappingType::OneToOne && mapping != EFusionMappingType::OneToMany) return "";
+
+      if constexpr (Op == EBasicBinaryOperator::Pow)
+         return GetPowExpr(inputs[0], inputs[1]);
+
+      return BinaryOperatorTrait<T, Op>::Op(inputs[0], inputs[1]);
    }
 
    

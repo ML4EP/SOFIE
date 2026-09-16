@@ -17,8 +17,14 @@ ParserFuncSignature ParseSDPA = [](RModelParser_ONNX &parser, const onnx::NodePr
    const std::string &nameY   = nodeproto.output(0);
 
    float scale = 0.0f;
-   for (const auto &attr : nodeproto.attribute())
+   size_t numHeads = 0;
+   for (const auto &attr : nodeproto.attribute()) {
       if (attr.name() == "scale") scale = attr.f();
+      // Only meaningful when Q/K/V are rank-3 [B, S, H*D] (heads folded into the
+      // last dimension); ROperator_SDPA::Initialize validates the rank/attribute
+      // combination and throws if a rank-3 input arrives without this.
+      if (attr.name() == "num_heads") numHeads = static_cast<size_t>(attr.i());
+   }
 
    ETensorType inputType = ETensorType::UNDEFINED;
    if (parser.IsRegisteredTensorType(nameQ))
@@ -31,7 +37,7 @@ ParserFuncSignature ParseSDPA = [](RModelParser_ONNX &parser, const onnx::NodePr
 
    switch (inputType) {
    case ETensorType::FLOAT:
-      return std::make_unique<ROperator_SDPA<float>>(nameQ, nameK, nameV, nameY, nameMask, scale);
+      return std::make_unique<ROperator_SDPA<float>>(nameQ, nameK, nameV, nameY, nameMask, scale, numHeads);
    default:
       throw std::runtime_error("SOFIE ParseSDPA: unsupported input type");
    }
