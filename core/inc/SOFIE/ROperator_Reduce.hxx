@@ -152,6 +152,8 @@ public:
       }
       // find shape of Y and add it in the list of intermediate tensors
       fShapeY = ShapeInference(fShapeX);
+      if (fkeepdims == 0 && fAttrAxes.size() == fShapeX.size())
+         model.MarkScalarTensor(fNY);
       model.AddIntermediateTensor(fNY, model.GetTensorType(fNX), fShapeY);
       if (model.Verbose()){
          std::cout << Name() << " : " << fNX << " -> " << fNY << " shape " << ConvertDimShapeToString(fShapeY) << std::endl;
@@ -531,10 +533,6 @@ public:
       op += SP + SP + SP + "auto& shmem = alpaka::declareSharedVar<T[" + shmemCap + "], __COUNTER__>(acc);\n\n";
 
       // ---- block/thread addressing ----
-      // groups == 1: one block per output element; output is the final Y buffer.
-      // groups  > 1: `groups` blocks cooperate per output element, each over a
-      // slice of the reduction axis; output is an unfinalized scratch buffer of
-      // size outputLength*groups, combined by ReduceFinalizeKernel below.
       op += SP + SP + SP + "auto const thread_id = alpaka::getIdx<alpaka::Block, alpaka::Threads >(acc)[0];\n";
       if (dyn)
          op += SP + SP + SP + "auto const blockDim = alpaka::getWorkDiv<alpaka::Block, alpaka::Threads>(acc)[0];\n";
@@ -719,7 +717,11 @@ public:
       if (needsScratch) {
          std::string kname2 = "ReduceFinalizeKernel_" + Name() + "_" + fNY;
          op += SP + kname2 + " reduceFinalizeKernel_" + Name() + "_" + fNY + ";\n";
-         op += SP + "std::unique_ptr<BufF1D> reduceScratch_" + fNY + ";\n";
+         // The scratch buffer holds partial reduction results, so it must be
+         // T's actual element type — a boolean-derived reduction like ReduceSum
+         // over an int64 tensor would otherwise get a float scratch buffer,
+         // which fails to compile against the int64 input/output kernel args.
+         op += SP + "std::unique_ptr<alpaka::Buf<Acc, " + ConvertTypeToString(GetTemplatedType(T())) + ", Dim, Idx>> reduceScratch_" + fNY + ";\n";
          op += SP + "std::size_t reduceScratchCapacity_" + fNY + " = 0;\n";
       }
       return op;
@@ -765,7 +767,8 @@ public:
          out << SP << SP << "if (!reduceScratch_" << fNY << " || reduceScratchCapacity_" << fNY << " < " << rl
              << "_capacity) {\n";
          out << SP << SP << SP << "reduceScratch_" << fNY
-             << " = std::make_unique<BufF1D>(alpaka::allocBuf<float, Idx>(devAcc, Ext1D::all(Idx{" << rl
+             << " = std::make_unique<alpaka::Buf<Acc, " << ConvertTypeToString(GetTemplatedType(T())) << ", Dim, Idx>>(alpaka::allocBuf<"
+             << ConvertTypeToString(GetTemplatedType(T())) << ", Idx>(devAcc, Ext1D::all(Idx{" << rl
              << "_capacity})));\n";
          out << SP << SP << SP << "reduceScratchCapacity_" << fNY << " = " << rl << "_capacity;\n";
          out << SP << SP << "}\n";
@@ -810,19 +813,11 @@ public:
              << dynArgs << ");\n";
          out << SP << "}\n";
       } else if (lp.groups > 1) {
-         // Two-pass reduction: split the reduction axis across `groups` blocks
-         // per output element so a small number of outputs (which would
-         // otherwise launch just outputLength blocks total, badly
-         // under-occupying the GPU) still gets enough parallel work. Pass 1
-         // writes unfinalized partials to a scratch buffer; pass 2 combines the
-         // `groups` partials per output and applies the finalization. The
-         // buffer size is a fixed literal for static shapes, so this cache
-         // check allocates exactly once (on the first infer() call) and
-         // every later call just reuses it.
          std::string totalBlocks = std::to_string(std::stoul(outputLength) * lp.groups);
          out << SP << "if (!reduceScratch_" << fNY << ") {\n";
          out << SP << SP << "reduceScratch_" << fNY
-             << " = std::make_unique<BufF1D>(alpaka::allocBuf<float, Idx>(devAcc, Ext1D::all(Idx{" << totalBlocks
+             << " = std::make_unique<alpaka::Buf<Acc, " << ConvertTypeToString(GetTemplatedType(T())) << ", Dim, Idx>>(alpaka::allocBuf<"
+             << ConvertTypeToString(GetTemplatedType(T())) << ", Idx>(devAcc, Ext1D::all(Idx{" << totalBlocks
              << "})));\n";
          out << SP << SP << "reduceScratchCapacity_" << fNY << " = " << totalBlocks << ";\n";
          out << SP << "}\n";

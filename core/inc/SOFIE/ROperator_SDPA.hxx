@@ -14,11 +14,16 @@ class ROperator_SDPA : public ROperator {
 private:
    std::string fNQ, fNK, fNV, fNMask, fNY;
    float fScale = 0.0f;  // 0 → use 1/sqrt(D)
+   size_t fNumHeads = 0; // only used when Q/K/V are rank-3 (folded-head layout)
 
    std::vector<Dim> fShapeQ;
    std::string fB, fH, fS, fD, fDv;
    std::string fType;
    bool fHasMask = false;
+
+   bool fFolded = false;
+   std::string fQKBatchStride, fQKHeadStride, fQKSeqStride;
+   std::string fVYBatchStride, fVYHeadStride, fVYSeqStride;
 
 public:
    ROperator_SDPA() {}
@@ -28,13 +33,15 @@ public:
                   const std::string &nameV,
                   const std::string &nameY,
                   const std::string &nameMask = "",
-                  float scale = 0.0f)
+                  float scale = 0.0f,
+                  size_t numHeads = 0)
       : fNQ(UTILITY::Clean_name(nameQ)),
         fNK(UTILITY::Clean_name(nameK)),
         fNV(UTILITY::Clean_name(nameV)),
         fNMask(UTILITY::Clean_name(nameMask)),
         fNY(UTILITY::Clean_name(nameY)),
-        fScale(scale)
+        fScale(scale),
+        fNumHeads(numHeads)
    {
       fKind = OperatorKind::SDPA;
       fInputTensorNames  = { fNQ, fNK, fNV };
@@ -43,9 +50,14 @@ public:
    }
 
    std::vector<std::vector<size_t>> ShapeInference(std::vector<std::vector<size_t>> input) override {
-      // output shape = [B, H, S, Dv]
       auto outShape = input[0];
-      outShape[3] = input[2][3];
+      if (outShape.size() == 4) {
+         // [B, H, S, Dv]
+         outShape[3] = input[2][3];
+      } else if (outShape.size() == 3) {
+         // folded [B, S, H*Dv]
+         outShape[2] = input[2][2];
+      }
       return { outShape };
    }
 
@@ -61,23 +73,63 @@ public:
          throw std::runtime_error("SOFIE SDPA: value tensor " + fNV + " not found");
 
       fShapeQ = model.GetDimTensorShape(fNQ);
-      if (fShapeQ.size() != 4)
-         throw std::runtime_error("SOFIE SDPA: query must be rank-4 [B, H, S, D]");
-
       auto shapeV = model.GetDimTensorShape(fNV);
-
       fType = ConvertTypeToString(model.GetTensorType(fNQ));
-      fB  = fShapeQ[0].GetVal();
-      fH  = fShapeQ[1].GetVal();
-      fS  = fShapeQ[2].GetVal();
-      fD  = fShapeQ[3].GetVal();
-      fDv = shapeV[3].GetVal();
+
+      if (fShapeQ.size() == 4) {
+         fFolded = false;
+         fB  = fShapeQ[0].GetVal();
+         fH  = fShapeQ[1].GetVal();
+         fS  = fShapeQ[2].GetVal();
+         fD  = fShapeQ[3].GetVal();
+         fDv = shapeV[3].GetVal();
+
+         model.AddIntermediateTensor(fNY, model.GetTensorType(fNQ),
+                                     { fShapeQ[0], fShapeQ[1], fShapeQ[2], shapeV[3] });
+      } else if (fShapeQ.size() == 3) {
+         if (fNumHeads == 0)
+            throw std::runtime_error("SOFIE SDPA: rank-3 [B, S, H*D] query requires num_heads "
+                                     "to be specified (it cannot be inferred from the tensor shape)");
+
+         fB = fShapeQ[0].GetVal();
+         fS = fShapeQ[1].GetVal();
+         fH = std::to_string(fNumHeads);
+
+         auto headDim = [this](const Dim &total) {
+            if (!total.isParam)
+               return std::to_string(total.dim / fNumHeads);
+            return "(" + total.GetVal() + ") / " + std::to_string(fNumHeads);
+         };
+         fD  = headDim(fShapeQ[2]);
+         fDv = headDim(shapeV[2]);
+         fFolded = true;
+
+         // output [B, S, H*Dv] — same folded convention as the inputs
+         model.AddIntermediateTensor(fNY, model.GetTensorType(fNQ),
+                                     { fShapeQ[0], fShapeQ[1], shapeV[2] });
+      } else {
+         throw std::runtime_error("SOFIE SDPA: query must be rank-4 [B, H, S, D] or "
+                                  "rank-3 [B, S, H*D] with num_heads specified");
+      }
+
+      if (fFolded) {
+         fQKBatchStride = "(" + fS + ") * (" + fH + ") * (" + fD + ")";
+         fQKHeadStride  = fD;
+         fQKSeqStride   = "(" + fH + ") * (" + fD + ")";
+         fVYBatchStride = "(" + fS + ") * (" + fH + ") * (" + fDv + ")";
+         fVYHeadStride  = fDv;
+         fVYSeqStride   = "(" + fH + ") * (" + fDv + ")";
+      } else {
+         fQKBatchStride = "(" + fH + ") * (" + fS + ") * (" + fD + ")";
+         fQKHeadStride  = "(" + fS + ") * (" + fD + ")";
+         fQKSeqStride   = fD;
+         fVYBatchStride = "(" + fH + ") * (" + fS + ") * (" + fDv + ")";
+         fVYHeadStride  = "(" + fS + ") * (" + fDv + ")";
+         fVYSeqStride   = fDv;
+      }
 
       fHasMask = !fNMask.empty() && model.CheckIfTensorAlreadyExist(fNMask);
 
-      // output [B, H, S, Dv]
-      model.AddIntermediateTensor(fNY, model.GetTensorType(fNQ),
-                                  { fShapeQ[0], fShapeQ[1], fShapeQ[2], shapeV[3] });
       model.AddNeededStdLib("cmath");
       model.AddNeededStdLib("limits");
    }
@@ -94,13 +146,13 @@ public:
       out << SP << "for (size_t b = 0; b < " << fB << "; ++b)\n";
       out << SP << "for (size_t h = 0; h < " << fH << "; ++h)\n";
       out << SP << "for (size_t s = 0; s < " << fS << "; ++s) {\n";
-      out << SP << SP << "size_t qBase = b*" << fH << "*" << fS << "*" << fD
-          << " + h*" << fS << "*" << fD << " + s*" << fD << ";\n";
+      out << SP << SP << "size_t qBase = b*(" << fQKBatchStride << ") + h*(" << fQKHeadStride
+          << ") + s*(" << fQKSeqStride << ");\n";
       // Compute scores
       out << SP << SP << "std::vector<" << fType << "> scores(" << fS << ");\n";
       out << SP << SP << "for (size_t j = 0; j < " << fS << "; ++j) {\n";
-      out << SP << SP << SP << "size_t kBase = b*" << fH << "*" << fS << "*" << fD
-          << " + h*" << fS << "*" << fD << " + j*" << fD << ";\n";
+      out << SP << SP << SP << "size_t kBase = b*(" << fQKBatchStride << ") + h*(" << fQKHeadStride
+          << ") + j*(" << fQKSeqStride << ");\n";
       out << SP << SP << SP << fType << " dot = 0;\n";
       out << SP << SP << SP << "for (size_t d = 0; d < " << fD << "; ++d)\n";
       out << SP << SP << SP << SP << "dot += tensor_" << fNQ << "[qBase+d] * tensor_" << fNK << "[kBase+d];\n";
@@ -120,11 +172,9 @@ public:
       out << SP << SP << SP << fType << " acc = 0;\n";
       out << SP << SP << SP << "for (size_t j = 0; j < " << fS << "; ++j)\n";
       out << SP << SP << SP << SP << "acc += scores[j] * tensor_" << fNV
-          << "[b*" << fH << "*" << fS << "*" << fDv
-          << " + h*" << fS << "*" << fDv << " + j*" << fDv << " + d];\n";
+          << "[b*(" << fVYBatchStride << ") + h*(" << fVYHeadStride << ") + j*(" << fVYSeqStride << ") + d];\n";
       out << SP << SP << SP << "tensor_" << fNY
-          << "[b*" << fH << "*" << fS << "*" << fDv
-          << " + h*" << fS << "*" << fDv << " + s*" << fDv << " + d] = acc;\n";
+          << "[b*(" << fVYBatchStride << ") + h*(" << fVYHeadStride << ") + s*(" << fVYSeqStride << ") + d] = acc;\n";
       out << SP << SP << "}\n";
       out << SP << "}\n";
       return out.str();
@@ -156,14 +206,20 @@ public:
       out += SP + SP + SP + "std::size_t const b = global_idx / (H * S);\n";
       out += SP + SP + SP + "std::size_t const h = (global_idx / S) % H;\n";
       out += SP + SP + SP + "std::size_t const s = global_idx % S;\n\n";
-      out += SP + SP + SP + "std::size_t const qBase = b*H*S*D + h*S*D + s*D;\n\n";
 
-      // Dv static -> fuse into a single online-softmax pass (the flash-attention
-      // recurrence): the QK dot product is then computed exactly once per (query,
-      // key) pair instead of twice (once to find the row max, once to weight V),
-      // by rescaling the running weighted-sum accumulator whenever a new max is
-      // found. Needs Dv known at codegen time to size the register accumulator;
-      // falls back to the two-pass version
+      const std::string qkBatch = fFolded ? "S*H*D"  : "H*S*D";
+      const std::string qkHead  = fFolded ? "D"       : "S*D";
+      const std::string qkSeq   = fFolded ? "H*D"      : "D";
+      const std::string vyBatch = fFolded ? "S*H*Dv" : "H*S*Dv";
+      const std::string vyHead  = fFolded ? "Dv"       : "S*Dv";
+      const std::string vySeq   = fFolded ? "H*Dv"     : "Dv";
+      const std::string qBaseExpr = "b*(" + qkBatch + ") + h*(" + qkHead + ") + s*(" + qkSeq + ")";
+      const std::string kBaseExpr = "b*(" + qkBatch + ") + h*(" + qkHead + ") + j*(" + qkSeq + ")";
+      const std::string vBaseExpr = "b*(" + vyBatch + ") + h*(" + vyHead + ") + j*(" + vySeq + ")";
+      const std::string ySBaseExpr = "b*(" + vyBatch + ") + h*(" + vyHead + ") + s*(" + vySeq + ")";
+
+      out += SP + SP + SP + "std::size_t const qBase = " + qBaseExpr + ";\n\n";
+
       bool canFuse = IsInteger(fDv);
       if (canFuse) {
          std::string dv = fDv;
@@ -174,7 +230,7 @@ public:
          out += SP + SP + SP + "T sum_exp = static_cast<T>(0);\n\n";
 
          out += SP + SP + SP + "for (std::size_t j = 0; j < S; ++j) {\n";
-         out += SP + SP + SP + SP + "std::size_t const kBase = b*H*S*D + h*S*D + j*D;\n";
+         out += SP + SP + SP + SP + "std::size_t const kBase = " + kBaseExpr + ";\n";
          out += SP + SP + SP + SP + "T dot = static_cast<T>(0);\n";
          out += SP + SP + SP + SP + "for (std::size_t d = 0; d < D; ++d) dot += Q[qBase+d] * K[kBase+d];\n";
          out += SP + SP + SP + SP + "T sc = dot * scale;\n";
@@ -184,20 +240,20 @@ public:
          out += SP + SP + SP + SP + "T const correction = alpaka::math::exp(acc, max_score - new_max);\n";
          out += SP + SP + SP + SP + "T const p = alpaka::math::exp(acc, sc - new_max);\n";
          out += SP + SP + SP + SP + "sum_exp = sum_exp * correction + p;\n";
-         out += SP + SP + SP + SP + "std::size_t const vBase = b*H*S*Dv + h*S*Dv + j*Dv;\n";
+         out += SP + SP + SP + SP + "std::size_t const vBase = " + vBaseExpr + ";\n";
          out += SP + SP + SP + SP + "for (std::size_t d = 0; d < Dv; ++d)\n";
          out += SP + SP + SP + SP + SP + "acc_v[d] = acc_v[d] * correction + p * V[vBase+d];\n";
          out += SP + SP + SP + SP + "max_score = new_max;\n";
          out += SP + SP + SP + "}\n\n";
          out += SP + SP + SP + "for (std::size_t d = 0; d < Dv; ++d)\n";
-         out += SP + SP + SP + SP + "Y[b*H*S*Dv + h*S*Dv + s*Dv + d] = acc_v[d] / sum_exp;\n";
+         out += SP + SP + SP + SP + "Y[" + ySBaseExpr + " + d] = acc_v[d] / sum_exp;\n";
       } else {
       out += SP + SP + SP + "// scores computed in thread-local storage\n";
       out += SP + SP + SP + "T max_score = -std::numeric_limits<T>::max();\n";
       out += SP + SP + SP + "T sum_exp = static_cast<T>(0);\n\n";
 
       out += SP + SP + SP + "for (std::size_t j = 0; j < S; ++j) {\n";
-      out += SP + SP + SP + SP + "std::size_t const kBase = b*H*S*D + h*S*D + j*D;\n";
+      out += SP + SP + SP + SP + "std::size_t const kBase = " + kBaseExpr + ";\n";
       out += SP + SP + SP + SP + "T dot = static_cast<T>(0);\n";
       out += SP + SP + SP + SP + "for (std::size_t d = 0; d < D; ++d) dot += Q[qBase+d] * K[kBase+d];\n";
       out += SP + SP + SP + SP + "T sc = dot * scale;\n";
@@ -207,9 +263,9 @@ public:
       out += SP + SP + SP + "}\n\n";
 
       out += SP + SP + SP + "// Pass 2: compute attn weights and weighted sum simultaneously\n";
-      out += SP + SP + SP + "for (std::size_t d = 0; d < Dv; ++d) Y[b*H*S*Dv + h*S*Dv + s*Dv + d] = static_cast<T>(0);\n\n";
+      out += SP + SP + SP + "for (std::size_t d = 0; d < Dv; ++d) Y[" + ySBaseExpr + " + d] = static_cast<T>(0);\n\n";
       out += SP + SP + SP + "for (std::size_t j = 0; j < S; ++j) {\n";
-      out += SP + SP + SP + SP + "std::size_t const kBase = b*H*S*D + h*S*D + j*D;\n";
+      out += SP + SP + SP + SP + "std::size_t const kBase = " + kBaseExpr + ";\n";
       out += SP + SP + SP + SP + "T dot = static_cast<T>(0);\n";
       out += SP + SP + SP + SP + "for (std::size_t d = 0; d < D; ++d) dot += Q[qBase+d] * K[kBase+d];\n";
       out += SP + SP + SP + SP + "T sc = dot * scale;\n";
@@ -217,13 +273,13 @@ public:
          out += SP + SP + SP + SP + "sc += mask[b*H*S*S + h*S*S + s*S + j];\n";
       out += SP + SP + SP + SP + "T const a_j = alpaka::math::exp(acc, sc - max_score);\n";
       out += SP + SP + SP + SP + "sum_exp += a_j;\n";
-      out += SP + SP + SP + SP + "std::size_t const vBase = b*H*S*Dv + h*S*Dv + j*Dv;\n";
+      out += SP + SP + SP + SP + "std::size_t const vBase = " + vBaseExpr + ";\n";
       out += SP + SP + SP + SP + "for (std::size_t d = 0; d < Dv; ++d)\n";
-      out += SP + SP + SP + SP + SP + "Y[b*H*S*Dv + h*S*Dv + s*Dv + d] += a_j * V[vBase+d];\n";
+      out += SP + SP + SP + SP + SP + "Y[" + ySBaseExpr + " + d] += a_j * V[vBase+d];\n";
       out += SP + SP + SP + "}\n\n";
       out += SP + SP + SP + "// Normalize\n";
       out += SP + SP + SP + "for (std::size_t d = 0; d < Dv; ++d)\n";
-      out += SP + SP + SP + SP + "Y[b*H*S*Dv + h*S*Dv + s*Dv + d] /= sum_exp;\n";
+      out += SP + SP + SP + SP + "Y[" + ySBaseExpr + " + d] /= sum_exp;\n";
       }
       out += SP + SP + "}\n" + SP + "};\n";
       return out;

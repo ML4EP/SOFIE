@@ -4,8 +4,10 @@
 #include <limits>
 #include <memory>
 #include <sstream>
+#include <span>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "../inc/SOFIE/SOFIE_common.hxx"
 
@@ -285,12 +287,58 @@ void RModel::GenerateDynamicTensorInfo_GPU_ALPAKA() {
       auto length = ConvertDimShapeToLength(i.second.shape);
 
       out << SP << "if (" << length << " > 0) {\n";
-      out << SP << SP << "bufDev_" << i.first << " = alpaka::allocBuf<" << ConvertOutputTypeToString(i.second.type)
+      out << SP << SP << "deviceBuf_" << i.first << " = alpaka::allocBuf<" << ConvertOutputTypeToString(i.second.type)
           << ", Idx>(devAcc, Ext1D::all(Idx{" << length << "}));\n";
       out << SP << "}\n";
    }
 
    fGC += out.str();
+}
+
+std::vector<std::string> RModel::GetOperatorKernelParams(size_t opIdx, const std::vector<std::string> &baseDynParamNames) const
+{
+   if (fInternalDynamicParams.empty() || opIdx >= fOperators.size())
+      return baseDynParamNames;
+
+   std::vector<std::string> params = baseDynParamNames;
+   std::unordered_set<std::string> have(params.begin(), params.end());
+
+   auto isIdentChar = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; };
+   auto containsToken = [&](const std::string &expr, const std::string &token) {
+      size_t pos = 0;
+      while ((pos = expr.find(token, pos)) != std::string::npos) {
+         bool leftOk = (pos == 0) || !isIdentChar(expr[pos - 1]);
+         size_t end = pos + token.size();
+         bool rightOk = (end == expr.size()) || !isIdentChar(expr[end]);
+         if (leftOk && rightOk)
+            return true;
+         pos = end;
+      }
+      return false;
+   };
+
+   auto scan = [&](std::span<const std::string> names) {
+      for (const auto &name : names) {
+         std::vector<Dim> shape;
+         try {
+            shape = GetDimTensorShape(name);
+         } catch (...) {
+            continue; // not a tensor with a trackable shape (e.g. an attribute-only input)
+         }
+         for (const auto &d : shape) {
+            if (!d.isParam)
+               continue;
+            for (const auto &internalParam : fInternalDynamicParams) {
+               if (containsToken(d.param, internalParam) && have.insert(internalParam).second)
+                  params.push_back(internalParam);
+            }
+         }
+      }
+   };
+
+   scan(fOperators[opIdx]->GetOpInputTensors());
+   scan(fOperators[opIdx]->GetOpOutputTensors());
+   return params;
 }
 
 void RModel::ForEachInferArg_GPU_ALPAKA(const std::function<void(const std::string &)> &onParam,
@@ -542,9 +590,6 @@ void RModel::GenerateOutput_GPU_ALPAKA() {
    auto GetOutputBufferName = [this](const std::string &name) -> std::string {
       const std::string storageName = ResolveAliasTensor(name);
 
-      if (fDynamicTensorInfos.count(storageName) > 0)
-         return "bufDev_" + storageName;
-
       return "deviceBuf_" + storageName;
    };
 
@@ -608,10 +653,11 @@ void RModel::GenerateOutput_GPU_ALPAKA() {
             fusedGroupsLaunched.insert(gIdx);
          }
       } else {
+         auto opDynParamNames = GetOperatorKernelParams(op_idx, dynParamNames);
          if (fProfile) {
-            fGC += RModelProfilerGPU::GenerateOperatorCode(*fOperators[op_idx], op_idx, dynParamNames);
+            fGC += RModelProfilerGPU::GenerateOperatorCode(*fOperators[op_idx], op_idx, opDynParamNames);
          } else {
-            fGC += fOperators[op_idx]->Generate_GPU_ALPAKA(std::to_string(op_idx), dynParamNames);
+            fGC += fOperators[op_idx]->Generate_GPU_ALPAKA(std::to_string(op_idx), opDynParamNames);
          }
       }
    }
@@ -1733,18 +1779,20 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
                fusedGroupsEmitted.insert(gIdx);
             }
          } else {
+            auto idDynParamNames = GetOperatorKernelParams(id, dynParamNames);
             if (single_initialized_operators.find(fOperators[id]->GetKind()) != single_initialized_operators.end()) {
                if (registered_operators.find(fOperators[id]->GetKind()) == registered_operators.end()) {
                   if (fVerbose)
                      std::cout << "Generating ALPAKA kernel for operator " << toString(fOperators[id]->GetKind()) << std::endl;
-                  fGC += fOperators[id]->Generate_GPU_Kernel_ALPAKA(std::to_string(id), dynParamNames);
+                  fGC += fOperators[id]->Generate_GPU_Kernel_ALPAKA(std::to_string(id), idDynParamNames);
                   registered_operators.insert(fOperators[id]->GetKind());
                }
             } else {
                if (fVerbose)
                   std::cout << "Generating ALPAKA kernel for operator " << toString(fOperators[id]->GetKind()) << std::endl;
-               fGC += fOperators[id]->Generate_GPU_Kernel_ALPAKA(std::to_string(id), dynParamNames);
+               fGC += fOperators[id]->Generate_GPU_Kernel_ALPAKA(std::to_string(id), idDynParamNames);
             }
+         }
       }
    }
 
@@ -1850,22 +1898,53 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
 
    GenerateIntermediateMemoryPool_GPU_ALPAKA();
 
+   // Some operators register extra static intermediate "scratch" tensors that are not
+   // any operator's declared output (e.g. NonZero's on-device element-count scratch
+   // buffer), so they never appear in an AllocateIntermediateMemory_GPU_ALPAKA() call
+   // above and never get pooled. Give each of those its own plain owning buffer here.
+   {
+      std::set<std::string> pooledOrSkipped;
+      for (const auto &op : fOperators) {
+         for (const auto &name : op->GetOpOutputTensors())
+            pooledOrSkipped.insert(std::string(name));
+         for (const auto &name : op->GetPersistentTensorNames_GPU_ALPAKA())
+            pooledOrSkipped.insert(name);
+      }
+
+      std::string scratchDecls;
+      for (auto &i : fIntermediateTensorInfos) {
+         if (fFusionIntermediateTensors.count(i.first) || pooledOrSkipped.count(i.first))
+            continue;
+         size_t length = ConvertShapeToLength(i.second.shape);
+         scratchDecls += AllocBufLine(i.first, i.second.type, std::to_string(length));
+      }
+      if (!scratchDecls.empty())
+         fGC += "\n//--- declare extra static scratch tensors\n" + scratchDecls;
+   }
+
+   // Shape tensors (e.g. a Gather/Concat output holding an extracted or assembled
+   // shape) additionally need a host-side array: operators that produce one write into
+   // it on the host and then copy it to that tensor's (already pool-allocated) device
+   // buffer at inference time.
+   if (!fShapeTensors.empty()) {
+      fGC += "\n//--- declare the shape tensor host arrays\n";
+      for (auto &i : fShapeTensors) {
+         size_t len = i.second.first.size();
+         if (len == 0) continue;
+         fGC += "int64_t tensor_" + i.first + "[" + std::to_string(len) + "];\n";
+      }
+   }
+
    // Dynamic tensors are not part of the static intermediate memory pool.
    // Declare owning buffers here; their actual size is assigned later when known.
+   // Uses the same "deviceBuf_" name as static tensors (rather than a separate prefix)
+   // since operators reference a dynamic tensor's buffer the same way as a static one.
    if (!fDynamicTensorInfos.empty()) {
       fGC += "\n//--- declare the dynamic tensors\n";
 
       for (auto &i : fDynamicTensorInfos) {
-         if (i.second.type == ETensorType::FLOAT)
-            fGC += "BufF1D bufDev_" + i.first + " = alpaka::allocBuf<float, Idx>(devAcc, Ext1D::all(Idx{1}));\n";
-         else if (i.second.type == ETensorType::DOUBLE)
-            fGC += "BufD1D bufDev_" + i.first + " = alpaka::allocBuf<double, Idx>(devAcc, Ext1D::all(Idx{1}));\n";
-         else if (i.second.type == ETensorType::INT32)
-            fGC += "BufI321D bufDev_" + i.first + " = alpaka::allocBuf<int32_t, Idx>(devAcc, Ext1D::all(Idx{1}));\n";
-         else if (i.second.type == ETensorType::INT64)
-            fGC += "BufI641D bufDev_" + i.first + " = alpaka::allocBuf<int64_t, Idx>(devAcc, Ext1D::all(Idx{1}));\n";
-         else if (i.second.type == ETensorType::BOOL)
-            fGC += "BufUI81D bufDev_" + i.first + " = alpaka::allocBuf<uint8_t, Idx>(devAcc, Ext1D::all(Idx{1}));\n";
+         if (fFusionIntermediateTensors.count(i.first)) continue;
+         fGC += AllocBufLine(i.first, i.second.type, "1");
       }
    }
    
@@ -2042,12 +2121,15 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
          fGC += fOperators[id]->GenerateResetStateCode_GPU_ALPAKA();
       }
       for (auto &i : fIntermediateTensorInfos) {
-         if (fFusionIntermediateTensors.count(i.first)) continue;
+         // Alias tensors (e.g. Reshape/Squeeze outputs) are zero-copy views declared as
+         // locals inside _infer_impl, not Session members, and memsetting one would zero
+         // the aliased tensor's storage out from under it anyway.
+         if (fFusionIntermediateTensors.count(i.first) || IsAliasTensor(i.first)) continue;
          fGC += SP + "alpaka::memset(queue, deviceBuf_" + i.first + ", 0);\n";
       }
       for (auto &i : fDynamicTensorInfos) {
-         if (fFusionIntermediateTensors.count(i.first)) continue;
-         fGC += SP + "alpaka::memset(queue, bufDev_" + i.first + ", 0);\n";
+         if (fFusionIntermediateTensors.count(i.first) || IsAliasTensor(i.first)) continue;
+         fGC += SP + "alpaka::memset(queue, deviceBuf_" + i.first + ", 0);\n";
       }
       fGC += SP + "alpaka::wait(queue);\n";
       fGC += "}\n";

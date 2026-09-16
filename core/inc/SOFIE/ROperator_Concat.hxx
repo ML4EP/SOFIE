@@ -60,8 +60,8 @@
             if(fnewAxis == 0){
                for (size_t i = 0; i < inputs.size(); i++) {
                   if (i > 0 && inputs[i].size() != inputs[i - 1].size())
-                     throw std::runtime_error("SOFIE Concat Op - input tensors have different shapes " +
-                                              ConvertShapeToString(inputs[i]) + " and " + ConvertShapeToString(inputs[i - 1]));
+                     throw std::runtime_error("SOFIE Concat Op - input tensors have different shapes " + fInputs[i] + " : " +
+                                              ConvertShapeToString(inputs[i]) + " and " + fInputs[i-1] + " : " + ConvertShapeToString(inputs[i - 1]));
                   for (size_t iaxis = 0; iaxis < inputs[i].size(); iaxis++) {
                      if ((int)iaxis == fAxis)
                         concat_dim += inputs[i][iaxis];
@@ -483,7 +483,10 @@
             out << SP << "std::array<const float *, " << fInputs.size() << "> input_ptrs_" << OpName << " = {"; break;
          case ETensorType::INT64:
             out << SP << "std::array<const int64_t *, " << fInputs.size() << "> input_ptrs_" << OpName << " = {"; break;
-         default: 
+         case ETensorType::BOOL:
+         case ETensorType::UINT8:
+            out << SP << "std::array<const uint8_t *, " << fInputs.size() << "> input_ptrs_" << OpName << " = {"; break;
+         default:
             throw std::runtime_error("Data type for Concat operator is not yet supported.");
       }
       for(size_t i=0; i<fInputs.size(); ++i){

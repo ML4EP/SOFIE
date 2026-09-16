@@ -48,6 +48,10 @@ private:
    std::unordered_map<std::string, DynamicTensorInfo> fDynamicTensorInfos;
    std::unordered_map<std::string, std::pair<std::vector<Dim>, bool>> fShapeTensors; // constant tensors describing a shape
    std::unordered_map<std::string, std::string> fAliasTensors; // alias tensors (name -> original tensor name)
+
+   std::set<std::string> fScalarTensors;
+   
+   std::set<std::string> fInternalDynamicParams;
    std::unordered_map<std::string, std::string>
       fShapeParams; // parameters defining the dynamic shape (e.g. batch size), store also its default value
    std::vector<std::string> fDimShapeNames; // parameter names used to define the shapes
@@ -320,6 +324,14 @@ public:
    void AddAliasTensor(const std::string & name, const std::string & origin);
    bool IsAliasTensor(const std::string & tensor_name) const;
    std::string ResolveAliasTensor(const std::string &tensorName) const;
+
+   void MarkScalarTensor(const std::string & name) { fScalarTensors.insert(name); }
+   bool IsScalarTensor(const std::string & name) const { return fScalarTensors.count(name) != 0; }
+
+   // see fInternalDynamicParams
+   void RegisterInternalDynamicParam(const std::string & name) { fInternalDynamicParams.insert(name); }
+
+   std::vector<std::string> GetOperatorKernelParams(size_t opIdx, const std::vector<std::string> &baseDynParamNames) const;
 
    void AddExtraCodeForDimShapes(const std::string & code) { fExtraCodeForDimShapes += code; }
 

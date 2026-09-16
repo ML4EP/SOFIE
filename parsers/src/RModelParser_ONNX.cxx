@@ -312,6 +312,7 @@ RModelParser_ONNX::RModelParser_ONNX() noexcept : fOperatorsMapImpl(std::make_un
    RegisterOperator("GroupNormalization", ParseGroupNorm);
    RegisterOperator("CumSum", ParseCumSum);
    RegisterOperator("ScaledDotProductAttention", ParseSDPA);
+   RegisterOperator("SDPA", ParseSDPA);
    RegisterOperator("MambaScan", ParseMambaScan);
    RegisterOperator("RWKV_WKV6", ParseRWKVWKV6);
    RegisterOperator("GriffinRGLRU", ParseGriffinRGLRU);

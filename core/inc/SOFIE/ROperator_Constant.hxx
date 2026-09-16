@@ -112,6 +112,7 @@ public:
             for (size_t i = 0; i < rank; ++i) {
                fRuntimeDims[i] = fNY + "_dim_" + std::to_string(i);
                fDimShape[i] = Dim{fRuntimeDims[i], size_t(-1)};
+               model.RegisterInternalDynamicParam(fRuntimeDims[i]);
             }
 
             if (fValues.size() != 1)
@@ -166,9 +167,6 @@ public:
    }
 
    std::string Generate(std::string /* OpName */) override {
-      // For the static case, values are baked into the tensor at construction.
-      //  But a dynamic ConstantOfShape has a runtime-sized output whose
-      // length isn't known until inference time, so it still needs an explicit fill.
       if (!fIsConstantOfShape || fIsOutputConstant)
          return "//---------------------------------------\n";
       std::stringstream out;
@@ -206,16 +204,29 @@ public:
       if (!fIsConstantOfShape || fIsOutputConstant)
          return "//---------------------------------------\n";
       opName = "op_" + opName;
-      std::string length = ConvertDimShapeToLength(fDimShape);
 
       std::stringstream out;
       out << "\n//------ CONSTANTOFSHAPE_GPU_ALPAKA (dynamic)\n";
+
+      if (fRuntimeShape) {
+         out << SP << "auto shapeHost_" << opName << " = alpaka::allocBuf<int64_t, Idx>(hostAcc, Ext1D::all(Idx{"
+             << fRuntimeDims.size() << "}));\n";
+         out << SP << "alpaka::memcpy(queue, shapeHost_" << opName << ", deviceBuf_" << fNX << ");\n";
+         out << SP << "alpaka::wait(queue);\n";
+         out << SP << "auto* shapePtr_" << opName << " = alpaka::getPtrNative(shapeHost_" << opName << ");\n";
+         for (size_t i = 0; i < fRuntimeDims.size(); i++)
+            out << SP << "size_t " << fRuntimeDims[i] << " = static_cast<size_t>(shapePtr_" << opName << "[" << i << "]);\n";
+         out << SP << "deviceBuf_" << fNY << " = alpaka::allocBuf<" << ConvertTypeToString(GetTemplatedType(T()))
+             << ", Idx>(devAcc, Ext1D::all(Idx{static_cast<Idx>(" << ConvertDimShapeToLength(fDimShape) << ")}));\n";
+      }
+
+      std::string length = ConvertDimShapeToLength(fDimShape);
       out << SP << "auto const elementsPerGrid_" << opName << " = Vec::all(Idx{static_cast<Idx>(" << length << ")});\n";
       out << SP << "auto const workDiv_" << opName << " = sofie_workdiv(elementsPerGrid_" << opName << ");\n";
       out << SP << "auto task_" << opName << " = alpaka::createTaskKernel<Acc>(workDiv_" << opName
           << ", constantOfShapeFillKernel_" << opName
           << ", alpaka::getPtrNative(deviceBuf_" << fNY << ")"
-          << ", " << ValueLiteral(fValues[0])
+          << ", static_cast<" << ConvertTypeToString(GetTemplatedType(T())) << ">(" << ValueLiteral(fValues[0]) << ")"
           << ", static_cast<std::size_t>(" << length << "));\n";
       out << SP << "alpaka::enqueue(queue, task_" << opName << ");\n";
       return out.str();

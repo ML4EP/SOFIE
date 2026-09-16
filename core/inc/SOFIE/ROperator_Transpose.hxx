@@ -242,11 +242,17 @@ public:
          throw std::runtime_error("SOFIE Operator Transpose called to Generate without being initialized first");
 
       std::string length = ConvertDimShapeToLength(dimShapeOutput);
-      std::string inputBuffer = (fDynamicInput ? "bufDev_" : "deviceBuf_") + fNData;
-      std::string outputBuffer = (fDynamicOutput ? "bufDev_" : "deviceBuf_") + fNOutput;
+      std::string inputBuffer = "deviceBuf_" + fNData;
+      std::string outputBuffer = "deviceBuf_" + fNOutput;
 
       std::stringstream out;
       out << "\n//------ TRANSPOSE_GPU_ALPAKA\n";
+
+      if (fDynamicOutput) {
+         out << SP << outputBuffer << " = alpaka::allocBuf<"
+             << ConvertTypeToString(GetTemplatedType(T())) << ", Idx>(devAcc, Ext1D::all(Idx{"
+             << "static_cast<Idx>(" << length << ")}));\n";
+      }
 
       out << SP << "auto const elementsPerThread_" << fNOutput << " = Vec::all(static_cast<Idx>(1));\n";
       out << SP << "auto const elementsPerGrid_" << fNOutput << " = Vec::all(Idx{" << length << "});\n";

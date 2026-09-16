@@ -145,7 +145,7 @@ public:
       if (inputIndex != 0 || outputTensorIndex >= fOutputShapes.size())
          return "";
 
-      if (inputShape != fInputShape || outputShape != fOutputShapes[outputTensorIndex])
+      if (ConvertShapeToDim(inputShape) != fInputShape || ConvertShapeToDim(outputShape) != fOutputShapes[outputTensorIndex])
          return "";
 
       const auto inputStrides = UTILITY::ComputeStrideFromShape(inputShape);

@@ -11,6 +11,7 @@
 #include "SOFIE/RModelParser_ONNX.hxx"
 
 #include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -58,6 +59,7 @@ static int EmitBenchmarkModel(const std::string &onnxPath,
 
     // Collect input metadata before code generation
     struct TensorMeta {
+        std::string name;
         ETensorType type;
         std::string cppType;
         size_t numElements;
@@ -66,6 +68,7 @@ static int EmitBenchmarkModel(const std::string &onnxPath,
     std::vector<TensorMeta> inputs;
     for (const auto &n : inputNames) {
         TensorMeta m;
+        m.name = n;
         try {
             m.type = model.GetTensorType(n);
             m.cppType = tensorTypeToCpp(m.type);
@@ -198,10 +201,6 @@ static int EmitBenchmarkModel(const std::string &onnxPath,
         << "#include <iostream>\n"
         << "#include <random>\n"
         << "#include <string>\n\n"
-        // Not inline: each model is compiled in its own _bench.cu TU and
-        // called from the main TU via a forward declaration.  Using inline
-        // here would require all 32 models to share one translation unit
-        // which OOM-kills the CUDA compiler.
         << "void Benchmark_" << cppName
         << "(int warmup, int iterations, const std::string& weightsDir, bool profile) {\n"
         << "    using namespace sofie_bench;\n\n"
@@ -215,9 +214,18 @@ static int EmitBenchmarkModel(const std::string &onnxPath,
         << "    std::uniform_real_distribution<float> fdist(-1.0f, 1.0f);\n\n";
 
 
+    auto toLower = [](std::string s) {
+        std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return std::tolower(c); });
+        return s;
+    };
+
+    const bool isMlpf = toLower(cppName).find("mlpf") != std::string::npos;
     for (size_t i = 0; i < inputs.size(); ++i) {
         const std::string &T = inputs[i].cppType;
         const size_t       N = inputs[i].numElements;
+
+        const std::string lname = toLower(inputs[i].name);
+        const bool isMask = lname.find("mask") != std::string::npos;
         bench
             << "    // Input " << i << ": " << T << "[" << N << "]\n"
             << "    auto input_h_" << i << " = alpaka::allocBuf<" << T
@@ -225,7 +233,14 @@ static int EmitBenchmarkModel(const std::string &onnxPath,
             << "    {\n"
             << "        auto *p = reinterpret_cast<" << T
             << "*>(alpaka::getPtrNative(input_h_" << i << "));\n";
-        if (T == "float" || T == "double") {
+        if (isMask && (T == "float" || T == "double")) {
+            bench
+                << "        std::fill(p, p + " << N << ", static_cast<" << T << ">(1));\n";
+        } else if (isMlpf && (T == "float" || T == "double")) {
+            bench
+                << "        for (size_t k = 0; k < " << N
+                << "; ++k) p[k] = static_cast<" << T << ">(0.01f + 0.5f * (fdist(rng) + 1.0f));\n";
+        } else if (T == "float" || T == "double") {
             bench
                 << "        for (size_t k = 0; k < " << N
                 << "; ++k) p[k] = static_cast<" << T << ">(fdist(rng));\n";

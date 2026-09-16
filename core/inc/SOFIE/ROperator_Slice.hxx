@@ -250,6 +250,11 @@ public:
             } else {
                fEnd[fAxes[i]] = fEndDims[i];
             }
+            if (fEnd[fAxes[i]].GetVal() != fShapeInput[fAxes[i]].GetVal()) {
+               std::string clamped = "std::min<size_t>(" + fEnd[fAxes[i]].GetVal() + ", " +
+                                      fShapeInput[fAxes[i]].GetVal() + ")";
+               fEnd[fAxes[i]] = Dim{clamped, size_t(-1)};
+            }
 
             fSteps[fAxes[i]] = fStepDims[i];
          }
@@ -574,16 +579,14 @@ public:
       auto totalElements = ConvertDimShapeToLength(fShapeOutput);
       std::string kname = "sliceKernel_" + opName;
 
-      const std::string inputBuffer =
-         ((fInputIsDynamic && !fInputIsAlias) ? "bufDev_" : "deviceBuf_") + fNData;
-      const std::string outputBuffer =
-         (fOutputIsDynamic ? "bufDev_" : "deviceBuf_") + fNOutput;
+      const std::string inputBuffer = "deviceBuf_" + fNData;
+      const std::string outputBuffer = "deviceBuf_" + fNOutput;
 
       std::stringstream out;
       out << "\n//------ SLICE_GPU_ALPAKA\n";
 
       if (fOutputIsDynamic) {
-         out << SP << "bufDev_" << fNOutput
+         out << SP << "deviceBuf_" << fNOutput
              << " = alpaka::allocBuf<" << ConvertTypeToString(fDataType)
              << ", Idx>(devAcc, Ext1D::all(Idx{" << totalElements << "}));\n";
       }

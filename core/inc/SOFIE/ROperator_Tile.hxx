@@ -232,7 +232,7 @@ public:
 
    EFusionMappingType GetFusionMappingType() const override
    {
-      if (fShapeInput.empty() || fShapeY.empty() || fRepeats.empty())
+      if (fShapeInput.empty() || fShapeY.empty())
          return EFusionMappingType::Unsupported;
 
       return EFusionMappingType::Shuffle;

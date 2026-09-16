@@ -207,6 +207,22 @@ def gnn_large_suffix(v: dict) -> str:
 # MLPF
 # ---------------------------------------------------------------------------
 
+MLPF_NUM_HEADS = 16
+
+
+def patch_sdpa_num_heads(model: onnx.ModelProto, num_heads: int) -> onnx.ModelProto:
+    """Add a num_heads attribute to every "SDPA" node (no-op if there are none)."""
+    m = copy.deepcopy(model)
+    patched = 0
+    for node in m.graph.node:
+        if node.op_type == "SDPA":
+            node.attribute.append(onnx.helper.make_attribute("num_heads", num_heads))
+            patched += 1
+    if patched:
+        print(f"  patched {patched} SDPA node(s) with num_heads={num_heads}")
+    return m
+
+
 MLPF_VARIANTS = [
     {"batch": 1, "n_elements": 128},
     {"batch": 1, "n_elements": 256},
@@ -297,7 +313,8 @@ def specialize_family(model_names: list[str],
                       variants: list[dict],
                       shape_map_fn,
                       suffix_fn,
-                      output_shape_map_fn=None) -> None:
+                      output_shape_map_fn=None,
+                      pre_transform_fn=None) -> None:
     for model_name in model_names:
         src_path = os.path.join(BASE, model_name)
 
@@ -311,6 +328,9 @@ def specialize_family(model_names: list[str],
         base_model = onnx.load(src_path, load_external_data=True)
 
         print(f"\nSpecializing {model_name}:")
+
+        if pre_transform_fn is not None:
+            base_model = pre_transform_fn(base_model)
 
         for variant in variants:
             out_name = f"{stem}_{suffix_fn(variant)}.onnx"
@@ -553,6 +573,7 @@ def main() -> None:
         MLPF_VARIANTS,
         mlpf_shape_map,
         mlpf_suffix,
+        pre_transform_fn=lambda m: patch_sdpa_num_heads(m, MLPF_NUM_HEADS),
     )
 
     specialize_mambav2()

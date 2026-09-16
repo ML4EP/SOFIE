@@ -119,10 +119,6 @@ file(GLOB BENCHMARK_ONNX_MODELS "${BENCHMARK_MODEL_DIR}/*.onnx")
 list(FILTER BENCHMARK_ONNX_MODELS EXCLUDE REGEX
         "/(gnn_h32_k2|gnn_h64_k4|punet_h32_k2_heads4_layers2|punet_h64_k4_heads4_layers2|transformer_d32_h2_L6_ff32|transformer_d64_h4_L6_ff128|gnn_large|mlpf_fp32_fused|mlpf_fp32_unfused)\\.onnx$")
 
-# Fused MLPF variants are currently unsupported.
-list(FILTER BENCHMARK_ONNX_MODELS EXCLUDE REGEX
-        "/mlpf_fp32_fused_b1_n[0-9]+\\.onnx$")
-
 # Models that exceed GPU memory on all backends.
 list(FILTER BENCHMARK_ONNX_MODELS EXCLUDE REGEX
         "/(punet_h32_k2_heads4_layers2_n30000_e150000|punet_h32_k2_heads4_layers2_n100000_e500000|punet_h64_k4_heads4_layers2_n30000_e150000|punet_h64_k4_heads4_layers2_n100000_e500000)\\.onnx$")
