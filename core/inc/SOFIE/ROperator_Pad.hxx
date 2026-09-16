@@ -26,6 +26,8 @@ private:
    std::vector<Dim> fInputShape;
    std::vector<Dim> fOutputShape;
    std::vector<std::pair<int64_t, int64_t>> fPads;
+   std::string fType;
+   bool fHasDynamicPaddedAxis = false;  // true if any output dim is a "(param +/- pad)" expression
 
 public:
 
@@ -136,11 +138,13 @@ public:
                std::string expr = "(" + fInputShape[i].param + (padSum >= 0 ? " + " : " - ")
                                  + std::to_string(std::abs(padSum)) + ")";
                fOutputShape[i] = Dim{expr, size_t(-1)};
+               fHasDynamicPaddedAxis = true;
             }
             // else: dynamic dimension with no padding on this axis, output dim == input dim
          }
       }
 
+      fType = ConvertTypeToString(model.GetTensorType(fNX));
       model.AddIntermediateTensor(fNY, model.GetTensorType(fNX), fOutputShape);
 
       if (model.Verbose()) {
@@ -273,6 +277,15 @@ public:
       opName = "op_" + opName;
       std::string kname = "PadKernel_" + opName;
       return SP + kname + " padKernel_" + opName + ";\n";
+   }
+
+   std::string GenerateInitCode_GPU_ALPAKA() override {
+      if (!fHasDynamicPaddedAxis) return "";
+      if (fOutputShape.empty())
+         throw std::runtime_error("SOFIE Pad Op called to Generate without being initialized first");
+
+      std::string totalElements = ConvertDimShapeToLength(fOutputShape);
+      return SP + "deviceBuf_" + fNY + " = alpaka::allocBuf<" + fType + ", Idx>(devAcc, Ext1D::all(Idx{static_cast<Idx>(" + totalElements + ")}));\n";
    }
 
    std::string Generate_GPU_ALPAKA(std::string opName, const std::vector<std::string> &dynParamNames) override {

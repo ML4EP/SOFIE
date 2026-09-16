@@ -566,13 +566,6 @@ TEST_F(SofieAlpakaTest, TopK)
    }
 }
 
-// Regression test for the two-phase parallel GPU TopK path: axis length 10007 is far
-// past the point where a single serial thread per slice would leave the GPU mostly
-// idle (the scenario this optimization targets, e.g. top-k over vocabulary-sized
-// logits), and it's deliberately not a multiple of the chunk size, exercising phase
-// 1's tail-chunk handling. Reference is computed by a plain stable sort in the test
-// itself: a stable descending sort naturally keeps equal values in ascending original
-// index order, matching the tie-break rule the two-phase kernel implements explicitly.
 TEST_F(SofieAlpakaTest, TopKBig)
 {
    constexpr float TOLERANCE = DEFAULT_TOLERANCE;
@@ -714,8 +707,8 @@ TEST_F(SofieAlpakaTest, DynamicTopK_SmallerThanRequestedK)
    alpaka::memcpy(queue, input_d, input_h);
    alpaka::wait(queue);
 
-   auto values_h  = alpaka::allocBuf<float,   Idx>(host, Ext1D::all(Idx{N * topKCount}));
-   auto indices_h = alpaka::allocBuf<int64_t, Idx>(host, Ext1D::all(Idx{N * topKCount}));
+   auto values_h  = alpaka::allocBuf<float,   Idx>(host, Ext1D::all(Idx{N * K}));
+   auto indices_h = alpaka::allocBuf<int64_t, Idx>(host, Ext1D::all(Idx{N * K}));
    {
       SOFIE_DynamicTopK::Session<alpaka::TagGpuCudaRt> session("", N, D);
       auto [values, indices] = session.infer(N, D, input_d);

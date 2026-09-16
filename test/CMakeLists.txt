@@ -203,6 +203,7 @@ ROOTTEST_GENERATE_EXECUTABLE(
             CUDA_SEPARABLE_COMPILATION OFF
             CUDA_STANDARD 20
             CUDA_STANDARD_REQUIRED ON
+            CUDA_ARCHITECTURES "90"
     )
 
     target_compile_definitions(
@@ -218,21 +219,15 @@ ROOTTEST_GENERATE_EXECUTABLE(
         --expt-relaxed-constexpr
         --generate-line-info
         --use_fast_math
-        -g
-        -G
-        # -fsanitize=address
-        -O1
         -Wno-deprecated-gpu-targets
+        $<IF:$<BOOL:${SOFIE_ALPAKA_CUDA_DEBUG}>,-g;-G;-O0,-O3>
       >
       $<$<COMPILE_LANGUAGE:CXX>:
-        -O2
-        -g
-        -G
         -fPIC
         -pthread
+        $<IF:$<BOOL:${SOFIE_ALPAKA_CUDA_DEBUG}>,-g;-O0,-O2>
       >
     )
-  # set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
 
     # ROOT-compatible: plain signature only
     target_link_libraries(
@@ -246,6 +241,7 @@ ROOTTEST_GENERATE_EXECUTABLE(
       TestCustomModelsFromONNXForAlpakaCuda
       EXEC ./TestCustomModelsFromONNXForAlpakaCuda
       FIXTURES_REQUIRED sofie-compile-models-onnx-alpaka;sofie-lowrank-emit;sofie-test-models-onnx-alpaka-build
+      TIMEOUT 1800
     )
 
   elseif (_alpaka_backend STREQUAL "hip")

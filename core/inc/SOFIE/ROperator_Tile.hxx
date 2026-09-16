@@ -21,6 +21,8 @@ private:
    std::string fNY;
    std::vector<Dim> fShapeInput;
    std::vector<Dim> fShapeY;
+   std::string fType;
+   bool fHasDynamicTiledAxis = false;  // true if any output dim is a "(param * repeat)" expression
 
 public:
    ROperator_Tile(){}
@@ -43,6 +45,7 @@ public:
          if (repeat[i] != 1) {
             if (ret[i].isParam) {
                ret[i] = Dim{ std::string(ret[i].GetVal() + "*" + std::to_string(repeat[i])), static_cast<size_t>(-1) };
+               fHasDynamicTiledAxis = true;
             } else {
                ret[i]=Dim { ret[i].dim *repeat[i] };
             }
@@ -79,6 +82,7 @@ public:
 
       fShapeY = ShapeInference(fShapeInput, repeats_vector);
 
+      fType = ConvertTypeToString(model.GetTensorType(fNInput));
       model.AddIntermediateTensor(fNY, model.GetTensorType(fNInput), fShapeY);
 
       if (model.Verbose())
@@ -189,6 +193,15 @@ public:
       opName = "op_" + opName;
       std::string kname = "TileKernel_" + opName;
       return SP + kname + " tileKernel_" + opName + ";\n";
+   }
+
+   std::string GenerateInitCode_GPU_ALPAKA() override {
+      if (!fHasDynamicTiledAxis) return "";
+      if (fShapeInput.empty() || fShapeY.empty())
+         throw std::runtime_error("SOFIE Operator Tile called to Generate without being initialized first");
+
+      std::string totalElements = ConvertDimShapeToLength(fShapeY);
+      return SP + "deviceBuf_" + fNY + " = alpaka::allocBuf<" + fType + ", Idx>(devAcc, Ext1D::all(Idx{static_cast<Idx>(" + totalElements + ")}));\n";
    }
 
    std::string Generate_GPU_ALPAKA(std::string opName, const std::vector<std::string> &dynParamNames) override {

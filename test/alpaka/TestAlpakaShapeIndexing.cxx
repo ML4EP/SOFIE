@@ -67,6 +67,9 @@
 #include "input_models/references/Slice_Default_Steps.ref.hxx"
 #include "input_models/references/Slice_Neg.ref.hxx"
 
+#include "NonZero_FromONNX_GPU_ALPAKA.hxx"
+#include "DynamicNonZero_FromONNX_GPU_ALPAKA.hxx"
+
 #include "DynamicTranspose_FromONNX_GPU_ALPAKA.hxx"
 #include "DynamicConcat_FromONNX_GPU_ALPAKA.hxx"
 #include "DynamicTile_FromONNX_GPU_ALPAKA.hxx"
@@ -1823,6 +1826,52 @@ TEST_F(SofieAlpakaTest, NonZero)
     {
         SOFIE_NonZero::Session<alpaka::TagGpuCudaRt> session;
         auto result = session.infer(input_d);
+
+        alpaka::wait(queue);
+        cudaDeviceSynchronize();
+
+        alpaka::memcpy(queue, result_h, result);
+        alpaka::wait(queue);
+    }
+
+    int64_t* res_ptr = reinterpret_cast<int64_t*>(alpaka::getPtrNative(result_h));
+
+    for (size_t i = 0; i < correct.size(); ++i)
+        EXPECT_EQ(res_ptr[i], correct[i]) << "i=" << i;
+}
+
+TEST_F(SofieAlpakaTest, DynamicNonZero)
+{
+    constexpr std::size_t N = 4, D = 3;
+
+    std::vector<float> input = {
+        0.f, 2.f, 0.f,
+        3.f, 4.f, 0.f,
+        0.f, 0.f, 5.f,
+        0.f, 0.f, 0.f
+    };
+
+    // Non-zero coordinates (row-major over the flattened 4x3 input) are (0,1), (1,0), (1,1), (2,2).
+    std::vector<int64_t> correct = {
+        0, 1, 1, 2,
+        1, 0, 1, 2
+    };
+
+    auto input_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{N * D}));
+    float* input_ptr = reinterpret_cast<float*>(alpaka::getPtrNative(input_h));
+    for (Idx i = 0; i < N * D; ++i)
+        input_ptr[i] = input[i];
+
+    auto input_d = alpaka::allocBuf<float, Idx>(device, Ext1D::all(Idx{N * D}));
+    alpaka::memcpy(queue, input_d, input_h);
+    alpaka::wait(queue);
+
+    constexpr std::size_t outputCapacity = 2 * N * D;
+    auto result_h = alpaka::allocBuf<int64_t, Idx>(host, Ext1D::all(Idx{outputCapacity}));
+
+    {
+        SOFIE_DynamicNonZero::Session<alpaka::TagGpuCudaRt> session("", N);
+        auto result = session.infer(N, input_d);
 
         alpaka::wait(queue);
         cudaDeviceSynchronize();

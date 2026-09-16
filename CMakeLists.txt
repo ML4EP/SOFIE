@@ -78,6 +78,8 @@ endif()
 
 option(SOFIE_BENCHMARK "Build the SOFIE CUDA benchmark toolkit" OFF)
 
+option(SOFIE_ALPAKA_CUDA_DEBUG "Build Alpaka CUDA tests with device debug info (-G, -O0) for use with cuda-gdb; slows GPU test execution, so OFF for normal test runs" OFF)
+
 if(SOFIE_WITH_ROOT AND ROOT_FOUND)
   include(cmake/modules/RoottestMacros.cmake)
 else()

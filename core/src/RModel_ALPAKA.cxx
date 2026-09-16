@@ -261,6 +261,16 @@ void RModel::GenerateDynamicTensorInfo_GPU_ALPAKA() {
 
    for (auto &i : fDynamicTensorInfos) {
       if (fFusionIntermediateTensors.count(i.first)) continue;
+
+      bool runtimeShape = false;
+      for (const auto &dim : i.second.shape) {
+         if (dim.isParam && fShapeParams.count(dim.param) == 0) {
+            runtimeShape = true;
+            break;
+         }
+      }
+      if (runtimeShape) continue;
+
       auto length = ConvertDimShapeToLength(i.second.shape);
       out << SP << "if (" << length << " > 0) {\n";
       out << SP << "deviceBuf_" << i.first << " = alpaka::allocBuf<" << ConvertOutputTypeToString(i.second.type)
