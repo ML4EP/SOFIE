@@ -2,6 +2,7 @@
 
 #include "GPUMemoryMonitor.hxx"
 #include "GPUProfiler.hxx"
+#include "WarmupUtil.hxx"
 
 #include <torch/torch.h>
 #include <torch/csrc/inductor/aoti_package/model_package_loader.h>
@@ -113,10 +114,11 @@ inline void BenchmarkAOT_GPU(const std::string &packagePath,
 
     auto inputs = CreateAOTInputs(inputSpecs);
 
-    for (int i = 0; i < warmup; ++i)
+    sofie_bench::RunWarmup([&]() {
         loader.run(inputs);
-
-    cudaDeviceSynchronize();
+        cudaDeviceSynchronize();
+        return true;
+    }, warmup);
 
     GPUMemoryMonitor gpuMonitor;
     gpuMonitor.Start();

@@ -616,6 +616,33 @@ namespace SOFIE{
          return out.str();
       }
 
+      std::string Generate_GPU_Kernel_ALPAKA(std::string /*opName*/) override {
+         std::string op;
+         op = "\n//------ GEMM_BIAS_ADD_KERNEL_ALPAKA\n";
+         op += "struct GemmBiasAddKernel {\n";
+         op += SP + "template<typename TAcc, typename T>\n";
+         op += SP + "ALPAKA_FN_ACC void operator()(TAcc const& acc, T* __restrict__ Y, T const* __restrict__ C, std::size_t m, std::size_t n, std::size_t cRows, std::size_t cCols, bool hasExtraC, bool applyRelu, std::size_t totalElements) const {\n";
+         op += SP + SP + "auto const idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
+         op += SP + SP + "if (idx >= totalElements) return;\n";
+         op += SP + SP + "std::size_t sliceSize = m * n;\n";
+         op += SP + SP + "std::size_t i = idx / sliceSize;\n";
+         op += SP + SP + "std::size_t within = idx % sliceSize;\n";
+         op += SP + SP + "std::size_t r = within / n;\n";
+         op += SP + SP + "std::size_t c = within % n;\n";
+         op += SP + SP + "std::size_t cSliceOffset = hasExtraC ? i * (cRows * cCols) : 0;\n";
+         op += SP + SP + "std::size_t cr = (cRows == 1) ? 0 : r;\n";
+         op += SP + SP + "std::size_t cc = (cCols == 1) ? 0 : c;\n";
+         op += SP + SP + "T value = Y[idx] + C[cSliceOffset + cr * cCols + cc];\n";
+         op += SP + SP + "Y[idx] = applyRelu ? (value >= T(0) ? value : T(0)) : value;\n";
+         op += SP + "}\n";
+         op += "};\n";
+         return op;
+      }
+
+      std::string Generate_GPU_Kernel_Definitions_ALPAKA(std::string /*opName*/) override {
+         return "GemmBiasAddKernel gemmBiasAddKernel;\n";
+      }
+
       std::string Generate_GPU_ALPAKA(std::string opName) override {
          opName = "op_" + opName;
 
@@ -644,6 +671,24 @@ namespace SOFIE{
          }
          auto lengthGemm = ConvertDimShapeToLength(sY); // size of the Gemm operation
          auto lengthExtra = ConvertDimShapeToLength(sA); // extra length in case input tensors are of dim>2 (MatMul)
+
+         std::vector<Dim> sC, sExtraC;
+         bool haveExtraC = false;
+         bool cShapeKnown = true;
+         if (!fNC.empty()) {
+            int64_t dimC = static_cast<int64_t>(fDimShapeC.size());
+            if (dimC >= 2) {
+               sC = {fDimShapeC[dimC-2], fDimShapeC[dimC-1]};
+               for (int64_t i = 0; i < dimC-2; i++) sExtraC.push_back(fDimShapeC[i]);
+            } else if (dimC == 1) {
+               sC = {Dim(static_cast<size_t>(1)), fDimShapeC[0]};
+            } else {
+               sC = {Dim(static_cast<size_t>(1)), Dim(static_cast<size_t>(1))};
+            }
+            auto lengthExtraC = sExtraC.empty() ? std::string("1") : ConvertDimShapeToLength(sExtraC);
+            haveExtraC = lengthExtraC != "1";
+            cShapeKnown = !sC[0].isParam && !sC[1].isParam;
+         }
 
          out << SP << "int " << opName << "_m = " << m << ";\n";
          out << SP << "int " << opName << "_n = " << n << ";\n";
@@ -697,6 +742,7 @@ namespace SOFIE{
          size_t strideA = 0, strideB = 0, strideY = 0, strideC = 0;
          bool batchCollapseB = false;
          bool useSBatched    = false;
+         bool useBatchedBias = false;
          if (doStackMul && !fIsDynamic) {
             strideA = static_cast<size_t>(std::stoi(m)) * static_cast<size_t>(std::stoi(k));
             strideB = bLeadingDimsAllOne ? 0
@@ -706,9 +752,10 @@ namespace SOFIE{
 
             batchCollapseB = (strideB == 0);
             useSBatched    = !batchCollapseB && fNC.empty();
+            useBatchedBias = !batchCollapseB && !fNC.empty() && !fLowRank && cShapeKnown;
          }
 
-         bool useSerialLoop = doStackMul && !batchCollapseB && !useSBatched;
+         bool useSerialLoop = doStackMul && !batchCollapseB && !useSBatched && !useBatchedBias;
          if (useSerialLoop) {
             out << SP << "size_t " << opName << "_yoffset = 0;\n";
             out << SP << "for (int i = 0; i < " << lengthExtra << "; i++){\n";
@@ -804,6 +851,42 @@ namespace SOFIE{
                 << "alpaka::getPtrNative(deviceBuf_" << fNY << "), "
                 << ldc << ", " << sC << ", "
                 << batchCount << ");\n";
+         } else if (useBatchedBias) {
+            size_t m_sofie = static_cast<size_t>(std::stoi(n));
+            size_t n_sofie = static_cast<size_t>(std::stoi(m));
+            size_t k_val = static_cast<size_t>(std::stoi(k));
+
+            size_t lda = fAttrTransB ? k_val : m_sofie;
+            size_t ldb = fAttrTransA ? n_sofie : k_val;
+            size_t ldc = m_sofie;
+            size_t sAb        = m_sofie * k_val;
+            size_t sBb        = k_val  * n_sofie;
+            size_t sCb        = m_sofie * n_sofie;
+            size_t batchCount = static_cast<size_t>(std::stoi(lengthExtra));
+            out << SP << "blas.gemmStridedBatched("
+                << opName << "_transB, " << opName << "_transA, "
+                << m_sofie << ", " << n_sofie << ", " << k_val << ", "
+                << opName << "_alpha, "
+                << "alpaka::getPtrNative(deviceBuf_" << fNB << "), "
+                << lda << ", " << sAb << ", "
+                << "alpaka::getPtrNative(deviceBuf_" << fNA << "), "
+                << ldb << ", " << sBb << ", "
+                << opName << "_beta, "
+                << "alpaka::getPtrNative(deviceBuf_" << fNY << "), "
+                << ldc << ", " << sCb << ", "
+                << batchCount << ");\n";
+
+            out << SP << "auto const elementsPerGrid_" << opName << "_bias = Vec::all(Idx{static_cast<Idx>((" << lengthExtra << ") * (" << lengthGemm << "))});\n";
+            out << SP << "auto const workDiv_" << opName << "_bias = sofie_workdiv(elementsPerGrid_" << opName << "_bias);\n";
+            out << SP << "auto task_" << opName << "_bias = alpaka::createTaskKernel<Acc>(workDiv_" << opName << "_bias, gemmBiasAddKernel, "
+                << "alpaka::getPtrNative(deviceBuf_" << fNY << "), "
+                << "alpaka::getPtrNative(deviceBuf_" << fNC << "), "
+                << "static_cast<std::size_t>(" << m << "), static_cast<std::size_t>(" << n << "), "
+                << "static_cast<std::size_t>(" << sC[0].GetVal() << "), static_cast<std::size_t>(" << sC[1].GetVal() << "), "
+                << (haveExtraC ? "true" : "false") << ", "
+                << (fActivation == EActivationType::RELU ? "true" : "false") << ", "
+                << "static_cast<Idx>((" << lengthExtra << ") * (" << lengthGemm << ")));\n";
+            out << SP << "alpaka::enqueue(queue, task_" << opName << "_bias);\n";
          } else if (!fNC.empty()) {
             std::string call_m = batchCollapseB
                ? std::to_string(static_cast<size_t>(std::stoi(m)) * static_cast<size_t>(std::stoi(lengthExtra)))
@@ -891,7 +974,7 @@ namespace SOFIE{
          fOutputTensorNames[0] = fNY;
       }
 
-      // --- Activation fusion accessors (used by FuseGemmActivations_GPU) ---
+      // --- Activation fusion accessors (used by FusionPlanner) ---
       EActivationType GetActivationType() const { return fActivation; }
       bool HasBias() const { return !fNC.empty(); }
 

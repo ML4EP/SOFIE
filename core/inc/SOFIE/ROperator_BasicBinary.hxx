@@ -613,17 +613,15 @@ public:
       if (fIsOutputConstant)
          return EFusionMappingType::Unsupported;
 
-      // Initial generic fusion support is restricted to static,
-      // equal-shape binary elementwise operations.
-      if (!fShapeY.empty() && fShapeA == fShapeB && fShapeA == fShapeY)
+      if (fDimShapeY.empty())
+         return EFusionMappingType::Unsupported;
+
+      if (fDimShapeA == fDimShapeB && fDimShapeA == fDimShapeY)
          return EFusionMappingType::OneToOne;
 
       // Broadcasting maps one input value to multiple output positions.
-      if (!fShapeY.empty())
-         return EFusionMappingType::OneToMany;
-
-      // Dynamic-shape cases are not supported by the first implementation.
-      return EFusionMappingType::Unsupported;
+      // handle both static and parametric-dim broadcast shapes.
+      return EFusionMappingType::OneToMany;
    }
 
    std::string GetFusionExpr(const std::vector<std::string> &inputs) const override

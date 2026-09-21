@@ -139,13 +139,13 @@ public:
 
    std::string GetFusionInputIndexExprForOutput(size_t inputIndex, size_t outputTensorIndex,
                                                 const std::string &outputIndex,
-                                                const std::vector<size_t> &inputShape,
-                                                const std::vector<size_t> &outputShape) const override
+                                                const std::vector<Dim> &inputShape,
+                                                const std::vector<Dim> &outputShape) const override
    {
       if (inputIndex != 0 || outputTensorIndex >= fOutputShapes.size())
          return "";
 
-      if (ConvertShapeToDim(inputShape) != fInputShape || ConvertShapeToDim(outputShape) != fOutputShapes[outputTensorIndex])
+      if (inputShape != fInputShape || outputShape != fOutputShapes[outputTensorIndex])
          return "";
 
       const auto inputStrides = UTILITY::ComputeStrideFromShape(inputShape);
@@ -162,13 +162,13 @@ public:
             expression += " + ";
 
          std::string coordinate =
-            "((" + outputIndex + " / " + std::to_string(outputStrides[dim]) + "u) % " +
-            std::to_string(outputShape[dim]) + "u)";
+            "((" + outputIndex + " / " + outputStrides[dim].GetVal() + ") % " +
+            outputShape[dim].GetVal() + ")";
 
          if (dim == static_cast<size_t>(fAxis) && axisOffset != 0)
             coordinate = "(" + coordinate + " + " + std::to_string(axisOffset) + "u)";
 
-         expression += coordinate + " * " + std::to_string(inputStrides[dim]) + "u";
+         expression += coordinate + " * " + inputStrides[dim].GetVal();
       }
 
       return "(" + expression + ")";

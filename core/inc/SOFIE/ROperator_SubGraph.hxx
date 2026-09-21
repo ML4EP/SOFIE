@@ -64,7 +64,12 @@ public:
          // assume shape of then tensor is same of else tensor
          // if not need to make a parametric tensor output (tbd)
          auto soutput_name = fModel_then->GetOutputTensorNames()[i];
-         auto shape = fModel_then->GetTensorShape(soutput_name);
+         // Dim-aware: the "then" branch's output may be dynamic (e.g. it
+         // depends on a tensor defined in this If's own enclosing scope);
+         // GetTensorShape() would throw for that case, while GetDimTensorShape()
+         // (and the AddIntermediateTensor(..., vector<Dim>) overload below)
+         // handle both the static and dynamic case uniformly.
+         auto shape = fModel_then->GetDimTensorShape(soutput_name);
          auto type = fModel_then->GetTensorType(soutput_name);
          if (i == 0)
             fType = type;

@@ -1,6 +1,11 @@
 #include <algorithm>
+#include <cctype>
 #include <functional>
 #include <iostream>
+#include <iterator>
+#include <optional>
+#include <set>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -8,1720 +13,2261 @@
 #include <vector>
 
 #include "SOFIE/RModel.hxx"
+#include "SOFIE/RModelFusion_ALPAKA.hxx"
+#include "SOFIE/ROperator_Gemm.hxx"
+#include "SOFIE/ROperator_LeakyRelu.hxx"
+#include "SOFIE/ROperator_Relu.hxx"
 
 namespace SOFIE {
 
 namespace {
 
-   bool IsSupportedFusionMapping(EFusionMappingType mappingType, bool allowShuffle, bool allowReorganize, bool allowManyToMany)
-   {
-      const bool pointwise = mappingType == EFusionMappingType::OneToOne || mappingType == EFusionMappingType::OneToMany;
+Dim MultiplyDims(const Dim &a, const Dim &b)
+{
+   if (!a.isParam && !b.isParam)
+      return Dim{a.dim * b.dim};
+   if (a.GetVal() == "1")
+      return b;
+   if (b.GetVal() == "1")
+      return a;
+   return Dim{a.GetVal() + " * " + b.GetVal()};
+}
 
-      return pointwise || (allowShuffle && mappingType == EFusionMappingType::Shuffle) ||
-             (allowReorganize && mappingType == EFusionMappingType::Reorganize) ||
-             (allowManyToMany && mappingType == EFusionMappingType::ManyToMany);
+void AddInput(Fusion::Group &group, const Fusion::Input &input)
+{
+   const auto existing = std::find_if(group.externalInputs.begin(), group.externalInputs.end(),
+                                      [&](const Fusion::Input &i) { return i.tensorName == input.tensorName; });
+
+   if (existing == group.externalInputs.end()) {
+      group.externalInputs.push_back(input);
+      return;
    }
+
+   if (existing->access != input.access || existing->alignedStrides != input.alignedStrides ||
+       existing->customIndexExpression != input.customIndexExpression)
+      throw std::runtime_error("Conflicting fused access modes for tensor " + input.tensorName);
+}
 
 } // anonymous
 
-
-RModel::FusionTensorUseGraph RModel::BuildFusionTensorUseGraph() const
-{
-   FusionTensorUseGraph graph;
-
-   for (size_t opIdx = 0; opIdx < fOperators.size(); ++opIdx) {
-      const auto outputs = fOperators[opIdx]->GetOpOutputTensors();
-
-      const bool hasRuntimeOutput = std::any_of(outputs.begin(), outputs.end(), [&](const auto &outputNameView) {
-         return !IsInitializedTensor(std::string(outputNameView));
-      });
-
-      if (hasRuntimeOutput) {
-         for (const auto &inputName : fOperators[opIdx]->GetOpInputTensors())
-            graph.consumers[std::string(inputName)].push_back(opIdx);
-      }
-
-      for (const auto &outputNameView : outputs) {
-         const std::string outputName(outputNameView);
-
-         if (!IsInitializedTensor(outputName))
-            graph.producers[outputName] = opIdx;
-      }
-   }
-
-   return graph;
-}
-
-RModel::FusionCandidate RModel::BuildFusionCandidate(const std::vector<size_t> &opIndices, const FusionTensorUseGraph &tensorUses) const
-{
-   FusionCandidate candidate;
-   candidate.opIndices = opIndices;
-
-   std::sort(candidate.opIndices.begin(), candidate.opIndices.end());
-   candidate.opIndices.erase(std::unique(candidate.opIndices.begin(), candidate.opIndices.end()), candidate.opIndices.end());
-
-   for (const size_t opIdx : candidate.opIndices) {
-      if (opIdx >= fOperators.size())
-         throw std::runtime_error("Invalid operator index in fusion candidate: " + std::to_string(opIdx));
-   }
-
-   auto ContainsOp = [&](size_t opIdx) { return std::binary_search(candidate.opIndices.begin(), candidate.opIndices.end(), opIdx); };
-
-   auto AddUniqueTensor = [](std::vector<std::string> &tensors, const std::string &tensorName) {
-      if (std::find(tensors.begin(), tensors.end(), tensorName) == tensors.end())
-         tensors.push_back(tensorName);
-   };
-
-   for (const size_t opIdx : candidate.opIndices) {
-      const auto inputs = fOperators[opIdx]->GetOpInputTensors();
-      const auto dataInputIndices = fOperators[opIdx]->GetFusionDataInputIndices();
-
-      for (const size_t inputIdx : dataInputIndices) {
-         if (inputIdx >= inputs.size())
-            throw std::runtime_error("Invalid fusion data input index for operator " + std::to_string(opIdx));
-
-         const std::string inputName(inputs[inputIdx]);
-         const auto producerIt = tensorUses.producers.find(inputName);
-
-         if (producerIt == tensorUses.producers.end() || !ContainsOp(producerIt->second))
-            AddUniqueTensor(candidate.externalInputs, inputName);
-      }
-
-      for (const auto &outputNameView : fOperators[opIdx]->GetOpOutputTensors()) {
-         const std::string outputName(outputNameView);
-         const auto consumerIt = tensorUses.consumers.find(outputName);
-
-         const bool hasConsumers = consumerIt != tensorUses.consumers.end() && !consumerIt->second.empty();
-         const bool hasExternalConsumer = hasConsumers && std::any_of(consumerIt->second.begin(),
-            consumerIt->second.end(), [&](size_t consumerOpIdx) { return !ContainsOp(consumerOpIdx); });
-         const bool isModelOutput = std::find(fOutputTensorNames.begin(), fOutputTensorNames.end(), outputName) != fOutputTensorNames.end();
-
-         if (!hasConsumers || hasExternalConsumer || isModelOutput)
-            AddUniqueTensor(candidate.materializedOutputs, outputName);
-         else
-            AddUniqueTensor(candidate.internalTensors, outputName);
-      }
-   }
-
-   return candidate;
-}
-
-bool RModel::IsValidFusionCandidate(const FusionCandidate &candidate, const FusionTensorUseGraph &tensorUses) const
-{
-   if (candidate.opIndices.size() < 2)
-      return false;
-
-   std::set<size_t> candidateOps(candidate.opIndices.begin(), candidate.opIndices.end());
-   std::unordered_map<size_t, std::vector<size_t>> adjacency;
-
-   for (const size_t opIdx : candidate.opIndices) {
-      const auto inputs = fOperators[opIdx]->GetOpInputTensors();
-      const auto dataInputIndices = fOperators[opIdx]->GetFusionDataInputIndices();
-
-      for (const size_t inputIdx : dataInputIndices) {
-         if (inputIdx >= inputs.size())
-            return false;
-
-         const auto producerIt = tensorUses.producers.find(std::string(inputs[inputIdx]));
-         if (producerIt == tensorUses.producers.end() || !candidateOps.count(producerIt->second))
-            continue;
-
-         adjacency[opIdx].push_back(producerIt->second);
-         adjacency[producerIt->second].push_back(opIdx);
-      }
-   }
-
-   std::set<size_t> visited;
-   std::vector<size_t> pending{candidate.opIndices.front()};
-
-   while (!pending.empty()) {
-      const size_t opIdx = pending.back();
-      pending.pop_back();
-
-      if (!visited.insert(opIdx).second)
-         continue;
-
-      for (const size_t neighborIdx : adjacency[opIdx]) {
-         if (!visited.count(neighborIdx))
-            pending.push_back(neighborIdx);
-      }
-   }
-
-   if (visited.size() != candidate.opIndices.size())
-      return false;
-
-   for (const size_t opIdx : candidate.opIndices) {
-      if (!IsSupportedFusionOperator(opIdx, true, true, true))
-         return false;
-
-      const auto outputs = fOperators[opIdx]->GetOpOutputTensors();
-      const auto mappingType = fOperators[opIdx]->GetFusionMappingType();
-
-      if (outputs.empty())
-         return false;
-
-      if (outputs.size() > 1 && mappingType != EFusionMappingType::OneToMany)
-         return false;
-
-      try {
-         for (const auto &output : outputs)
-            GetTensorShape(std::string(output));
-      } catch (...) {
-         return false;
-      }
-   }
-
-   std::vector<size_t> reductionOps;
-
-   for (const size_t opIdx : candidate.opIndices) {
-      if (fOperators[opIdx]->IsFusionReduction())
-         reductionOps.push_back(opIdx);
-   }
-
-   if (reductionOps.size() > 1)
-      return false;
-
-   if (reductionOps.size() == 1) {
-      const size_t reductionOpIdx = reductionOps[0];
-      const auto &reductionOp = fOperators[reductionOpIdx];
-      const auto reductionInputs = reductionOp->GetOpInputTensors();
-      const auto reductionOutputs = reductionOp->GetOpOutputTensors();
-      const auto reductionDataInputs = reductionOp->GetFusionDataInputIndices();
-
-      if (reductionDataInputs.size() != 1 || reductionOutputs.size() != 1)
-         return false;
-
-      const auto reductionInputShape = GetTensorShape(std::string(reductionInputs[reductionDataInputs[0]]));
-      const auto reductionOutputShape = GetTensorShape(std::string(reductionOutputs[0]));
-
-      for (const auto &outputName : candidate.materializedOutputs) {
-         const auto outputShape = GetTensorShape(outputName);
-         if (outputShape != reductionInputShape && outputShape != reductionOutputShape)
-            return false;
-      }
-
-      for (const size_t opIdx : candidate.opIndices) {
-         if (opIdx == reductionOpIdx)
-            continue;
-
-         const auto mappingType = fOperators[opIdx]->GetFusionMappingType();
-         if (mappingType != EFusionMappingType::OneToOne && mappingType != EFusionMappingType::OneToMany)
-            return false;
-      }
-   }
-
-   if (candidate.materializedOutputs.empty())
-      return false;
-
-   const size_t materializedLength = ConvertShapeToLength(GetTensorShape(candidate.materializedOutputs.front()));
-   const ETensorType materializedType = GetTensorType(candidate.materializedOutputs.front());
-
-   for (const auto &outputName : candidate.materializedOutputs) {
-      if (IsAliasTensor(outputName))
-         return false;
-
-      if (ConvertShapeToLength(GetTensorShape(outputName)) != materializedLength)
-         return false;
-
-      if (GetTensorType(outputName) != materializedType)
-         return false;
-   }
-
-   return true;
-}
-
-std::vector<size_t> RModel::EnumerateFusionLaunchIndices(const FusionCandidate &candidate, const FusionTensorUseGraph &tensorUses) const
-{
-   std::vector<size_t> launchIndices;
-
-   for (const size_t launchOpIdx : candidate.opIndices) {
-      bool schedulable = true;
-
-      for (const auto &inputName : candidate.externalInputs) {
-         const auto producerIt = tensorUses.producers.find(inputName);
-
-         if (producerIt != tensorUses.producers.end() && producerIt->second >= launchOpIdx) {
-            schedulable = false;
-            break;
-         }
-      }
-
-      if (!schedulable)
-         continue;
-
-      for (const auto &outputName : candidate.materializedOutputs) {
-         const auto producerIt = tensorUses.producers.find(outputName);
-
-         if (producerIt == tensorUses.producers.end() || producerIt->second > launchOpIdx) {
-            schedulable = false;
-            break;
-         }
-
-         const auto consumerIt = tensorUses.consumers.find(outputName);
-
-         if (consumerIt == tensorUses.consumers.end())
-            continue;
-
-         for (const size_t consumerOpIdx : consumerIt->second) {
-            if (std::binary_search(candidate.opIndices.begin(), candidate.opIndices.end(), consumerOpIdx))
-               continue;
-
-            if (consumerOpIdx < launchOpIdx) {
-               schedulable = false;
-               break;
-            }
-         }
-
-         if (!schedulable)
-            break;
-      }
-
-      if (schedulable)
-         launchIndices.push_back(launchOpIdx);
-   }
-   
-   return launchIndices;
-}
-
-size_t RModel::ComputeFusionLiveRangeExtensionByteSteps(const FusionCandidate &candidate, const FusionTensorUseGraph &tensorUses) const
-{
-   size_t cost = 0;
-
-   // Inputs may have to remain alive longer when the fused kernel launches later.
-   for (const auto &externalInputName : candidate.externalInputs) {
-      const std::string tensorName = ResolveAliasTensor(externalInputName);
-
-      const auto frequencyIt = fIntermediateTensorFrequencyLookup.find(tensorName);
-
-      if (frequencyIt == fIntermediateTensorFrequencyLookup.end() || candidate.launchOpIndex <= frequencyIt->second)
-         continue;
-
-      const size_t tensorBytes = GetTypeSize(GetTensorType(tensorName)) * ConvertShapeToLength(GetTensorShape(tensorName));
-      cost += tensorBytes * (candidate.launchOpIndex - frequencyIt->second);
-   }
-
-   // Outputs may become alive earlier when the fused kernel launches before their original producer.
-   for (const auto &outputName : candidate.materializedOutputs) {
-      const auto producerIt = tensorUses.producers.find(outputName);
-
-      if (producerIt == tensorUses.producers.end() || candidate.launchOpIndex >= producerIt->second)
-         continue;
-
-      const size_t tensorBytes = GetTypeSize(GetTensorType(outputName)) * ConvertShapeToLength(GetTensorShape(outputName));
-      cost += tensorBytes * (producerIt->second - candidate.launchOpIndex);
-   }
-
-   return cost;
-}
-
-size_t RModel::ComputeFusionPlanLiveRangeExtensionByteSteps(const std::vector<size_t> &candidateIndices, const std::vector<FusionCandidate> &candidates) const
-{
-   std::unordered_map<std::string, size_t> requiredLastUses;
-
-   for (const size_t candidateIdx : candidateIndices) {
-      const auto &candidate = candidates[candidateIdx];
-
-      for (const auto &externalInputName : candidate.externalInputs) {
-         const std::string tensorName = ResolveAliasTensor(externalInputName);
-         const auto frequencyIt = fIntermediateTensorFrequencyLookup.find(tensorName);
-
-         if (frequencyIt == fIntermediateTensorFrequencyLookup.end() || candidate.launchOpIndex <= frequencyIt->second)
-            continue;
-
-         auto [requiredIt, inserted] = requiredLastUses.try_emplace(tensorName, candidate.launchOpIndex);
-         if (!inserted) requiredIt->second = std::max(requiredIt->second, candidate.launchOpIndex);
-      }
-   }
-
-   size_t cost = 0;
-
-   for (const auto &[tensorName, requiredLastUse] : requiredLastUses) {
-      const size_t originalLastUse = fIntermediateTensorFrequencyLookup.at(tensorName);
-      const size_t tensorBytes = GetTypeSize(GetTensorType(tensorName)) * ConvertShapeToLength(GetTensorShape(tensorName));
-      cost += tensorBytes * (requiredLastUse - originalLastUse);
-   }
-
-   return cost;
-}
-
-RModel::FusionStructuralScore RModel::ComputeFusionStructuralScore(const FusionCandidate &candidate, const FusionTensorUseGraph &tensorUses) const
-{
-   FusionStructuralScore score;
-   score.launchesRemoved = candidate.opIndices.empty() ? 0 : candidate.opIndices.size() - 1;
-   score.liveRangeExtensionByteSteps = ComputeFusionLiveRangeExtensionByteSteps(candidate, tensorUses);
-   score.materializedOutputs = candidate.materializedOutputs.size();
-   score.externalInputs = candidate.externalInputs.size();
-
-   for (const auto &tensorName : candidate.internalTensors)
-      score.eliminatedBytes += GetTypeSize(GetTensorType(tensorName)) * ConvertShapeToLength(GetTensorShape(tensorName));
-
-
-   return score;
-}
-
-bool RModel::FusionCandidatesConflict(const FusionCandidate &left, const FusionCandidate &right, const FusionTensorUseGraph &tensorUses) const
-{
-   size_t leftIdx = 0;
-   size_t rightIdx = 0;
-
-   while (leftIdx < left.opIndices.size() && rightIdx < right.opIndices.size()) {
-      if (left.opIndices[leftIdx] == right.opIndices[rightIdx])
-         return true;
-
-      if (left.opIndices[leftIdx] < right.opIndices[rightIdx])
-         ++leftIdx;
-      else
-         ++rightIdx;
-   }
-
-   auto HasOrderingConflict = [&](const FusionCandidate &producer, const FusionCandidate &consumer) {
-      for (const auto &outputName : producer.materializedOutputs) {
-         const auto consumerIt = tensorUses.consumers.find(outputName);
-         if (consumerIt == tensorUses.consumers.end())
-            continue;
-
-         for (const size_t consumerOpIdx : consumerIt->second) {
-            if (std::binary_search(consumer.opIndices.begin(), consumer.opIndices.end(), consumerOpIdx))
-               return producer.launchOpIndex >= consumer.launchOpIndex;
-         }
-      }
-
-      return false;
-   };
-
-   return HasOrderingConflict(left, right) || HasOrderingConflict(right, left);
-}
-
-RModel::FusionPlan RModel::SelectFusionPlan(const std::vector<FusionCandidate> &candidates, const FusionTensorUseGraph &tensorUses) const
-{
-   FusionPlan plan;
-
-   if (candidates.empty())
-      return plan;
-
-   std::vector<std::vector<size_t>> conflicts(candidates.size());
-
-   for (size_t leftIdx = 0; leftIdx < candidates.size(); ++leftIdx) {
-      for (size_t rightIdx = leftIdx + 1; rightIdx < candidates.size(); ++rightIdx) {
-         if (!FusionCandidatesConflict(candidates[leftIdx], candidates[rightIdx], tensorUses))
-            continue;
-
-         conflicts[leftIdx].push_back(rightIdx);
-         conflicts[rightIdx].push_back(leftIdx);
-      }
-   }
-
-   for (auto &candidateConflicts : conflicts) std::sort(candidateConflicts.begin(), candidateConflicts.end());
-
-   std::vector<std::vector<size_t>> componentNeighbors = conflicts;
-   std::unordered_map<std::string, std::vector<size_t>> lifetimeUsers;
-
-   for (size_t candidateIdx = 0; candidateIdx < candidates.size(); ++candidateIdx) {
-      for (const auto &externalInputName : candidates[candidateIdx].externalInputs) {
-         const std::string tensorName = ResolveAliasTensor(externalInputName);
-         const auto frequencyIt = fIntermediateTensorFrequencyLookup.find(tensorName);
-
-         if (frequencyIt == fIntermediateTensorFrequencyLookup.end() || candidates[candidateIdx].launchOpIndex <= frequencyIt->second)
-            continue;
-
-         lifetimeUsers[tensorName].push_back(candidateIdx);
-      }
-   }
-
-   for (auto &[tensorName, users] : lifetimeUsers) {
-      std::sort(users.begin(), users.end());
-      users.erase(std::unique(users.begin(), users.end()), users.end());
-
-      for (size_t idx = 1; idx < users.size(); ++idx) {
-         componentNeighbors[users.front()].push_back(users[idx]);
-         componentNeighbors[users[idx]].push_back(users.front());
-      }
-   }
-
-   for (auto &neighbors : componentNeighbors) {
-      std::sort(neighbors.begin(), neighbors.end());
-      neighbors.erase(std::unique(neighbors.begin(), neighbors.end()), neighbors.end());
-   }
-
-   auto AddScore = [](FusionStructuralScore &target, const FusionStructuralScore &score) {
-      target.launchesRemoved += score.launchesRemoved;
-      target.eliminatedBytes += score.eliminatedBytes;
-      target.materializedOutputs += score.materializedOutputs;
-      target.externalInputs += score.externalInputs;
-   };
-
-   auto ScoresEqual = [](const FusionStructuralScore &left, const FusionStructuralScore &right) {
-      return left.launchesRemoved == right.launchesRemoved
-            && left.liveRangeExtensionByteSteps == right.liveRangeExtensionByteSteps
-            && left.eliminatedBytes == right.eliminatedBytes
-            && left.materializedOutputs == right.materializedOutputs
-            && left.externalInputs == right.externalInputs;
-   };
-
-   std::vector<bool> componentVisited(candidates.size(), false);
-
-   for (size_t seedIdx = 0; seedIdx < candidates.size(); ++seedIdx) {
-      if (componentVisited[seedIdx])
-         continue;
-
-      std::vector<size_t> component;
-      std::vector<size_t> pending{seedIdx};
-      componentVisited[seedIdx] = true;
-
-      while (!pending.empty()) {
-         const size_t candidateIdx = pending.back();
-         pending.pop_back();
-         component.push_back(candidateIdx);
-
-         for (const size_t neighborIdx : componentNeighbors[candidateIdx]) {
-            if (componentVisited[neighborIdx])
-               continue;
-
-            componentVisited[neighborIdx] = true;
-            pending.push_back(neighborIdx);
-         }
-      }
-
-      std::sort(component.begin(), component.end());
-
-      FusionStructuralScore bestScore;
-      std::vector<size_t> bestSelection;
-      bool hasBest = false;
-
-      std::function<void(const std::vector<size_t> &, FusionStructuralScore, std::vector<size_t>)> Search;
-      Search = [&](const std::vector<size_t> &remaining, FusionStructuralScore currentScore, std::vector<size_t> selected) {
-         if (remaining.empty()) {
-            std::sort(selected.begin(), selected.end());
-
-            if (!hasBest || IsBetterFusionStructuralScore(currentScore, bestScore)
-                        || (ScoresEqual(currentScore, bestScore) && selected < bestSelection)) {
-               bestScore = currentScore;
-               bestSelection = std::move(selected);
-               hasBest = true;
-            }
-
-            return;
-         }
-
-         FusionStructuralScore optimisticScore = currentScore;
-
-         for (const size_t candidateIdx : remaining) {
-            optimisticScore.launchesRemoved += candidates[candidateIdx].score.launchesRemoved;
-            optimisticScore.eliminatedBytes += candidates[candidateIdx].score.eliminatedBytes;
-         }
-
-         if (hasBest && optimisticScore.launchesRemoved < bestScore.launchesRemoved)
-            return;
-
-         if (hasBest && optimisticScore.launchesRemoved == bestScore.launchesRemoved
-                     && currentScore.liveRangeExtensionByteSteps > bestScore.liveRangeExtensionByteSteps)
-            return;
-
-         if (hasBest && optimisticScore.launchesRemoved == bestScore.launchesRemoved
-                     && currentScore.liveRangeExtensionByteSteps == bestScore.liveRangeExtensionByteSteps
-                     && optimisticScore.eliminatedBytes < bestScore.eliminatedBytes)
-            return;
-
-         size_t pivotIdx = remaining.front();
-         size_t pivotConflictCount = 0;
-
-         for (const size_t candidateIdx : remaining) {
-            size_t conflictCount = 0;
-
-            for (const size_t otherIdx : remaining) {
-               if (candidateIdx != otherIdx && std::binary_search(conflicts[candidateIdx].begin(), conflicts[candidateIdx].end(), otherIdx))
-                  ++conflictCount;
-            }
-
-            if (conflictCount > pivotConflictCount) {
-               pivotIdx = candidateIdx;
-               pivotConflictCount = conflictCount;
-            }
-         }
-
-         std::vector<size_t> includeRemaining;
-
-         for (const size_t candidateIdx : remaining) {
-            if (candidateIdx == pivotIdx)
-               continue;
-
-            if (!std::binary_search(conflicts[pivotIdx].begin(), conflicts[pivotIdx].end(), candidateIdx))
-               includeRemaining.push_back(candidateIdx);
-         }
-
-         FusionStructuralScore includeScore = currentScore;
-         AddScore(includeScore, candidates[pivotIdx].score);
-         std::vector<size_t> includeSelected = selected;
-         includeSelected.push_back(pivotIdx);
-         includeScore.liveRangeExtensionByteSteps = ComputeFusionPlanLiveRangeExtensionByteSteps(includeSelected, candidates);
-         Search(includeRemaining, includeScore, std::move(includeSelected));
-
-         std::vector<size_t> excludeRemaining;
-
-         for (const size_t candidateIdx : remaining) {
-            if (candidateIdx != pivotIdx)
-               excludeRemaining.push_back(candidateIdx);
-         }
-
-         Search(excludeRemaining, currentScore, std::move(selected));
-      };
-
-      Search(component, {}, {});
-
-      for (const size_t candidateIdx : bestSelection)
-         plan.candidateIndices.push_back(candidateIdx);
-
-      AddScore(plan.score, bestScore);
-   }
-
-   std::sort(plan.candidateIndices.begin(), plan.candidateIndices.end());
-   plan.score.liveRangeExtensionByteSteps = ComputeFusionPlanLiveRangeExtensionByteSteps(plan.candidateIndices, candidates);
-
-   return plan;
-}
-
-bool RModel::IsBetterFusionStructuralScore(const FusionStructuralScore &left, const FusionStructuralScore &right)
-{
-   if (left.launchesRemoved != right.launchesRemoved)
-      return left.launchesRemoved > right.launchesRemoved;
-
-   if (left.liveRangeExtensionByteSteps != right.liveRangeExtensionByteSteps)
-      return left.liveRangeExtensionByteSteps < right.liveRangeExtensionByteSteps;
-
-   if (left.eliminatedBytes != right.eliminatedBytes)
-      return left.eliminatedBytes > right.eliminatedBytes;
-
-   if (left.materializedOutputs != right.materializedOutputs)
-      return left.materializedOutputs < right.materializedOutputs;
-
-   return left.externalInputs < right.externalInputs;
-}
-
-std::vector<RModel::FusionCandidate> RModel::EnumerateSpecialFusionCandidates(const FusionTensorUseGraph &tensorUses) const
-{
-   std::vector<FusionCandidate> candidates;
-
-   for (size_t firstOpIdx = 0; firstOpIdx < fOperators.size(); ++firstOpIdx) {
-      if (!IsSupportedFusionOperator(firstOpIdx, true, false))
-         continue;
-
-      if (fOperators[firstOpIdx]->GetOpOutputTensors().size() != 1)
-         continue;
-
-      FusionBuildState state = InitializeFusionBuildState(firstOpIdx);
-
-      while (TryExtendFusionBuildState(state, tensorUses, nullptr)) {
-         const bool hasSpecialMapping = std::any_of(state.group.opIndices.begin(), state.group.opIndices.end(), [&](size_t opIdx) {
-            const auto mapping = fOperators[opIdx]->GetFusionMappingType();
-            return mapping == EFusionMappingType::Shuffle || mapping == EFusionMappingType::Reorganize;
-         });
-
-         if (!state.group.isFused() || !hasSpecialMapping)
-            continue;
-
-         EltwiseFusionGroup group = state.group;
-         group.outputTensor = std::string(fOperators[state.currentOpIdx]->GetOpOutputTensors()[0]);
-         group.outputTensors = {group.outputTensor};
-         group.internalTensors.clear();
-         group.numElements = ConvertShapeToLength(state.groupOutputShape);
-         group.launchOpIndex = state.currentOpIdx;
-
-         if (IsAliasTensor(group.outputTensor))
-            continue;
-
-         for (size_t groupOpIdx = 0; groupOpIdx + 1 < group.opIndices.size(); ++groupOpIdx) {
-            const auto outputs = fOperators[group.opIndices[groupOpIdx]]->GetOpOutputTensors();
-            if (!outputs.empty()) group.internalTensors.push_back(std::string(outputs[0]));
-         }
-
-         FusionCandidate candidate;
-         candidate.opIndices = group.opIndices;
-
-         for (const auto &externalInput : group.externalInputs)
-            candidate.externalInputs.push_back(externalInput.tensorName);
-
-         candidate.materializedOutputs = group.outputTensors;
-         candidate.internalTensors = group.internalTensors;
-         candidate.launchOpIndex = group.launchOpIndex;
-         candidate.prebuiltGroup = std::move(group);
-         candidate.score = ComputeFusionStructuralScore(candidate, tensorUses);
-         candidates.push_back(std::move(candidate));
-      }
-   }
-
-   return candidates;
-}
-
-std::vector<RModel::FusionCandidate> RModel::EnumerateFusionCandidates(const FusionTensorUseGraph &tensorUses) const
-{
-   // Exhaustive subset enumeration is bounded for tractability. This is a search budget, not a fusion-legality restriction.
-   constexpr size_t maxCandidateOps = 8;
-
-   std::vector<FusionCandidate> candidates;
-   std::vector<bool> supported(fOperators.size(), false);
-   std::vector<std::vector<size_t>> adjacency(fOperators.size());
-
-   for (size_t opIdx = 0; opIdx < fOperators.size(); ++opIdx)
-      supported[opIdx] = IsSupportedFusionOperator(opIdx, true, true, true);
-
-   // Build an undirected connectivity graph using only actual fusion data dependencies.
-   for (size_t consumerIdx = 0; consumerIdx < fOperators.size(); ++consumerIdx) {
-      if (!supported[consumerIdx])
-         continue;
-
-      const auto inputs = fOperators[consumerIdx]->GetOpInputTensors();
-      const auto dataInputIndices = fOperators[consumerIdx]->GetFusionDataInputIndices();
-
-      for (const size_t inputIdx : dataInputIndices) {
-         if (inputIdx >= inputs.size())
-            continue;
-
-         const std::string inputName(inputs[inputIdx]);
-         const auto producerIt = tensorUses.producers.find(inputName);
-
-         if (producerIt == tensorUses.producers.end())
-            continue;
-
-         const size_t producerIdx = producerIt->second;
-
-         if (producerIdx == consumerIdx || !supported[producerIdx])
-            continue;
-
-         adjacency[producerIdx].push_back(consumerIdx);
-         adjacency[consumerIdx].push_back(producerIdx);
-      }
-   }
-
-   for (auto &neighbors : adjacency) {
-      std::sort(neighbors.begin(), neighbors.end());
-      neighbors.erase(std::unique(neighbors.begin(), neighbors.end()), neighbors.end());
-   }
-
-   std::set<std::vector<size_t>> visited;
-
-   for (size_t seedIdx = 0; seedIdx < fOperators.size(); ++seedIdx) {
-      if (!supported[seedIdx])
-         continue;
-
-      std::vector<std::vector<size_t>> pending;
-      std::vector<size_t> seed{seedIdx};
-
-      if (!visited.insert(seed).second)
-         continue;
-
-      pending.push_back(std::move(seed));
-
-      while (!pending.empty()) {
-         std::vector<size_t> opIndices = std::move(pending.back());
-         pending.pop_back();
-
-         if (opIndices.size() >= 2) {
-            FusionCandidate candidate = BuildFusionCandidate(opIndices, tensorUses);
-
-            if (IsValidFusionCandidate(candidate, tensorUses)) {
-               const auto launchIndices = EnumerateFusionLaunchIndices(candidate, tensorUses);
-
-               for (const size_t launchOpIdx : launchIndices) {
-                  FusionCandidate option = candidate;
-                  option.launchOpIndex = launchOpIdx;
-                  option.score = ComputeFusionStructuralScore(option, tensorUses);
-                  candidates.push_back(std::move(option));
-               }
-            }
-         }
-
-         if (opIndices.size() >= maxCandidateOps)
-            continue;
-
-         std::vector<size_t> expansionOps;
-
-         for (const size_t opIdx : opIndices) {
-            for (const size_t neighborIdx : adjacency[opIdx]) {
-               if (!std::binary_search(opIndices.begin(), opIndices.end(), neighborIdx))
-                  expansionOps.push_back(neighborIdx);
-            }
-         }
-
-         std::sort(expansionOps.begin(), expansionOps.end());
-         expansionOps.erase(std::unique(expansionOps.begin(), expansionOps.end()), expansionOps.end());
-
-         for (const size_t nextOpIdx : expansionOps) {
-            std::vector<size_t> nextIndices = opIndices;
-            nextIndices.insert(std::lower_bound(nextIndices.begin(), nextIndices.end(), nextOpIdx), nextOpIdx);
-
-            if (visited.insert(nextIndices).second)
-               pending.push_back(std::move(nextIndices));
-         }
-      }
-   }
-
-   return candidates;
-}
-
-std::vector<RModel::FusionCandidate> RModel::EnumerateLinearFusionCandidates(const FusionTensorUseGraph &tensorUses) const
-{
-   std::vector<FusionCandidate> candidates;
-   std::set<std::pair<std::vector<size_t>, size_t>> emitted;
-
-   for (size_t firstOpIdx = 0; firstOpIdx < fOperators.size(); ++firstOpIdx) {
-      if (!IsSupportedFusionOperator(firstOpIdx, true, false))
-         continue;
-
-      if (fOperators[firstOpIdx]->GetOpOutputTensors().size() != 1)
-         continue;
-
-      FusionBuildState state = InitializeFusionBuildState(firstOpIdx);
-
-      while (TryExtendFusionBuildState(state, tensorUses, nullptr, false)) {
-         FusionCandidate candidate = BuildFusionCandidate(state.group.opIndices, tensorUses);
-
-         if (!IsValidFusionCandidate(candidate, tensorUses))
-            continue;
-
-         const auto launchIndices = EnumerateFusionLaunchIndices(candidate, tensorUses);
-
-         for (const size_t launchOpIdx : launchIndices) {
-            if (!emitted.insert({candidate.opIndices, launchOpIdx}).second)
-               continue;
-
-            FusionCandidate option = candidate;
-            option.launchOpIndex = launchOpIdx;
-            option.score = ComputeFusionStructuralScore(option, tensorUses);
-            candidates.push_back(std::move(option));
-         }
-      }
-   }
-
-   return candidates;
-}
-
-bool RModel::IsFuseSafeIntermediate(const std::string &tensorName, const FusionTensorUseGraph &tensorUses) const
-{
-   if (std::find(fOutputTensorNames.begin(), fOutputTensorNames.end(), tensorName) != fOutputTensorNames.end())
-      return false;
-
-   const auto consumerIt = tensorUses.consumers.find(tensorName);
-   return consumerIt != tensorUses.consumers.end() && consumerIt->second.size() == 1;
-}
-
-bool RModel::ResolveFusionInputAccess(const std::string &tensorName, const std::vector<size_t> &outputShape,
-                                   RModel::EFusionInputAccess &access, std::vector<size_t> &alignedStrides) const
+bool Fusion::ResolveAccess(const RModel &model, const std::string &tensorName, const std::vector<Dim> &outputShape,
+                           Access &access, std::vector<Dim> &alignedStrides)
 {
    alignedStrides.clear();
 
    try {
-      const auto inputShape = GetTensorShape(tensorName);
+      const auto inputShape = model.GetDimTensorShape(tensorName);
 
       if (inputShape == outputShape) {
-         access = EFusionInputAccess::Elementwise;
+         access = Access::Elementwise;
          return true;
       }
 
       if (inputShape.size() > outputShape.size())
          return false;
 
-      const size_t inputLength = inputShape.empty() ? 1 : ConvertShapeToLength(inputShape);
+      const std::string inputLength = inputShape.empty() ? "1" : ConvertDimShapeToLength(inputShape);
 
-      if (inputLength == 1) {
-         access = EFusionInputAccess::Scalar;
+      if (inputLength == "1") {
+         access = Access::Scalar;
          return true;
       }
 
-      alignedStrides.assign(outputShape.size(), 0);
-      size_t inputStride = 1;
+      alignedStrides.assign(outputShape.size(), Dim{static_cast<size_t>(0)});
+      Dim inputStride{static_cast<size_t>(1)};
 
       for (size_t inputDimIdx = inputShape.size(); inputDimIdx-- > 0;) {
          const size_t outputDimIdx = outputShape.size() - inputShape.size() + inputDimIdx;
-         const size_t inputDim = inputShape[inputDimIdx];
-         const size_t outputDim = outputShape[outputDimIdx];
+         const Dim &inputDim = inputShape[inputDimIdx];
+         const bool isOne = inputDim.GetVal() == "1";
 
-         if (inputDim != 1 && inputDim != outputDim)
+         if (!isOne && inputDim != outputShape[outputDimIdx])
             return false;
 
-         // A zero stride means that the fused kernel broadcasts this dimension.
-         if (inputDim != 1)
+         if (!isOne)
             alignedStrides[outputDimIdx] = inputStride;
 
-         inputStride *= inputDim;
+         inputStride = MultiplyDims(inputStride, inputDim);
       }
 
-      access = EFusionInputAccess::Broadcast;
+      access = Access::Broadcast;
       return true;
    } catch (...) {
       return false;
    }
 }
 
+class FusionPlanner {
+public:
+   explicit FusionPlanner(RModel &model) : m(model) {}
 
-bool RModel::IsSupportedFusionOperator(size_t opIdx, bool allowShuffle, bool allowReorganize, bool allowManyToMany) const
-{
-   if (opIdx >= fOperators.size() || fSkipOperators.count(opIdx))
-      return false;
+   Fusion::Plan Run()
+   {
+      FuseGemmActivations();
+      BuildUses();
+      EnumerateSpecial();
+      EnumerateDag();
+      EnumerateLinear();
 
-   const auto &op = fOperators[opIdx];
-   const auto mappingType = op->GetFusionMappingType();
-   const bool shuffle = mappingType == EFusionMappingType::Shuffle;
-   const bool reorganize = mappingType == EFusionMappingType::Reorganize;
-   const bool manyToMany = mappingType == EFusionMappingType::ManyToMany;
+      for (const size_t idx : Select())
+         plan.eltwise.push_back(BuildGroup(candidates[idx]));
 
-   if (!IsSupportedFusionMapping(mappingType, allowShuffle, allowReorganize, allowManyToMany))
-      return false;
+      std::sort(plan.eltwise.begin(), plan.eltwise.end(), [](const Group &left, const Group &right) {
+         return left.opIndices.front() < right.opIndices.front();
+      });
 
-   const auto inputs = op->GetOpInputTensors();
-   const auto outputs = op->GetOpOutputTensors();
-   const auto dataInputIndices = op->GetFusionDataInputIndices();
+      for (const auto &group : plan.eltwise) {
+         plan.internal.insert(group.internalTensors.begin(), group.internalTensors.end());
 
-   if (dataInputIndices.empty() || outputs.empty())
-      return false;
-
-   const bool multiOutputOneToMany =
-      mappingType == EFusionMappingType::OneToMany && outputs.size() > 1;
-
-   if (outputs.size() > 1 && !multiOutputOneToMany)
-      return false;
-
-   for (const size_t inputIdx : dataInputIndices) {
-      if (inputIdx >= inputs.size())
-         return false;
-   }
-
-   if (multiOutputOneToMany) {
-      std::vector<ETensorType> inputTypes;
-
-      try {
-         for (const size_t inputIdx : dataInputIndices)
-            inputTypes.push_back(GetTensorType(std::string(inputs[inputIdx])));
-
-         for (size_t outputIdx = 0; outputIdx < outputs.size(); ++outputIdx) {
-            const std::string outputName(outputs[outputIdx]);
-
-            if (IsAliasTensor(outputName))
-               return false;
-
-            const auto outputShape = GetTensorShape(outputName);
-            const auto outputType = GetTensorType(outputName);
-
-            if (!op->SupportsFusionTypes(inputTypes, outputType))
-               return false;
-
-            for (const size_t inputIdx : dataInputIndices) {
-               const auto inputShape = GetTensorShape(std::string(inputs[inputIdx]));
-
-               if (op->GetFusionInputIndexExprForOutput(inputIdx, outputIdx, "idx", inputShape, outputShape).empty())
-                  return false;
-            }
-         }
-      } catch (...) {
-         return false;
-      }
-
-      std::vector<std::string> testInputs;
-      for (size_t inputIdx = 0; inputIdx < dataInputIndices.size(); ++inputIdx)
-         testInputs.push_back("x" + std::to_string(inputIdx));
-
-      return !op->GetFusionExpr(testInputs).empty();
-   }
-
-   for (const size_t inputIdx : dataInputIndices) {
-      if (inputIdx >= inputs.size())
-         return false;
-   }
-
-   const std::string outputName(outputs[0]);
-
-   if (IsAliasTensor(outputName) && !reorganize)
-      return false;
-
-   std::vector<size_t> outputShape;
-   std::vector<ETensorType> inputTypes;
-   ETensorType outputType = ETensorType::UNDEFINED;
-
-   try {
-      outputShape = GetTensorShape(outputName);
-      outputType = GetTensorType(outputName);
-
-      for (const size_t inputIdx : dataInputIndices)
-         inputTypes.push_back(GetTensorType(std::string(inputs[inputIdx])));
-   } catch (...) {
-      return false;
-   }
-
-   if (!op->SupportsFusionTypes(inputTypes, outputType))
-      return false;
-
-   if (manyToMany) {
-      if (op->IsFusionReduction()) {
-         if (dataInputIndices.size() != 1)
-            return false;
-
-         std::vector<size_t> inputShape;
-
-         try {
-            inputShape = GetTensorShape(std::string(inputs[dataInputIndices[0]]));
-         } catch (...) {
-            return false;
-         }
-
-         const size_t inputLength = ConvertShapeToLength(inputShape);
-         const size_t outputLength = ConvertShapeToLength(outputShape);
-
-         if (outputLength == 0 || inputLength % outputLength != 0)
-            return false;
-
-         const size_t reducedLength = inputLength / outputLength;
-         if (op->GetFusionReductionInitExpr().empty() ||
-             op->GetFusionReductionAccumulateExpr("acc", "value").empty() ||
-             op->GetFusionReductionCombineExpr("left", "right").empty() ||
-             op->GetFusionReductionFinalizeExpr("acc", reducedLength).empty() ||
-             op->GetFusionReductionInputIndexExpr("out_idx", "r", inputShape, outputShape).empty())
-            return false;
-
-         return true;
-      }
-
-      if (dataInputIndices.size() < 2)
-         return false;
-
-      for (size_t dataIdx = 0; dataIdx < dataInputIndices.size(); ++dataIdx) {
-         const size_t inputIdx = dataInputIndices[dataIdx];
-         std::vector<size_t> inputShape;
-
-         try {
-            inputShape = GetTensorShape(std::string(inputs[inputIdx]));
-         } catch (...) {
-            return false;
-         }
-
-         if (op->GetFusionInputIndexExpr(inputIdx, "idx", inputShape, outputShape).empty())
-            return false;
-
-         if (dataIdx + 1 < dataInputIndices.size() && op->GetFusionInputConditionExpr(inputIdx, "idx", inputShape, outputShape).empty())
-            return false;
-      }
-
-      return !op->GetFusionExpr({"x"}).empty();
-   } else if (shuffle) {
-      if (dataInputIndices.size() != 1)
-         return false;
-
-      const size_t inputIdx = dataInputIndices[0];
-      const std::string inputName(inputs[inputIdx]);
-      std::vector<size_t> inputShape;
-
-      try {
-         inputShape = GetTensorShape(inputName);
-      } catch (...) {
-         return false;
-      }
-
-      if (op->GetFusionInputIndexExpr(inputIdx, "idx", inputShape, outputShape).empty())
-         return false;
-   } else if (reorganize) {
-      if (dataInputIndices.size() != 1)
-         return false;
-
-      try {
-         const auto inputShape = GetTensorShape(std::string(inputs[dataInputIndices[0]]));
-
-         if (ConvertShapeToLength(inputShape) != ConvertShapeToLength(outputShape))
-            return false;
-      } catch (...) {
-         return false;
-      }
-   } else {
-      if (!shuffle && !reorganize) {
-         for (const size_t inputIdx : dataInputIndices) {
-            EFusionInputAccess access;
-            std::vector<size_t> alignedStrides;
-
-            if (!ResolveFusionInputAccess(std::string(inputs[inputIdx]), outputShape, access, alignedStrides))
-               return false;
+         if (m.fVerbose) {
+            std::cout << "[SOFIE elementwise fusion] operators";
+            for (const size_t opIdx : group.opIndices)
+               std::cout << " " << opIdx;
+            std::cout << " ->";
+            for (const auto &outputName : group.outputTensors)
+               std::cout << " " << outputName;
+            std::cout << " with " << group.externalInputs.size() << " external input(s)" << std::endl;
          }
       }
-   }
 
-   std::vector<std::string> testInputs;
-   testInputs.reserve(dataInputIndices.size());
+      for (const auto &group : plan.eltwise)
+         KeepAlive(group, group.launchOpIndex);
 
-   for (size_t inputIdx = 0; inputIdx < dataInputIndices.size(); ++inputIdx)
-      testInputs.push_back("x" + std::to_string(inputIdx));
+      plan.kernel = SelectKernelGroups(EnumerateKernelGroups(BuildUnits()));
 
-   return !op->GetFusionExpr(testInputs).empty();
-}
-
-
-void RModel::AddFusionExternalInput(EltwiseFusionGroup &group, const FusionExternalInput &input) const
-{
-   const auto existingIt = std::find_if(group.externalInputs.begin(), group.externalInputs.end(),
-                                        [&](const FusionExternalInput &existingInput) {
-                                           return existingInput.tensorName == input.tensorName;});
-
-   if (existingIt == group.externalInputs.end()) {
-      group.externalInputs.push_back(input);
-      return;
-   }
-
-   const bool sameAccess = existingIt->access == input.access;
-   const bool sameStrides = existingIt->alignedStrides == input.alignedStrides;
-   const bool sameIndexExpression = existingIt->customIndexExpression == input.customIndexExpression;
-
-   if (!sameAccess || !sameStrides || !sameIndexExpression)
-      throw std::runtime_error("Conflicting fused access modes for tensor " + input.tensorName);
-}
-
-
-void RModel::InitializeFusionGroup(size_t firstOpIdx, EltwiseFusionGroup &group,
-                                   std::vector<std::string> &producedTensors,
-                                   std::vector<size_t> &groupOutputShape) const
-{
-   const auto &op = fOperators[firstOpIdx];
-   const auto outputs = op->GetOpOutputTensors();
-   const std::string firstOutput(outputs[0]);
-
-   groupOutputShape = GetTensorShape(firstOutput);
-   group.opIndices.push_back(firstOpIdx);
-
-   const auto inputs = op->GetOpInputTensors();
-   const auto dataInputIndices = op->GetFusionDataInputIndices();
-   const auto mappingType = op->GetFusionMappingType();
-
-   for (const size_t inputIdx : dataInputIndices) {
-      const std::string inputName(inputs[inputIdx]);
-
-      if (mappingType == EFusionMappingType::Shuffle) {
-         std::vector<size_t> inputShape;
-
-         try {
-            inputShape = GetTensorShape(inputName);
-         } catch (...) {
-            throw std::runtime_error("Cannot resolve Shuffle input shape for fusion: " + inputName);
-         }
-
-         const std::string indexExpression =
-            op->GetFusionInputIndexExpr(inputIdx, "idx", inputShape, groupOutputShape);
-
-         if (indexExpression.empty())
-            throw std::runtime_error("Shuffle operator does not provide a fused input index expression");
-
-         AddFusionExternalInput(group, {inputName, EFusionInputAccess::Elementwise, {}, indexExpression});
-         continue;
+      for (const auto &group : plan.kernel) {
+         for (const auto &branch : group.branches)
+            KeepAlive(branch, group.launchOpIndex);
       }
 
-      EFusionInputAccess access;
-      std::vector<size_t> alignedStrides;
-
-      if (!ResolveFusionInputAccess(inputName, groupOutputShape, access, alignedStrides))
-         throw std::runtime_error("Invalid external input for fusion group: " + inputName);
-
-      AddFusionExternalInput(group, {inputName, access, alignedStrides, ""});
+      return std::move(plan);
    }
 
-   producedTensors.push_back(firstOutput);
-}
-
-RModel::FusionBuildState RModel::InitializeFusionBuildState(size_t firstOpIdx) const
-{
-   FusionBuildState state;
-   InitializeFusionGroup(firstOpIdx, state.group, state.producedTensors, state.groupOutputShape);
-   state.currentLogicalShape = state.groupOutputShape;
-   state.currentOpIdx = firstOpIdx;
-   return state;
-}
-
-
-   bool RModel::TryExtendFusionBuildState(FusionBuildState &state, const FusionTensorUseGraph &tensorUses,
-                                          const std::vector<bool> *blockedOps, bool allowReorganize) const
-{
-   const auto currentOutputs = fOperators[state.currentOpIdx]->GetOpOutputTensors();
-
-   if (currentOutputs.size() != 1)
-      return false;
-
-   const std::string currentOutput(currentOutputs[0]);
-
-   if (!IsFuseSafeIntermediate(currentOutput, tensorUses))
-      return false;
-
-   const size_t nextOpIdx = tensorUses.consumers.at(currentOutput).front();
-
-   if (nextOpIdx <= state.currentOpIdx)
-      return false;
-
-   if (blockedOps != nullptr) {
-      for (size_t gapIdx = state.currentOpIdx + 1; gapIdx < nextOpIdx; ++gapIdx) {
-         if ((*blockedOps)[gapIdx])
-            return false;
-      }
-
-      if ((*blockedOps)[nextOpIdx])
-         return false;
-   }
-
-   const auto nextDataInputs = fOperators[nextOpIdx]->GetFusionDataInputIndices();
-   const auto nextInputsForReadiness = fOperators[nextOpIdx]->GetOpInputTensors();
-
-   for (const size_t inputIdx : nextDataInputs) {
-      const std::string inputName(nextInputsForReadiness[inputIdx]);
-
-      if (inputName == currentOutput)
-         continue;
-
-      const bool producedInsideGroup =
-         std::find(state.producedTensors.begin(), state.producedTensors.end(), inputName) != state.producedTensors.end();
-
-      if (producedInsideGroup)
-         continue;
-
-      const auto producerIt = tensorUses.producers.find(inputName);
-
-      if (producerIt != tensorUses.producers.end() && producerIt->second >= nextOpIdx)
-         return false;
-   }
-
-   if (!IsSupportedFusionOperator(nextOpIdx, false, allowReorganize))
-      return false;
-
-   const auto nextOutputs = fOperators[nextOpIdx]->GetOpOutputTensors();
-
-   if (nextOutputs.size() != 1)
-      return false;
-
-   const std::string nextOutput(nextOutputs[0]);
-   std::vector<size_t> nextOutputShape;
-
-   try {
-      nextOutputShape = GetTensorShape(nextOutput);
-   } catch (...) {
-      return false;
-   }
-
-   const auto nextMappingType = fOperators[nextOpIdx]->GetFusionMappingType();
-   const bool nextIsReorganize = nextMappingType == EFusionMappingType::Reorganize;
-
-   if (nextIsReorganize) {
-      if (ConvertShapeToLength(nextOutputShape) != ConvertShapeToLength(state.currentLogicalShape))
-         return false;
-
-      const bool hasBroadcastInput =
-         std::any_of(state.group.externalInputs.begin(), state.group.externalInputs.end(), [](const FusionExternalInput &input) {
-                        return input.access == EFusionInputAccess::Broadcast;
-                     });
-
-      if (hasBroadcastInput)
-         return false;
-   } else if (nextOutputShape != state.currentLogicalShape) {
-      return false;
-   }
-
-   const auto nextInputs = fOperators[nextOpIdx]->GetOpInputTensors();
-   std::vector<FusionExternalInput> pendingExternalInputs;
-
-   for (const size_t inputIdx : nextDataInputs) {
-      const std::string inputName(nextInputs[inputIdx]);
-
-      const bool producedInsideGroup =
-         std::find(state.producedTensors.begin(), state.producedTensors.end(), inputName) !=
-         state.producedTensors.end();
-
-      if (producedInsideGroup)
-         continue;
-
-      EFusionInputAccess access;
-      std::vector<size_t> alignedStrides;
-
-      if (!ResolveFusionInputAccess(inputName, nextIsReorganize ? state.currentLogicalShape : nextOutputShape,
-                                    access, alignedStrides))
-         return false;
-
-      if (state.hasReorganize && access == EFusionInputAccess::Broadcast)
-         return false;
-
-      pendingExternalInputs.push_back({inputName, access, alignedStrides, ""});
-   }
-
-   for (const auto &externalInput : pendingExternalInputs)
-      AddFusionExternalInput(state.group, externalInput);
-
-   state.group.opIndices.push_back(nextOpIdx);
-   state.producedTensors.push_back(nextOutput);
-   state.currentOpIdx = nextOpIdx;
-
-   if (nextIsReorganize) {
-      state.currentLogicalShape = nextOutputShape;
-      state.hasReorganize = true;
-   }
-
-   return true;
-}
-
-RModel::EltwiseFusionGroup RModel::BuildEltwiseFusionGroup(const FusionCandidate &candidate) const
-{
-   if (candidate.prebuiltGroup) {
-      EltwiseFusionGroup group = *candidate.prebuiltGroup;
-      group.usesIndexedEvaluation = true;
-      return group;
-   }
-
-   if (candidate.materializedOutputs.empty())
-      throw std::runtime_error("Fusion candidate has no materialized output");
-
-   EltwiseFusionGroup group;
-   group.opIndices = candidate.opIndices;
-   group.outputTensors = candidate.materializedOutputs;
-   group.internalTensors = candidate.internalTensors;
-   group.outputTensor = group.outputTensors.front();
-   group.launchOpIndex = candidate.launchOpIndex;
-
-   const auto iterationShape = GetTensorShape(group.outputTensor);
-   group.numElements = ConvertShapeToLength(iterationShape);
-
-   group.usesIndexedEvaluation = std::any_of(group.opIndices.begin(), group.opIndices.end(), [&](size_t opIdx) {
-      const auto mappingType = fOperators[opIdx]->GetFusionMappingType();
-
-      if (mappingType == EFusionMappingType::Shuffle || mappingType == EFusionMappingType::Reorganize || mappingType == EFusionMappingType::ManyToMany)
-         return true;
-
-      const auto outputs = fOperators[opIdx]->GetOpOutputTensors();
-
-      if (outputs.size() > 1)
-         return true;
-
-      return outputs.size() == 1 && GetTensorShape(std::string(outputs[0])) != iterationShape;
-   });
-
-   for (const auto &inputName : candidate.externalInputs) {
-      if (group.usesIndexedEvaluation) {
-         AddFusionExternalInput(group, {inputName, EFusionInputAccess::Elementwise, {}, ""});
-         continue;
-      }
-
-      EFusionInputAccess access;
-      std::vector<size_t> alignedStrides;
-
-      if (!ResolveFusionInputAccess(inputName, iterationShape, access, alignedStrides))
-         throw std::runtime_error("Cannot resolve external input for fusion candidate: " + inputName);
-
-      AddFusionExternalInput(group, {inputName, access, alignedStrides, ""});
-   }
-
-   return group;
-}
-
-std::vector<RModel::EltwiseFusionGroup> RModel::BuildKernelFusionLaunchUnits(const FusionTensorUseGraph &tensorUses) const
-{
-   std::vector<EltwiseFusionGroup> units;
-   std::set<size_t> coveredOps;
-
-   for (const auto &group : fEltwiseFusionGroups) {
-   for (const size_t opIdx : group.opIndices)
-      coveredOps.insert(opIdx);
-
-   if (!group.usesIndexedEvaluation)
-      units.push_back(group);
-}
-
-   for (size_t opIdx = 0; opIdx < fOperators.size(); ++opIdx) {
-      if (coveredOps.count(opIdx) || fSkipOperators.count(opIdx))
-         continue;
-
-      if (!IsSupportedFusionOperator(opIdx, false, false))
-         continue;
-
-      FusionCandidate candidate = BuildFusionCandidate({opIdx}, tensorUses);
-
-      if (candidate.materializedOutputs.empty())
-         continue;
-
-      candidate.launchOpIndex = opIdx;
-      units.push_back(BuildEltwiseFusionGroup(candidate));
-   }
-
-   std::sort(units.begin(), units.end(), [](const EltwiseFusionGroup &left, const EltwiseFusionGroup &right) {
-      return left.launchOpIndex < right.launchOpIndex;
-   });
-
-   return units;
-}
-
-bool RModel::GetKernelFusionLaunchWindow(const EltwiseFusionGroup &unit, const FusionTensorUseGraph &tensorUses,
-                                         size_t &earliestLaunchOpIndex, size_t &latestLaunchOpIndex) const
-{
-   if (unit.opIndices.empty() || unit.outputTensors.empty() || fOperators.empty())
-      return false;
-
-   earliestLaunchOpIndex = 0;
-   latestLaunchOpIndex = fOperators.size() - 1;
-
-   for (const auto &externalInput : unit.externalInputs) {
-      const auto producerIt = tensorUses.producers.find(externalInput.tensorName);
-
-      if (producerIt != tensorUses.producers.end())
-         earliestLaunchOpIndex = std::max(earliestLaunchOpIndex, producerIt->second + 1);
-   }
-
-   for (const auto &outputName : unit.outputTensors) {
-      const auto consumerIt = tensorUses.consumers.find(outputName);
-
-      if (consumerIt == tensorUses.consumers.end())
-         continue;
-
-      for (const size_t consumerOpIdx : consumerIt->second) {
-         if (std::find(unit.opIndices.begin(), unit.opIndices.end(), consumerOpIdx) != unit.opIndices.end())
-            continue;
-
-         latestLaunchOpIndex = std::min(latestLaunchOpIndex, consumerOpIdx);
-      }
-   }
-
-   return earliestLaunchOpIndex <= latestLaunchOpIndex;
-}
-
-bool RModel::CanHorizontallyFuse(const std::vector<EltwiseFusionGroup> &branches, const FusionTensorUseGraph &tensorUses, size_t &launchOpIndex) const
-{
-   if (branches.size() < 2)
-      return false;
-
-   std::unordered_map<size_t, size_t> opToBranch;
-   size_t commonLaunchOpIndex = 0;
-
-   for (size_t branchIdx = 0; branchIdx < branches.size(); ++branchIdx) {
-      const auto &branch = branches[branchIdx];
-
-      if (branch.opIndices.empty() || branch.outputTensors.empty())
-         return false;
-
-      commonLaunchOpIndex = std::max(commonLaunchOpIndex, branch.launchOpIndex);
-
-      for (const size_t opIdx : branch.opIndices) {
-         if (!opToBranch.emplace(opIdx, branchIdx).second)
-            return false;
-      }
-   }
-
-   for (size_t branchIdx = 0; branchIdx < branches.size(); ++branchIdx) {
-      const auto &branch = branches[branchIdx];
-
-      // Inputs of one branch may not be produced by another horizontally fused branch.
-      for (const auto &externalInput : branch.externalInputs) {
-         const auto producerIt = tensorUses.producers.find(externalInput.tensorName);
-
-         if (producerIt == tensorUses.producers.end())
-            continue;
-
-         const auto branchIt = opToBranch.find(producerIt->second);
-
-         if (branchIt != opToBranch.end() && branchIt->second != branchIdx)
-            return false;
-
-         if (branchIt == opToBranch.end() && producerIt->second >= commonLaunchOpIndex)
-            return false;
-      }
-
-      // Delaying this branch to the common launch point must not cross an external consumer.
-      for (const auto &outputName : branch.outputTensors) {
-         const auto consumerIt = tensorUses.consumers.find(outputName);
-
-         if (consumerIt == tensorUses.consumers.end())
-            continue;
-
-         for (const size_t consumerOpIdx : consumerIt->second) {
-            const auto branchIt = opToBranch.find(consumerOpIdx);
-
-            if (branchIt != opToBranch.end()) {
-               if (branchIt->second != branchIdx)
-                  return false;
-
-               continue;
-            }
-
-            if (consumerOpIdx < commonLaunchOpIndex)
-               return false;
-         }
-      }
-   }
-
-   launchOpIndex = commonLaunchOpIndex;
-   return true;
-}
-
-std::vector<RModel::KernelFusionGroup> RModel::EnumerateKernelFusionGroups(const std::vector<EltwiseFusionGroup> &units,
-                                    const FusionTensorUseGraph &tensorUses) const
-{
-   constexpr size_t maxBranches = 2;
-   constexpr size_t maxLookaheadUnits = 8;
-
-   struct LaunchWindow {
-      size_t earliest = 0;
-      size_t latest = 0;
-      bool valid = false;
+private:
+   using Group = Fusion::Group;
+   using Input = Fusion::Input;
+   using Access = Fusion::Access;
+
+   struct Uses {
+      std::unordered_map<std::string, std::vector<size_t>> consumers;
+      std::unordered_map<std::string, size_t> producers;
    };
 
-   std::vector<LaunchWindow> windows(units.size());
+   struct Score {
+      size_t launchesRemoved = 0;
+      size_t liveRangeExtensionByteSteps = 0;
+      size_t eliminatedBytes = 0;
+      size_t materializedOutputs = 0;
+      size_t externalInputs = 0;
 
-   for (size_t unitIdx = 0; unitIdx < units.size(); ++unitIdx) {
-      windows[unitIdx].valid =
-         GetKernelFusionLaunchWindow(units[unitIdx], tensorUses, windows[unitIdx].earliest, windows[unitIdx].latest);
+      bool operator==(const Score &) const = default;
+
+      void Add(const Score &other)
+      {
+         launchesRemoved += other.launchesRemoved;
+         eliminatedBytes += other.eliminatedBytes;
+         materializedOutputs += other.materializedOutputs;
+         externalInputs += other.externalInputs;
+      }
+
+      bool Better(const Score &other) const
+      {
+         if (launchesRemoved != other.launchesRemoved)
+            return launchesRemoved > other.launchesRemoved;
+         if (liveRangeExtensionByteSteps != other.liveRangeExtensionByteSteps)
+            return liveRangeExtensionByteSteps < other.liveRangeExtensionByteSteps;
+         if (eliminatedBytes != other.eliminatedBytes)
+            return eliminatedBytes > other.eliminatedBytes;
+         if (materializedOutputs != other.materializedOutputs)
+            return materializedOutputs < other.materializedOutputs;
+         return externalInputs < other.externalInputs;
+      }
+   };
+
+   struct Candidate {
+      std::vector<size_t> opIndices;
+      std::vector<std::string> externalInputs;
+      std::vector<std::string> materializedOutputs;
+      std::vector<std::string> internalTensors;
+      Score score;
+      size_t launchOpIndex = 0;
+      std::optional<Group> prebuilt;
+   };
+
+   struct Chain {
+      Group group;
+      std::vector<std::string> produced;
+      std::vector<Dim> outputShape;
+      std::vector<Dim> logicalShape;
+      size_t current = 0;
+      bool reorganized = false;
+   };
+
+   RModel &m;
+   Fusion::Plan plan;
+   Uses uses;
+   std::vector<Candidate> candidates;
+   std::set<std::pair<std::vector<size_t>, size_t>> seen;
+
+   const ROperator &Op(size_t opIdx) const { return *m.fOperators[opIdx]; }
+
+   bool IsOutput(const std::string &tensorName) const
+   {
+      return std::find(m.fOutputTensorNames.begin(), m.fOutputTensorNames.end(), tensorName) !=
+             m.fOutputTensorNames.end();
    }
 
-   std::vector<KernelFusionGroup> candidates;
-   std::set<std::vector<size_t>> emitted;
+   size_t Bytes(const std::string &tensorName) const
+   {
+      size_t length = 1;
 
-   for (size_t seedIdx = 0; seedIdx < units.size(); ++seedIdx) {
-      if (!windows[seedIdx].valid)
-         continue;
+      for (const auto &d : m.GetDimTensorShape(tensorName)) {
+         if (!d.isParam) {
+            length *= d.dim;
+            continue;
+         }
 
-      const size_t endIdx = std::min(units.size(), seedIdx + maxLookaheadUnits);
+         size_t value = 1;
+         const auto it = m.fShapeParams.find(d.param);
 
-      std::vector<std::vector<size_t>> pending{{seedIdx}};
+         if (it != m.fShapeParams.end()) {
+            try {
+               value = std::stoul(it->second);
+            } catch (...) {
+            }
+         }
+
+         length *= value;
+      }
+
+      return GetTypeSize(m.GetTensorType(tensorName)) * length;
+   }
+
+   std::optional<std::pair<std::string, size_t>> Overrun(const std::string &input, size_t launch) const
+   {
+      std::string name = m.ResolveAliasTensor(input);
+      const auto it = m.fIntermediateTensorFrequencyLookup.find(name);
+
+      if (it == m.fIntermediateTensorFrequencyLookup.end() || launch <= it->second)
+         return std::nullopt;
+
+      return std::make_pair(std::move(name), it->second);
+   }
+
+   size_t ExtensionBytes(const std::vector<std::pair<std::string, size_t>> &inputs) const
+   {
+      std::unordered_map<std::string, std::pair<size_t, size_t>> required;
+
+      for (const auto &[input, launch] : inputs) {
+         const auto overrun = Overrun(input, launch);
+
+         if (!overrun)
+            continue;
+
+         auto [it, inserted] = required.try_emplace(overrun->first, launch, overrun->second);
+         if (!inserted)
+            it->second.first = std::max(it->second.first, launch);
+      }
+
+      size_t cost = 0;
+
+      for (const auto &[name, range] : required)
+         cost += Bytes(name) * (range.first - range.second);
+
+      return cost;
+   }
+
+   void KeepAlive(const Group &group, size_t launch)
+   {
+      for (const auto &input : group.externalInputs) {
+         const std::string name = m.ResolveAliasTensor(input.tensorName);
+         const auto it = m.fIntermediateTensorFrequencyLookup.find(name);
+
+         if (it != m.fIntermediateTensorFrequencyLookup.end())
+            it->second = std::max(it->second, launch);
+      }
+   }
+
+   void FuseGemmActivations()
+   {
+      std::unordered_map<std::string, size_t> consumerCount;
+
+      for (const auto &op : m.fOperators) {
+         for (const auto &inputName : op->GetOpInputTensors())
+            ++consumerCount[std::string(inputName)];
+      }
+
+      for (size_t opIdx = 0; opIdx + 1 < m.fOperators.size(); ++opIdx) {
+         const size_t activationOpIdx = opIdx + 1;
+
+         if (plan.skip.count(opIdx) || plan.skip.count(activationOpIdx))
+            continue;
+
+         auto *gemm = dynamic_cast<ROperator_Gemm<float> *>(m.fOperators[opIdx].get());
+
+         if (!gemm || gemm->GetActivationType() != EActivationType::UNDEFINED)
+            continue;
+
+         auto *leakyRelu = dynamic_cast<ROperator_LeakyRelu<float> *>(m.fOperators[activationOpIdx].get());
+         auto *relu = dynamic_cast<ROperator_Relu<float> *>(m.fOperators[activationOpIdx].get());
+
+         if (!leakyRelu && !relu)
+            continue;
+
+         const auto gemmOutputs = Op(opIdx).GetOpOutputTensors();
+         const auto activationInputs = Op(activationOpIdx).GetOpInputTensors();
+         const auto activationOutputs = Op(activationOpIdx).GetOpOutputTensors();
+
+         if (gemmOutputs.size() != 1 || activationInputs.size() != 1 || activationOutputs.size() != 1)
+            continue;
+
+         const std::string gemmOutput(gemmOutputs[0]);
+
+         if (gemmOutput != std::string(activationInputs[0]) || consumerCount[gemmOutput] != 1 || IsOutput(gemmOutput))
+            continue;
+
+         if (relu && !gemm->HasBias())
+            continue;
+
+         if (leakyRelu)
+            gemm->SetActivation(EActivationType::LEAKYRELU, leakyRelu->GetAlpha());
+         else
+            gemm->SetActivation(EActivationType::RELU);
+
+         gemm->UpdateFusableTensorName(std::string(activationOutputs[0]), [](const std::string &) {});
+         plan.skip.insert(activationOpIdx);
+      }
+   }
+
+   void BuildUses()
+   {
+      for (size_t opIdx = 0; opIdx < m.fOperators.size(); ++opIdx) {
+         const auto outputs = Op(opIdx).GetOpOutputTensors();
+
+         const bool hasRuntimeOutput = std::any_of(outputs.begin(), outputs.end(), [&](const auto &outputName) {
+            return !m.IsInitializedTensor(std::string(outputName));
+         });
+
+         if (hasRuntimeOutput) {
+            for (const auto &inputName : Op(opIdx).GetOpInputTensors())
+               uses.consumers[std::string(inputName)].push_back(opIdx);
+         }
+
+         for (const auto &outputName : outputs) {
+            if (!m.IsInitializedTensor(std::string(outputName)))
+               uses.producers[std::string(outputName)] = opIdx;
+         }
+      }
+   }
+
+   bool Supported(size_t opIdx, bool allowShuffle, bool allowReorganize, bool allowManyToMany = false) const
+   {
+      if (opIdx >= m.fOperators.size() || plan.skip.count(opIdx))
+         return false;
+
+      const auto &op = Op(opIdx);
+      const auto mapping = op.GetFusionMappingType();
+      const bool shuffle = mapping == EFusionMappingType::Shuffle;
+      const bool reorganize = mapping == EFusionMappingType::Reorganize;
+      const bool manyToMany = mapping == EFusionMappingType::ManyToMany;
+      const bool pointwise = mapping == EFusionMappingType::OneToOne || mapping == EFusionMappingType::OneToMany;
+
+      if (!(pointwise || (allowShuffle && shuffle) || (allowReorganize && reorganize) ||
+            (allowManyToMany && manyToMany)))
+         return false;
+
+      const auto inputs = op.GetOpInputTensors();
+      const auto outputs = op.GetOpOutputTensors();
+      const auto dataInputs = op.GetFusionDataInputIndices();
+      const bool multiOutput = mapping == EFusionMappingType::OneToMany && outputs.size() > 1;
+
+      if (dataInputs.empty() || outputs.empty() || (outputs.size() > 1 && !multiOutput))
+         return false;
+
+      for (const size_t inputIdx : dataInputs) {
+         if (inputIdx >= inputs.size())
+            return false;
+      }
+
+      const auto hasExpression = [&] {
+         std::vector<std::string> args;
+         for (size_t i = 0; i < dataInputs.size(); ++i)
+            args.push_back("x" + std::to_string(i));
+         return !op.GetFusionExpr(args).empty();
+      };
+
+      const auto inputShape = [&](size_t inputIdx, std::vector<Dim> &shape) {
+         try {
+            shape = m.GetDimTensorShape(std::string(inputs[inputIdx]));
+            return true;
+         } catch (...) {
+            return false;
+         }
+      };
+
+      if (multiOutput) {
+         try {
+            std::vector<ETensorType> inputTypes;
+            for (const size_t inputIdx : dataInputs)
+               inputTypes.push_back(m.GetTensorType(std::string(inputs[inputIdx])));
+
+            for (size_t outputIdx = 0; outputIdx < outputs.size(); ++outputIdx) {
+               const std::string outputName(outputs[outputIdx]);
+
+               if (m.IsAliasTensor(outputName))
+                  return false;
+
+               const auto outputShape = m.GetDimTensorShape(outputName);
+
+               if (!op.SupportsFusionTypes(inputTypes, m.GetTensorType(outputName)))
+                  return false;
+
+               for (const size_t inputIdx : dataInputs) {
+                  const auto shape = m.GetDimTensorShape(std::string(inputs[inputIdx]));
+
+                  if (op.GetFusionInputIndexExprForOutput(inputIdx, outputIdx, "idx", shape, outputShape).empty())
+                     return false;
+               }
+            }
+         } catch (...) {
+            return false;
+         }
+
+         return hasExpression();
+      }
+
+      const std::string outputName(outputs[0]);
+
+      if (m.IsAliasTensor(outputName) && !reorganize)
+         return false;
+
+      std::vector<Dim> outputShape;
+      std::vector<ETensorType> inputTypes;
+      ETensorType outputType = ETensorType::UNDEFINED;
+
+      try {
+         outputShape = m.GetDimTensorShape(outputName);
+         outputType = m.GetTensorType(outputName);
+
+         for (const size_t inputIdx : dataInputs)
+            inputTypes.push_back(m.GetTensorType(std::string(inputs[inputIdx])));
+      } catch (...) {
+         return false;
+      }
+
+      if (!op.SupportsFusionTypes(inputTypes, outputType))
+         return false;
+
+      std::vector<Dim> shape;
+
+      if (manyToMany) {
+         if (op.IsFusionReduction()) {
+            if (dataInputs.size() != 1 || !inputShape(dataInputs[0], shape))
+               return false;
+
+            const std::string inputLength = ConvertDimShapeToLength(shape);
+            const std::string outputLength = ConvertDimShapeToLength(outputShape);
+            bool numeric = true;
+            size_t inputValue = 0, outputValue = 0;
+
+            try {
+               inputValue = std::stoul(inputLength);
+               outputValue = std::stoul(outputLength);
+            } catch (...) {
+               numeric = false;
+            }
+
+            if (numeric && (outputValue == 0 || inputValue % outputValue != 0))
+               return false;
+
+            const std::string reducedLength = "(" + inputLength + ") / (" + outputLength + ")";
+
+            return !op.GetFusionReductionInitExpr().empty() &&
+                   !op.GetFusionReductionAccumulateExpr("acc", "value").empty() &&
+                   !op.GetFusionReductionCombineExpr("left", "right").empty() &&
+                   !op.GetFusionReductionFinalizeExpr("acc", reducedLength).empty() &&
+                   !op.GetFusionReductionInputIndexExpr("out_idx", "r", shape, outputShape).empty();
+         }
+
+         if (dataInputs.size() < 2)
+            return false;
+
+         for (size_t dataIdx = 0; dataIdx < dataInputs.size(); ++dataIdx) {
+            const size_t inputIdx = dataInputs[dataIdx];
+
+            if (!inputShape(inputIdx, shape) || op.GetFusionInputIndexExpr(inputIdx, "idx", shape, outputShape).empty())
+               return false;
+
+            if (dataIdx + 1 < dataInputs.size() &&
+                op.GetFusionInputConditionExpr(inputIdx, "idx", shape, outputShape).empty())
+               return false;
+         }
+
+         return !op.GetFusionExpr({"x"}).empty();
+      }
+
+      if (shuffle) {
+         if (dataInputs.size() != 1 || !inputShape(dataInputs[0], shape) ||
+             op.GetFusionInputIndexExpr(dataInputs[0], "idx", shape, outputShape).empty())
+            return false;
+      } else if (reorganize) {
+         if (dataInputs.size() != 1)
+            return false;
+
+         try {
+            if (ConvertDimShapeToLength(m.GetDimTensorShape(std::string(inputs[dataInputs[0]]))) !=
+                ConvertDimShapeToLength(outputShape))
+               return false;
+         } catch (...) {
+            return false;
+         }
+      } else {
+         for (const size_t inputIdx : dataInputs) {
+            Access access;
+            std::vector<Dim> strides;
+
+            if (!Fusion::ResolveAccess(m, std::string(inputs[inputIdx]), outputShape, access, strides))
+               return false;
+         }
+      }
+
+      return hasExpression();
+   }
+
+   Chain Start(size_t firstOpIdx) const
+   {
+      Chain chain;
+      const auto &op = Op(firstOpIdx);
+      const std::string firstOutput(op.GetOpOutputTensors()[0]);
+
+      chain.outputShape = m.GetDimTensorShape(firstOutput);
+      chain.group.opIndices.push_back(firstOpIdx);
+
+      const auto inputs = op.GetOpInputTensors();
+      const bool shuffle = op.GetFusionMappingType() == EFusionMappingType::Shuffle;
+
+      for (const size_t inputIdx : op.GetFusionDataInputIndices()) {
+         const std::string inputName(inputs[inputIdx]);
+
+         if (shuffle) {
+            std::vector<Dim> inputShape;
+
+            try {
+               inputShape = m.GetDimTensorShape(inputName);
+            } catch (...) {
+               throw std::runtime_error("Cannot resolve Shuffle input shape for fusion: " + inputName);
+            }
+
+            const std::string indexExpression = op.GetFusionInputIndexExpr(inputIdx, "idx", inputShape, chain.outputShape);
+
+            if (indexExpression.empty())
+               throw std::runtime_error("Shuffle operator does not provide a fused input index expression");
+
+            AddInput(chain.group, {inputName, Access::Elementwise, {}, indexExpression});
+            continue;
+         }
+
+         Access access;
+         std::vector<Dim> strides;
+
+         if (!Fusion::ResolveAccess(m, inputName, chain.outputShape, access, strides))
+            throw std::runtime_error("Invalid external input for fusion group: " + inputName);
+
+         AddInput(chain.group, {inputName, access, strides, ""});
+      }
+
+      chain.produced.push_back(firstOutput);
+      chain.logicalShape = chain.outputShape;
+      chain.current = firstOpIdx;
+      return chain;
+   }
+
+   bool Extend(Chain &chain, bool allowReorganize) const
+   {
+      const auto currentOutputs = Op(chain.current).GetOpOutputTensors();
+
+      if (currentOutputs.size() != 1)
+         return false;
+
+      const std::string currentOutput(currentOutputs[0]);
+      const auto consumerIt = uses.consumers.find(currentOutput);
+
+      if (IsOutput(currentOutput) || consumerIt == uses.consumers.end() || consumerIt->second.size() != 1)
+         return false;
+
+      const size_t nextOpIdx = consumerIt->second.front();
+
+      if (nextOpIdx <= chain.current)
+         return false;
+
+      const auto nextInputs = Op(nextOpIdx).GetOpInputTensors();
+      const auto nextDataInputs = Op(nextOpIdx).GetFusionDataInputIndices();
+
+      const auto isProduced = [&](const std::string &name) {
+         return std::find(chain.produced.begin(), chain.produced.end(), name) != chain.produced.end();
+      };
+
+      for (const size_t inputIdx : nextDataInputs) {
+         const std::string inputName(nextInputs[inputIdx]);
+
+         if (inputName == currentOutput || isProduced(inputName))
+            continue;
+
+         const auto producerIt = uses.producers.find(inputName);
+
+         if (producerIt != uses.producers.end() && producerIt->second >= nextOpIdx)
+            return false;
+      }
+
+      if (!Supported(nextOpIdx, false, allowReorganize))
+         return false;
+
+      const auto nextOutputs = Op(nextOpIdx).GetOpOutputTensors();
+
+      if (nextOutputs.size() != 1)
+         return false;
+
+      const std::string nextOutput(nextOutputs[0]);
+      std::vector<Dim> nextOutputShape;
+
+      try {
+         nextOutputShape = m.GetDimTensorShape(nextOutput);
+      } catch (...) {
+         return false;
+      }
+
+      const bool nextIsReorganize = Op(nextOpIdx).GetFusionMappingType() == EFusionMappingType::Reorganize;
+
+      if (nextIsReorganize) {
+         if (ConvertDimShapeToLength(nextOutputShape) != ConvertDimShapeToLength(chain.logicalShape))
+            return false;
+
+         const bool hasBroadcast = std::any_of(chain.group.externalInputs.begin(), chain.group.externalInputs.end(),
+                                               [](const Input &input) { return input.access == Access::Broadcast; });
+
+         if (hasBroadcast)
+            return false;
+      } else if (nextOutputShape != chain.logicalShape) {
+         return false;
+      }
+
+      std::vector<Input> pending;
+
+      for (const size_t inputIdx : nextDataInputs) {
+         const std::string inputName(nextInputs[inputIdx]);
+
+         if (isProduced(inputName))
+            continue;
+
+         Access access;
+         std::vector<Dim> strides;
+
+         if (!Fusion::ResolveAccess(m, inputName, nextIsReorganize ? chain.logicalShape : nextOutputShape, access, strides))
+            return false;
+
+         if (chain.reorganized && access == Access::Broadcast)
+            return false;
+
+         pending.push_back({inputName, access, strides, ""});
+      }
+
+      for (const auto &input : pending)
+         AddInput(chain.group, input);
+
+      chain.group.opIndices.push_back(nextOpIdx);
+      chain.produced.push_back(nextOutput);
+      chain.current = nextOpIdx;
+
+      if (nextIsReorganize) {
+         chain.logicalShape = nextOutputShape;
+         chain.reorganized = true;
+      }
+
+      return true;
+   }
+
+   template <class Visit>
+   void ForEachChain(bool allowReorganize, Visit &&visit) const
+   {
+      for (size_t firstOpIdx = 0; firstOpIdx < m.fOperators.size(); ++firstOpIdx) {
+         if (!Supported(firstOpIdx, true, false) || Op(firstOpIdx).GetOpOutputTensors().size() != 1)
+            continue;
+
+         Chain chain = Start(firstOpIdx);
+
+         while (Extend(chain, allowReorganize))
+            visit(chain);
+      }
+   }
+
+   Candidate BuildCandidate(std::vector<size_t> opIndices) const
+   {
+      Candidate candidate;
+      candidate.opIndices = std::move(opIndices);
+
+      std::sort(candidate.opIndices.begin(), candidate.opIndices.end());
+      candidate.opIndices.erase(std::unique(candidate.opIndices.begin(), candidate.opIndices.end()),
+                                candidate.opIndices.end());
+
+      for (const size_t opIdx : candidate.opIndices) {
+         if (opIdx >= m.fOperators.size())
+            throw std::runtime_error("Invalid operator index in fusion candidate: " + std::to_string(opIdx));
+      }
+
+      const auto contains = [&](size_t opIdx) {
+         return std::binary_search(candidate.opIndices.begin(), candidate.opIndices.end(), opIdx);
+      };
+
+      const auto addUnique = [](std::vector<std::string> &tensors, const std::string &name) {
+         if (std::find(tensors.begin(), tensors.end(), name) == tensors.end())
+            tensors.push_back(name);
+      };
+
+      for (const size_t opIdx : candidate.opIndices) {
+         const auto inputs = Op(opIdx).GetOpInputTensors();
+
+         for (const size_t inputIdx : Op(opIdx).GetFusionDataInputIndices()) {
+            if (inputIdx >= inputs.size())
+               throw std::runtime_error("Invalid fusion data input index for operator " + std::to_string(opIdx));
+
+            const std::string inputName(inputs[inputIdx]);
+            const auto producerIt = uses.producers.find(inputName);
+
+            if (producerIt == uses.producers.end() || !contains(producerIt->second))
+               addUnique(candidate.externalInputs, inputName);
+         }
+
+         for (const auto &outputView : Op(opIdx).GetOpOutputTensors()) {
+            const std::string outputName(outputView);
+            const auto consumerIt = uses.consumers.find(outputName);
+            const bool hasConsumers = consumerIt != uses.consumers.end() && !consumerIt->second.empty();
+            const bool hasExternalConsumer =
+               hasConsumers && std::any_of(consumerIt->second.begin(), consumerIt->second.end(),
+                                           [&](size_t consumerOpIdx) { return !contains(consumerOpIdx); });
+
+            if (!hasConsumers || hasExternalConsumer || IsOutput(outputName))
+               addUnique(candidate.materializedOutputs, outputName);
+            else
+               addUnique(candidate.internalTensors, outputName);
+         }
+      }
+
+      return candidate;
+   }
+
+   bool Valid(const Candidate &candidate) const
+   {
+      if (candidate.opIndices.size() < 2)
+         return false;
+
+      const std::set<size_t> candidateOps(candidate.opIndices.begin(), candidate.opIndices.end());
+      std::unordered_map<size_t, std::vector<size_t>> adjacency;
+
+      for (const size_t opIdx : candidate.opIndices) {
+         const auto inputs = Op(opIdx).GetOpInputTensors();
+
+         for (const size_t inputIdx : Op(opIdx).GetFusionDataInputIndices()) {
+            if (inputIdx >= inputs.size())
+               return false;
+
+            const auto producerIt = uses.producers.find(std::string(inputs[inputIdx]));
+            if (producerIt == uses.producers.end() || !candidateOps.count(producerIt->second))
+               continue;
+
+            adjacency[opIdx].push_back(producerIt->second);
+            adjacency[producerIt->second].push_back(opIdx);
+         }
+      }
+
+      std::set<size_t> visited;
+      std::vector<size_t> pending{candidate.opIndices.front()};
 
       while (!pending.empty()) {
-         std::vector<size_t> unitIndices = std::move(pending.back());
+         const size_t opIdx = pending.back();
          pending.pop_back();
 
-         const size_t commonLaunchOpIndex = units[unitIndices.back()].launchOpIndex;
+         if (!visited.insert(opIdx).second)
+            continue;
 
-         bool windowsOverlap = true;
+         for (const size_t neighborIdx : adjacency[opIdx]) {
+            if (!visited.count(neighborIdx))
+               pending.push_back(neighborIdx);
+         }
+      }
 
-         for (const size_t unitIdx : unitIndices) {
-            if (!windows[unitIdx].valid ||
-                commonLaunchOpIndex < windows[unitIdx].earliest ||
-                commonLaunchOpIndex > windows[unitIdx].latest) {
-               windowsOverlap = false;
-               break;
+      if (visited.size() != candidate.opIndices.size())
+         return false;
+
+      std::vector<size_t> reductionOps;
+
+      for (const size_t opIdx : candidate.opIndices) {
+         if (!Supported(opIdx, true, true, true))
+            return false;
+
+         const auto outputs = Op(opIdx).GetOpOutputTensors();
+
+         if (outputs.empty() || (outputs.size() > 1 && Op(opIdx).GetFusionMappingType() != EFusionMappingType::OneToMany))
+            return false;
+
+         try {
+            for (const auto &output : outputs)
+               m.GetDimTensorShape(std::string(output));
+         } catch (...) {
+            return false;
+         }
+      }
+
+      for (const size_t opIdx : candidate.opIndices) {
+         if (Op(opIdx).IsFusionReduction())
+            reductionOps.push_back(opIdx);
+      }
+
+      if (reductionOps.size() > 1)
+         return false;
+
+      if (reductionOps.size() == 1) {
+         const size_t reductionOpIdx = reductionOps[0];
+         const auto &reductionOp = Op(reductionOpIdx);
+         const auto reductionInputs = reductionOp.GetOpInputTensors();
+         const auto reductionOutputs = reductionOp.GetOpOutputTensors();
+         const auto reductionDataInputs = reductionOp.GetFusionDataInputIndices();
+
+         if (reductionDataInputs.size() != 1 || reductionOutputs.size() != 1)
+            return false;
+
+         const auto reductionInputShape = m.GetDimTensorShape(std::string(reductionInputs[reductionDataInputs[0]]));
+         const auto reductionOutputShape = m.GetDimTensorShape(std::string(reductionOutputs[0]));
+
+         for (const auto &outputName : candidate.materializedOutputs) {
+            const auto outputShape = m.GetDimTensorShape(outputName);
+            if (outputShape != reductionInputShape && outputShape != reductionOutputShape)
+               return false;
+         }
+
+         for (const size_t opIdx : candidate.opIndices) {
+            if (opIdx == reductionOpIdx)
+               continue;
+
+            const auto mapping = Op(opIdx).GetFusionMappingType();
+            if (mapping != EFusionMappingType::OneToOne && mapping != EFusionMappingType::OneToMany)
+               return false;
+         }
+      }
+
+      if (candidate.materializedOutputs.empty())
+         return false;
+
+      const std::string length = ConvertDimShapeToLength(m.GetDimTensorShape(candidate.materializedOutputs.front()));
+      const ETensorType type = m.GetTensorType(candidate.materializedOutputs.front());
+
+      for (const auto &outputName : candidate.materializedOutputs) {
+         if (m.IsAliasTensor(outputName) || ConvertDimShapeToLength(m.GetDimTensorShape(outputName)) != length ||
+             m.GetTensorType(outputName) != type)
+            return false;
+      }
+
+      return true;
+   }
+
+   Score ScoreOf(const Candidate &candidate) const
+   {
+      Score score;
+      score.launchesRemoved = candidate.opIndices.empty() ? 0 : candidate.opIndices.size() - 1;
+      score.materializedOutputs = candidate.materializedOutputs.size();
+      score.externalInputs = candidate.externalInputs.size();
+
+      for (const auto &input : candidate.externalInputs)
+         score.liveRangeExtensionByteSteps += ExtensionBytes({{input, candidate.launchOpIndex}});
+
+      for (const auto &outputName : candidate.materializedOutputs) {
+         const auto producerIt = uses.producers.find(outputName);
+
+         if (producerIt != uses.producers.end() && candidate.launchOpIndex < producerIt->second)
+            score.liveRangeExtensionByteSteps += Bytes(outputName) * (producerIt->second - candidate.launchOpIndex);
+      }
+
+      for (const auto &tensorName : candidate.internalTensors)
+         score.eliminatedBytes += Bytes(tensorName);
+
+      return score;
+   }
+
+   void Add(Candidate candidate)
+   {
+      if (seen.insert({candidate.opIndices, candidate.launchOpIndex}).second)
+         candidates.push_back(std::move(candidate));
+   }
+
+   void AddOptions(const Candidate &candidate)
+   {
+      const auto schedulable = [&](size_t launchOpIdx) {
+         for (const auto &inputName : candidate.externalInputs) {
+            const auto producerIt = uses.producers.find(inputName);
+
+            if (producerIt != uses.producers.end() && producerIt->second >= launchOpIdx)
+               return false;
+         }
+
+         for (const auto &outputName : candidate.materializedOutputs) {
+            const auto producerIt = uses.producers.find(outputName);
+
+            if (producerIt == uses.producers.end() || producerIt->second > launchOpIdx)
+               return false;
+
+            const auto consumerIt = uses.consumers.find(outputName);
+
+            if (consumerIt == uses.consumers.end())
+               continue;
+
+            for (const size_t consumerOpIdx : consumerIt->second) {
+               if (!std::binary_search(candidate.opIndices.begin(), candidate.opIndices.end(), consumerOpIdx) &&
+                   consumerOpIdx < launchOpIdx)
+                  return false;
             }
          }
 
-         if (!windowsOverlap)
+         return true;
+      };
+
+      for (const size_t launchOpIdx : candidate.opIndices) {
+         if (!schedulable(launchOpIdx))
             continue;
 
-         if (unitIndices.size() >= 2) {
-            std::vector<EltwiseFusionGroup> branches;
-            branches.reserve(unitIndices.size());
+         Candidate option = candidate;
+         option.launchOpIndex = launchOpIdx;
+         option.score = ScoreOf(option);
+         Add(std::move(option));
+      }
+   }
 
-            for (const size_t unitIdx : unitIndices)
-               branches.push_back(units[unitIdx]);
+   void EnumerateSpecial()
+   {
+      ForEachChain(true, [&](const Chain &chain) {
+         const bool special = std::any_of(chain.group.opIndices.begin(), chain.group.opIndices.end(), [&](size_t opIdx) {
+            const auto mapping = Op(opIdx).GetFusionMappingType();
+            return mapping == EFusionMappingType::Shuffle || mapping == EFusionMappingType::Reorganize;
+         });
 
-            size_t launchOpIndex = 0;
+         const std::string output(Op(chain.current).GetOpOutputTensors()[0]);
 
-            if (!CanHorizontallyFuse(branches, tensorUses, launchOpIndex))
-               continue;
+         if (chain.group.opIndices.size() < 2 || !special || m.IsAliasTensor(output))
+            return;
 
-            if (emitted.insert(unitIndices).second) {
-               KernelFusionGroup candidate;
-               candidate.unitIndices = unitIndices;
-               candidate.branches = std::move(branches);
-               candidate.launchOpIndex = launchOpIndex;
+         Group group = chain.group;
+         group.outputTensors = {output};
+         group.numElements = ConvertDimShapeToLength(chain.outputShape);
+         group.launchOpIndex = chain.current;
 
-               for (const auto &branch : candidate.branches)
-                  candidate.numElements = std::max(candidate.numElements, branch.numElements);
-
-               candidates.push_back(std::move(candidate));
-            }
+         for (size_t i = 0; i + 1 < group.opIndices.size(); ++i) {
+            const auto outputs = Op(group.opIndices[i]).GetOpOutputTensors();
+            if (!outputs.empty())
+               group.internalTensors.push_back(std::string(outputs[0]));
          }
 
-         if (unitIndices.size() >= maxBranches)
+         Candidate candidate;
+         candidate.opIndices = group.opIndices;
+         candidate.materializedOutputs = group.outputTensors;
+         candidate.internalTensors = group.internalTensors;
+         candidate.launchOpIndex = group.launchOpIndex;
+
+         for (const auto &input : group.externalInputs)
+            candidate.externalInputs.push_back(input.tensorName);
+
+         candidate.prebuilt = std::move(group);
+         candidate.score = ScoreOf(candidate);
+         Add(std::move(candidate));
+      });
+   }
+
+   void EnumerateDag()
+   {
+      constexpr size_t maxCandidateOps = 8;
+
+      const size_t n = m.fOperators.size();
+      std::vector<bool> supported(n, false);
+      std::vector<std::vector<size_t>> adjacency(n);
+
+      for (size_t opIdx = 0; opIdx < n; ++opIdx)
+         supported[opIdx] = Supported(opIdx, true, true, true);
+
+      for (size_t consumerIdx = 0; consumerIdx < n; ++consumerIdx) {
+         if (!supported[consumerIdx])
             continue;
 
-         const size_t firstNextIdx = unitIndices.back() + 1;
+         const auto inputs = Op(consumerIdx).GetOpInputTensors();
 
-         for (size_t nextIdx = firstNextIdx; nextIdx < endIdx; ++nextIdx) {
-            if (!windows[nextIdx].valid)
+         for (const size_t inputIdx : Op(consumerIdx).GetFusionDataInputIndices()) {
+            if (inputIdx >= inputs.size())
                continue;
 
-            const size_t nextLaunchOpIndex = units[nextIdx].launchOpIndex;
+            const auto producerIt = uses.producers.find(std::string(inputs[inputIdx]));
 
-            bool canOverlap = true;
+            if (producerIt == uses.producers.end())
+               continue;
 
-            for (const size_t unitIdx : unitIndices) {
-               if (nextLaunchOpIndex < windows[unitIdx].earliest ||
-                   nextLaunchOpIndex > windows[unitIdx].latest) {
-                  canOverlap = false;
-                  break;
+            const size_t producerIdx = producerIt->second;
+
+            if (producerIdx == consumerIdx || !supported[producerIdx])
+               continue;
+
+            adjacency[producerIdx].push_back(consumerIdx);
+            adjacency[consumerIdx].push_back(producerIdx);
+         }
+      }
+
+      for (auto &neighbors : adjacency) {
+         std::sort(neighbors.begin(), neighbors.end());
+         neighbors.erase(std::unique(neighbors.begin(), neighbors.end()), neighbors.end());
+      }
+
+      std::set<std::vector<size_t>> visited;
+
+      for (size_t seedIdx = 0; seedIdx < n; ++seedIdx) {
+         std::vector<size_t> seed{seedIdx};
+
+         if (!supported[seedIdx] || !visited.insert(seed).second)
+            continue;
+
+         std::vector<std::vector<size_t>> pending;
+         pending.push_back(std::move(seed));
+
+         while (!pending.empty()) {
+            std::vector<size_t> opIndices = std::move(pending.back());
+            pending.pop_back();
+
+            if (opIndices.size() >= 2) {
+               const Candidate candidate = BuildCandidate(opIndices);
+
+               if (Valid(candidate))
+                  AddOptions(candidate);
+            }
+
+            if (opIndices.size() >= maxCandidateOps)
+               continue;
+
+            std::vector<size_t> expansion;
+
+            for (const size_t opIdx : opIndices) {
+               for (const size_t neighborIdx : adjacency[opIdx]) {
+                  if (!std::binary_search(opIndices.begin(), opIndices.end(), neighborIdx))
+                     expansion.push_back(neighborIdx);
                }
             }
 
-            if (!canOverlap)
+            std::sort(expansion.begin(), expansion.end());
+            expansion.erase(std::unique(expansion.begin(), expansion.end()), expansion.end());
+
+            for (const size_t nextOpIdx : expansion) {
+               std::vector<size_t> next = opIndices;
+               next.insert(std::lower_bound(next.begin(), next.end(), nextOpIdx), nextOpIdx);
+
+               if (visited.insert(next).second)
+                  pending.push_back(std::move(next));
+            }
+         }
+      }
+   }
+
+   void EnumerateLinear()
+   {
+      ForEachChain(false, [&](const Chain &chain) {
+         const Candidate candidate = BuildCandidate(chain.group.opIndices);
+
+         if (Valid(candidate))
+            AddOptions(candidate);
+      });
+   }
+
+   bool Conflict(const Candidate &left, const Candidate &right) const
+   {
+      size_t leftIdx = 0;
+      size_t rightIdx = 0;
+
+      while (leftIdx < left.opIndices.size() && rightIdx < right.opIndices.size()) {
+         if (left.opIndices[leftIdx] == right.opIndices[rightIdx])
+            return true;
+
+         if (left.opIndices[leftIdx] < right.opIndices[rightIdx])
+            ++leftIdx;
+         else
+            ++rightIdx;
+      }
+
+      const auto misordered = [&](const Candidate &producer, const Candidate &consumer) {
+         for (const auto &outputName : producer.materializedOutputs) {
+            const auto consumerIt = uses.consumers.find(outputName);
+            if (consumerIt == uses.consumers.end())
                continue;
 
-            std::vector<size_t> nextIndices = unitIndices;
-            nextIndices.push_back(nextIdx);
-            pending.push_back(std::move(nextIndices));
+            for (const size_t consumerOpIdx : consumerIt->second) {
+               if (std::binary_search(consumer.opIndices.begin(), consumer.opIndices.end(), consumerOpIdx))
+                  return producer.launchOpIndex >= consumer.launchOpIndex;
+            }
          }
-      }
+
+         return false;
+      };
+
+      return misordered(left, right) || misordered(right, left);
    }
 
-   return candidates;
-}
+   std::vector<size_t> Select() const
+   {
+      std::vector<size_t> selection;
 
-size_t RModel::ComputeKernelFusionLiveRangeExtensionByteSteps(const KernelFusionGroup &candidate) const
-{
-   std::unordered_map<std::string, size_t> requiredLastUses;
+      if (candidates.empty())
+         return selection;
 
-   for (const auto &branch : candidate.branches) {
-      for (const auto &externalInput : branch.externalInputs) {
-         const std::string tensorName = ResolveAliasTensor(externalInput.tensorName);
-         const auto frequencyIt = fIntermediateTensorFrequencyLookup.find(tensorName);
+      const auto planExtension = [&](const std::vector<size_t> &indices) {
+         std::vector<std::pair<std::string, size_t>> inputs;
 
-         if (frequencyIt == fIntermediateTensorFrequencyLookup.end() || candidate.launchOpIndex <= frequencyIt->second)
+         for (const size_t idx : indices) {
+            for (const auto &input : candidates[idx].externalInputs)
+               inputs.emplace_back(input, candidates[idx].launchOpIndex);
+         }
+
+         return ExtensionBytes(inputs);
+      };
+
+      std::vector<std::vector<size_t>> conflicts(candidates.size());
+
+      for (size_t leftIdx = 0; leftIdx < candidates.size(); ++leftIdx) {
+         for (size_t rightIdx = leftIdx + 1; rightIdx < candidates.size(); ++rightIdx) {
+            if (!Conflict(candidates[leftIdx], candidates[rightIdx]))
+               continue;
+
+            conflicts[leftIdx].push_back(rightIdx);
+            conflicts[rightIdx].push_back(leftIdx);
+         }
+      }
+
+      for (auto &candidateConflicts : conflicts)
+         std::sort(candidateConflicts.begin(), candidateConflicts.end());
+
+      std::vector<std::vector<size_t>> neighborsOf = conflicts;
+      std::unordered_map<std::string, std::vector<size_t>> lifetimeUsers;
+
+      for (size_t candidateIdx = 0; candidateIdx < candidates.size(); ++candidateIdx) {
+         for (const auto &input : candidates[candidateIdx].externalInputs) {
+            if (const auto overrun = Overrun(input, candidates[candidateIdx].launchOpIndex))
+               lifetimeUsers[overrun->first].push_back(candidateIdx);
+         }
+      }
+
+      for (auto &[tensorName, users] : lifetimeUsers) {
+         std::sort(users.begin(), users.end());
+         users.erase(std::unique(users.begin(), users.end()), users.end());
+
+         for (size_t idx = 1; idx < users.size(); ++idx) {
+            neighborsOf[users.front()].push_back(users[idx]);
+            neighborsOf[users[idx]].push_back(users.front());
+         }
+      }
+
+      for (auto &neighbors : neighborsOf) {
+         std::sort(neighbors.begin(), neighbors.end());
+         neighbors.erase(std::unique(neighbors.begin(), neighbors.end()), neighbors.end());
+      }
+
+      std::vector<bool> visitedComponent(candidates.size(), false);
+
+      for (size_t seedIdx = 0; seedIdx < candidates.size(); ++seedIdx) {
+         if (visitedComponent[seedIdx])
             continue;
 
-         auto [requiredIt, inserted] = requiredLastUses.try_emplace(tensorName, candidate.launchOpIndex);
+         std::vector<size_t> component;
+         std::vector<size_t> pending{seedIdx};
+         visitedComponent[seedIdx] = true;
 
-         if (!inserted)
-            requiredIt->second = std::max(requiredIt->second, candidate.launchOpIndex);
+         while (!pending.empty()) {
+            const size_t candidateIdx = pending.back();
+            pending.pop_back();
+            component.push_back(candidateIdx);
+
+            for (const size_t neighborIdx : neighborsOf[candidateIdx]) {
+               if (visitedComponent[neighborIdx])
+                  continue;
+
+               visitedComponent[neighborIdx] = true;
+               pending.push_back(neighborIdx);
+            }
+         }
+
+         std::sort(component.begin(), component.end());
+
+         Score bestScore;
+         std::vector<size_t> bestSelection;
+         bool hasBest = false;
+
+         std::function<void(const std::vector<size_t> &, Score, std::vector<size_t>)> search;
+         search = [&](const std::vector<size_t> &remaining, Score current, std::vector<size_t> selected) {
+            if (remaining.empty()) {
+               std::sort(selected.begin(), selected.end());
+
+               if (!hasBest || current.Better(bestScore) || (current == bestScore && selected < bestSelection)) {
+                  bestScore = current;
+                  bestSelection = std::move(selected);
+                  hasBest = true;
+               }
+
+               return;
+            }
+
+            Score optimistic = current;
+
+            for (const size_t candidateIdx : remaining) {
+               optimistic.launchesRemoved += candidates[candidateIdx].score.launchesRemoved;
+               optimistic.eliminatedBytes += candidates[candidateIdx].score.eliminatedBytes;
+            }
+
+            if (hasBest && optimistic.launchesRemoved < bestScore.launchesRemoved)
+               return;
+
+            if (hasBest && optimistic.launchesRemoved == bestScore.launchesRemoved &&
+                current.liveRangeExtensionByteSteps > bestScore.liveRangeExtensionByteSteps)
+               return;
+
+            if (hasBest && optimistic.launchesRemoved == bestScore.launchesRemoved &&
+                current.liveRangeExtensionByteSteps == bestScore.liveRangeExtensionByteSteps &&
+                optimistic.eliminatedBytes < bestScore.eliminatedBytes)
+               return;
+
+            size_t pivotIdx = remaining.front();
+            size_t pivotConflictCount = 0;
+
+            for (const size_t candidateIdx : remaining) {
+               size_t conflictCount = 0;
+
+               for (const size_t otherIdx : remaining) {
+                  if (candidateIdx != otherIdx &&
+                      std::binary_search(conflicts[candidateIdx].begin(), conflicts[candidateIdx].end(), otherIdx))
+                     ++conflictCount;
+               }
+
+               if (conflictCount > pivotConflictCount) {
+                  pivotIdx = candidateIdx;
+                  pivotConflictCount = conflictCount;
+               }
+            }
+
+            std::vector<size_t> includeRemaining;
+            std::vector<size_t> excludeRemaining;
+
+            for (const size_t candidateIdx : remaining) {
+               if (candidateIdx == pivotIdx)
+                  continue;
+
+               excludeRemaining.push_back(candidateIdx);
+
+               if (!std::binary_search(conflicts[pivotIdx].begin(), conflicts[pivotIdx].end(), candidateIdx))
+                  includeRemaining.push_back(candidateIdx);
+            }
+
+            Score included = current;
+            included.Add(candidates[pivotIdx].score);
+            std::vector<size_t> includeSelected = selected;
+            includeSelected.push_back(pivotIdx);
+            included.liveRangeExtensionByteSteps = planExtension(includeSelected);
+            search(includeRemaining, included, std::move(includeSelected));
+
+            search(excludeRemaining, current, std::move(selected));
+         };
+
+         search(component, {}, {});
+
+         selection.insert(selection.end(), bestSelection.begin(), bestSelection.end());
       }
+
+      std::sort(selection.begin(), selection.end());
+      return selection;
    }
 
-   size_t cost = 0;
-
-   for (const auto &[tensorName, requiredLastUse] : requiredLastUses) {
-      const size_t originalLastUse = fIntermediateTensorFrequencyLookup.at(tensorName);
-      const size_t tensorBytes = GetTypeSize(GetTensorType(tensorName)) * ConvertShapeToLength(GetTensorShape(tensorName));
-      cost += tensorBytes * (requiredLastUse - originalLastUse);
-   }
-
-   return cost;
-}
-
-std::vector<RModel::KernelFusionGroup> RModel::SelectKernelFusionGroups(std::vector<KernelFusionGroup> candidates) const
-{
-   std::vector<size_t> order;
-   order.reserve(candidates.size());
-
-   for (size_t candidateIdx = 0; candidateIdx < candidates.size(); ++candidateIdx)
-      order.push_back(candidateIdx);
-
-   std::vector<size_t> liveRangeCosts(candidates.size());
-
-   for (size_t candidateIdx = 0; candidateIdx < candidates.size(); ++candidateIdx)
-      liveRangeCosts[candidateIdx] = ComputeKernelFusionLiveRangeExtensionByteSteps(candidates[candidateIdx]);
-
-   std::sort(order.begin(), order.end(), [&](size_t leftIdx, size_t rightIdx) {
-      const auto &left = candidates[leftIdx];
-      const auto &right = candidates[rightIdx];
-
-      const size_t leftLaunchesRemoved = left.branches.size() - 1;
-      const size_t rightLaunchesRemoved = right.branches.size() - 1;
-
-      if (leftLaunchesRemoved != rightLaunchesRemoved)
-         return leftLaunchesRemoved > rightLaunchesRemoved;
-
-      if (liveRangeCosts[leftIdx] != liveRangeCosts[rightIdx])
-         return liveRangeCosts[leftIdx] < liveRangeCosts[rightIdx];
-
-      if (left.numElements != right.numElements)
-         return left.numElements < right.numElements;
-
-      return left.unitIndices < right.unitIndices;
-   });
-
-   std::set<size_t> usedUnits;
-   std::vector<KernelFusionGroup> selected;
-
-   for (const size_t candidateIdx : order) {
-      const auto &candidate = candidates[candidateIdx];
-
-      const bool overlaps = std::any_of(candidate.unitIndices.begin(), candidate.unitIndices.end(),
-         [&](size_t unitIdx) { return usedUnits.count(unitIdx) != 0; });
-
-      if (overlaps)
-         continue;
-
-      selected.push_back(candidate);
-
-      for (const size_t unitIdx : candidate.unitIndices)
-         usedUnits.insert(unitIdx);
-   }
-
-   std::sort(selected.begin(), selected.end(), [](const KernelFusionGroup &left, const KernelFusionGroup &right) {
-      return left.launchOpIndex < right.launchOpIndex;
-   });
-
-   return selected;
-}
-
-void RModel::ComputeEltwiseFusionGroups()
-{
-   fEltwiseFusionGroups.clear();
-   fKernelFusionGroups.clear();
-   fOpToFusionGroupIdx.clear();
-   fOpToKernelFusionGroupIdx.clear();
-   fFusionIntermediateTensors.clear();
-
-   const auto tensorUses = BuildFusionTensorUseGraph();
-
-   auto specialCandidates = EnumerateSpecialFusionCandidates(tensorUses);
-   auto dagCandidates = EnumerateFusionCandidates(tensorUses);
-   auto linearCandidates = EnumerateLinearFusionCandidates(tensorUses);
-   std::vector<FusionCandidate> candidates;
-   std::set<std::pair<std::vector<size_t>, size_t>> seenCandidates;
-
-   auto AddCandidates = [&](std::vector<FusionCandidate> &source) {
-      for (auto &candidate : source) {
-         if (!seenCandidates.insert({candidate.opIndices, candidate.launchOpIndex}).second) continue;
-         candidates.push_back(std::move(candidate));
+   Group BuildGroup(const Candidate &candidate) const
+   {
+      if (candidate.prebuilt) {
+         Group group = *candidate.prebuilt;
+         group.usesIndexedEvaluation = true;
+         return group;
       }
-   };
 
-   AddCandidates(specialCandidates);
-   AddCandidates(dagCandidates);
-   AddCandidates(linearCandidates);
+      if (candidate.materializedOutputs.empty())
+         throw std::runtime_error("Fusion candidate has no materialized output");
 
-   const FusionPlan plan = SelectFusionPlan(candidates, tensorUses);
+      Group group;
+      group.opIndices = candidate.opIndices;
+      group.outputTensors = candidate.materializedOutputs;
+      group.internalTensors = candidate.internalTensors;
+      group.launchOpIndex = candidate.launchOpIndex;
 
-   for (const size_t candidateIdx : plan.candidateIndices)
-      fEltwiseFusionGroups.push_back(BuildEltwiseFusionGroup(candidates[candidateIdx]));
+      const auto iterationShape = m.GetDimTensorShape(group.outputTensors.front());
+      group.numElements = ConvertDimShapeToLength(iterationShape);
 
-   std::sort(fEltwiseFusionGroups.begin(), fEltwiseFusionGroups.end(), [](const EltwiseFusionGroup &left,
-         const EltwiseFusionGroup &right) { return left.opIndices.front() < right.opIndices.front(); });
+      group.usesIndexedEvaluation = std::any_of(group.opIndices.begin(), group.opIndices.end(), [&](size_t opIdx) {
+         const auto mapping = Op(opIdx).GetFusionMappingType();
 
-   for (size_t groupIdx = 0; groupIdx < fEltwiseFusionGroups.size(); ++groupIdx) {
-      auto &group = fEltwiseFusionGroups[groupIdx];
+         if (mapping == EFusionMappingType::Shuffle || mapping == EFusionMappingType::Reorganize ||
+             mapping == EFusionMappingType::ManyToMany)
+            return true;
 
-      for (const size_t opIdx : group.opIndices)
-         fOpToFusionGroupIdx[opIdx] = groupIdx;
+         const auto outputs = Op(opIdx).GetOpOutputTensors();
 
-      for (const auto &tensorName : group.internalTensors)
-         fFusionIntermediateTensors.insert(tensorName);
+         if (outputs.size() > 1)
+            return true;
 
-      if (fVerbose) {
-         std::cout << "[SOFIE elementwise fusion] operators";
-         for (const size_t opIdx : group.opIndices) std::cout << " " << opIdx;
-         std::cout << " ->";
-         for (const auto &outputName : group.outputTensors) std::cout << " " << outputName;
-         std::cout << " with " << group.externalInputs.size() << " external input(s)" << std::endl;
+         return outputs.size() == 1 && m.GetDimTensorShape(std::string(outputs[0])) != iterationShape;
+      });
+
+      for (const auto &inputName : candidate.externalInputs) {
+         if (group.usesIndexedEvaluation) {
+            AddInput(group, {inputName, Access::Elementwise, {}, ""});
+            continue;
+         }
+
+         Access access;
+         std::vector<Dim> strides;
+
+         if (!Fusion::ResolveAccess(m, inputName, iterationShape, access, strides))
+            throw std::runtime_error("Cannot resolve external input for fusion candidate: " + inputName);
+
+         AddInput(group, {inputName, access, strides, ""});
       }
+
+      return group;
    }
 
-   // A nonconsecutive fused kernel executes at launchOpIndex, so every external input must remain alive until then.
-   for (const auto &group : fEltwiseFusionGroups) {
-      for (const auto &externalInput : group.externalInputs) {
-         const std::string tensorName = ResolveAliasTensor(externalInput.tensorName);
-         const auto frequencyIt = fIntermediateTensorFrequencyLookup.find(tensorName);
-         if (frequencyIt != fIntermediateTensorFrequencyLookup.end()) frequencyIt->second = std::max(frequencyIt->second, group.launchOpIndex);
+   std::vector<Group> BuildUnits() const
+   {
+      std::vector<Group> units;
+      std::set<size_t> covered;
+
+      for (const auto &group : plan.eltwise) {
+         covered.insert(group.opIndices.begin(), group.opIndices.end());
+
+         if (!group.usesIndexedEvaluation)
+            units.push_back(group);
       }
+
+      for (size_t opIdx = 0; opIdx < m.fOperators.size(); ++opIdx) {
+         if (covered.count(opIdx) || !Supported(opIdx, false, false))
+            continue;
+
+         Candidate candidate = BuildCandidate({opIdx});
+
+         if (candidate.materializedOutputs.empty())
+            continue;
+
+         candidate.launchOpIndex = opIdx;
+         units.push_back(BuildGroup(candidate));
+      }
+
+      std::sort(units.begin(), units.end(), [](const Group &left, const Group &right) {
+         return left.launchOpIndex < right.launchOpIndex;
+      });
+
+      return units;
    }
 
-   const auto kernelFusionUnits = BuildKernelFusionLaunchUnits(tensorUses);
-   auto kernelFusionCandidates = EnumerateKernelFusionGroups(kernelFusionUnits, tensorUses);
-   fKernelFusionGroups = SelectKernelFusionGroups(std::move(kernelFusionCandidates));
+   bool CanHorizontallyFuse(const std::vector<Group> &branches, size_t &launchOpIndex) const
+   {
+      std::unordered_map<size_t, size_t> opToBranch;
+      size_t commonLaunch = 0;
 
-   for (size_t groupIdx = 0; groupIdx < fKernelFusionGroups.size(); ++groupIdx) {
-      const auto &group = fKernelFusionGroups[groupIdx];
+      for (size_t branchIdx = 0; branchIdx < branches.size(); ++branchIdx) {
+         const auto &branch = branches[branchIdx];
 
-      for (const auto &branch : group.branches) {
-         for (const size_t opIdx : branch.opIndices)
-            fOpToKernelFusionGroupIdx[opIdx] = groupIdx;
+         if (branch.opIndices.empty() || branch.outputTensors.empty())
+            return false;
 
-         for (const auto &externalInput : branch.externalInputs) {
-            const std::string tensorName = ResolveAliasTensor(externalInput.tensorName);
-            const auto frequencyIt = fIntermediateTensorFrequencyLookup.find(tensorName);
+         commonLaunch = std::max(commonLaunch, branch.launchOpIndex);
 
-            if (frequencyIt != fIntermediateTensorFrequencyLookup.end())
-               frequencyIt->second = std::max(frequencyIt->second, group.launchOpIndex);
+         for (const size_t opIdx : branch.opIndices) {
+            if (!opToBranch.emplace(opIdx, branchIdx).second)
+               return false;
          }
       }
+
+      for (size_t branchIdx = 0; branchIdx < branches.size(); ++branchIdx) {
+         const auto &branch = branches[branchIdx];
+
+         for (const auto &input : branch.externalInputs) {
+            const auto producerIt = uses.producers.find(input.tensorName);
+
+            if (producerIt == uses.producers.end())
+               continue;
+
+            const auto branchIt = opToBranch.find(producerIt->second);
+
+            if (branchIt != opToBranch.end() ? branchIt->second != branchIdx : producerIt->second >= commonLaunch)
+               return false;
+         }
+
+         for (const auto &outputName : branch.outputTensors) {
+            const auto consumerIt = uses.consumers.find(outputName);
+
+            if (consumerIt == uses.consumers.end())
+               continue;
+
+            for (const size_t consumerOpIdx : consumerIt->second) {
+               const auto branchIt = opToBranch.find(consumerOpIdx);
+
+               if (branchIt != opToBranch.end()) {
+                  if (branchIt->second != branchIdx)
+                     return false;
+               } else if (consumerOpIdx < commonLaunch) {
+                  return false;
+               }
+            }
+         }
+      }
+
+      launchOpIndex = commonLaunch;
+      return true;
    }
+
+   std::vector<Fusion::KernelGroup> EnumerateKernelGroups(const std::vector<Group> &units) const
+   {
+      constexpr size_t maxBranches = 2;
+      constexpr size_t maxLookaheadUnits = 8;
+
+      struct Window {
+         size_t earliest = 0;
+         size_t latest = 0;
+         bool valid = false;
+      };
+
+      std::vector<Window> windows(units.size());
+
+      for (size_t unitIdx = 0; unitIdx < units.size(); ++unitIdx) {
+         const auto &unit = units[unitIdx];
+         auto &window = windows[unitIdx];
+
+         if (unit.opIndices.empty() || unit.outputTensors.empty() || m.fOperators.empty())
+            continue;
+
+         window.latest = m.fOperators.size() - 1;
+
+         for (const auto &input : unit.externalInputs) {
+            const auto producerIt = uses.producers.find(input.tensorName);
+
+            if (producerIt != uses.producers.end())
+               window.earliest = std::max(window.earliest, producerIt->second + 1);
+         }
+
+         for (const auto &outputName : unit.outputTensors) {
+            const auto consumerIt = uses.consumers.find(outputName);
+
+            if (consumerIt == uses.consumers.end())
+               continue;
+
+            for (const size_t consumerOpIdx : consumerIt->second) {
+               if (std::find(unit.opIndices.begin(), unit.opIndices.end(), consumerOpIdx) == unit.opIndices.end())
+                  window.latest = std::min(window.latest, consumerOpIdx);
+            }
+         }
+
+         window.valid = window.earliest <= window.latest;
+      }
+
+      const auto inWindow = [&](size_t unitIdx, size_t launch) {
+         return windows[unitIdx].valid && launch >= windows[unitIdx].earliest && launch <= windows[unitIdx].latest;
+      };
+
+      std::vector<Fusion::KernelGroup> groups;
+      std::set<std::vector<size_t>> emitted;
+
+      for (size_t seedIdx = 0; seedIdx < units.size(); ++seedIdx) {
+         if (!windows[seedIdx].valid)
+            continue;
+
+         const size_t endIdx = std::min(units.size(), seedIdx + maxLookaheadUnits);
+         std::vector<std::vector<size_t>> pending{{seedIdx}};
+
+         while (!pending.empty()) {
+            std::vector<size_t> unitIndices = std::move(pending.back());
+            pending.pop_back();
+
+            const size_t commonLaunch = units[unitIndices.back()].launchOpIndex;
+
+            if (!std::all_of(unitIndices.begin(), unitIndices.end(),
+                             [&](size_t unitIdx) { return inWindow(unitIdx, commonLaunch); }))
+               continue;
+
+            if (unitIndices.size() >= 2) {
+               std::vector<Group> branches;
+
+               for (const size_t unitIdx : unitIndices)
+                  branches.push_back(units[unitIdx]);
+
+               size_t launchOpIndex = 0;
+
+               if (!CanHorizontallyFuse(branches, launchOpIndex))
+                  continue;
+
+               if (emitted.insert(unitIndices).second) {
+                  Fusion::KernelGroup group;
+                  group.unitIndices = unitIndices;
+                  group.branches = std::move(branches);
+                  group.launchOpIndex = launchOpIndex;
+
+                  for (const auto &branch : group.branches)
+                     group.numElements = std::max(group.numElements, branch.numElements);
+
+                  groups.push_back(std::move(group));
+               }
+            }
+
+            if (unitIndices.size() >= maxBranches)
+               continue;
+
+            for (size_t nextIdx = unitIndices.back() + 1; nextIdx < endIdx; ++nextIdx) {
+               if (!windows[nextIdx].valid)
+                  continue;
+
+               const size_t nextLaunch = units[nextIdx].launchOpIndex;
+
+               if (!std::all_of(unitIndices.begin(), unitIndices.end(), [&](size_t unitIdx) {
+                      return nextLaunch >= windows[unitIdx].earliest && nextLaunch <= windows[unitIdx].latest;
+                   }))
+                  continue;
+
+               std::vector<size_t> next = unitIndices;
+               next.push_back(nextIdx);
+               pending.push_back(std::move(next));
+            }
+         }
+      }
+
+      return groups;
+   }
+
+   std::vector<Fusion::KernelGroup> SelectKernelGroups(std::vector<Fusion::KernelGroup> groups) const
+   {
+      std::vector<size_t> costs(groups.size());
+
+      for (size_t idx = 0; idx < groups.size(); ++idx) {
+         std::vector<std::pair<std::string, size_t>> inputs;
+
+         for (const auto &branch : groups[idx].branches) {
+            for (const auto &input : branch.externalInputs)
+               inputs.emplace_back(input.tensorName, groups[idx].launchOpIndex);
+         }
+
+         costs[idx] = ExtensionBytes(inputs);
+      }
+
+      std::vector<size_t> order(groups.size());
+      for (size_t idx = 0; idx < order.size(); ++idx)
+         order[idx] = idx;
+
+      std::sort(order.begin(), order.end(), [&](size_t leftIdx, size_t rightIdx) {
+         const auto &left = groups[leftIdx];
+         const auto &right = groups[rightIdx];
+
+         if (left.branches.size() != right.branches.size())
+            return left.branches.size() > right.branches.size();
+
+         if (costs[leftIdx] != costs[rightIdx])
+            return costs[leftIdx] < costs[rightIdx];
+
+         if (left.numElements != right.numElements)
+            return left.numElements < right.numElements;
+
+         return left.unitIndices < right.unitIndices;
+      });
+
+      std::set<size_t> usedUnits;
+      std::vector<Fusion::KernelGroup> selected;
+
+      for (const size_t idx : order) {
+         const auto &group = groups[idx];
+
+         if (std::any_of(group.unitIndices.begin(), group.unitIndices.end(),
+                         [&](size_t unitIdx) { return usedUnits.count(unitIdx) != 0; }))
+            continue;
+
+         selected.push_back(group);
+         usedUnits.insert(group.unitIndices.begin(), group.unitIndices.end());
+      }
+
+      std::sort(selected.begin(), selected.end(), [](const Fusion::KernelGroup &left, const Fusion::KernelGroup &right) {
+         return left.launchOpIndex < right.launchOpIndex;
+      });
+
+      return selected;
+   }
+};
+
+Fusion::Plan Fusion::Compute(RModel &model)
+{
+   return FusionPlanner(model).Run();
+}
+
+namespace {
+
+const std::string SP = "   ";
+
+std::string DimLiteral(const Dim &d)
+{
+   return d.isParam ? d.GetVal() : (d.GetVal() + "u");
+}
+
+void CollectKnownShapeExprParams(const std::string &expr, const std::unordered_map<std::string, std::string> &known,
+                                 std::vector<std::string> &out, std::set<std::string> &seen)
+{
+   size_t i = 0;
+   while (i < expr.size()) {
+      if (std::isalpha(static_cast<unsigned char>(expr[i])) || expr[i] == '_') {
+         size_t j = i;
+         while (j < expr.size() && (std::isalnum(static_cast<unsigned char>(expr[j])) || expr[j] == '_'))
+            ++j;
+         std::string token = expr.substr(i, j - i);
+         if (known.count(token) && seen.insert(token).second)
+            out.push_back(token);
+         i = j;
+      } else {
+         ++i;
+      }
+   }
+}
+
+std::string Profiled(const std::string &launchCode, const std::string &title, const std::string &name)
+{
+   std::string code;
+   code += "   // -- GPU Profiling " + title + ": " + name + " --\n";
+   code += "   tp_start = std::chrono::steady_clock::now();\n";
+   code += launchCode;
+   code += "   alpaka::wait(queue);\n";
+   code += "   fProfilingResults[\"" + name + "\"].push_back(\n";
+   code += "      std::chrono::duration_cast<std::chrono::duration<double, std::micro>>(\n";
+   code += "         std::chrono::steady_clock::now() - tp_start).count());\n\n";
+   return code;
+}
+
+std::string Pointers(const Fusion::Group &group)
+{
+   std::string code;
+   for (const auto &input : group.externalInputs)
+      code += ", alpaka::getPtrNative(deviceBuf_" + input.tensorName + ")";
+   for (const auto &outputName : group.outputTensors)
+      code += ", alpaka::getPtrNative(deviceBuf_" + outputName + ")";
+   return code;
+}
+
+std::string BroadcastIndex(const std::vector<Dim> &alignedStrides, const std::vector<Dim> &outputShape,
+                           const std::string &index)
+{
+   const auto outputStrides = UTILITY::ComputeStrideFromShape(outputShape);
+   std::string expression;
+
+   for (size_t dimIdx = 0; dimIdx < alignedStrides.size(); ++dimIdx) {
+      const Dim &inputStride = alignedStrides[dimIdx];
+
+      if (inputStride.GetVal() == "0")
+         continue;
+
+      if (!expression.empty())
+         expression += " + ";
+
+      if (outputStrides[dimIdx].GetVal() == "1")
+         expression += "(" + index + " % " + DimLiteral(outputShape[dimIdx]) + ")";
+      else
+         expression += "((" + index + " / " + DimLiteral(outputStrides[dimIdx]) + ") % " + DimLiteral(outputShape[dimIdx]) + ")";
+
+      if (inputStride.GetVal() != "1")
+         expression += " * " + DimLiteral(inputStride);
+   }
+
+   return expression.empty() ? "0" : expression;
+}
+
+std::string KernelSignature(const Fusion::Group &group, const std::string &tail)
+{
+   std::string code = SP + "template<typename TAcc";
+
+   for (size_t i = 0; i < group.externalInputs.size(); ++i)
+      code += ", typename TInput" + std::to_string(i);
+   for (size_t i = 0; i < group.outputTensors.size(); ++i)
+      code += ", typename TOutput" + std::to_string(i);
+
+   code += ">\n";
+   code += SP + "ALPAKA_FN_ACC void operator()(TAcc const& acc";
+
+   for (size_t i = 0; i < group.externalInputs.size(); ++i)
+      code += ", TInput" + std::to_string(i) + " const* __restrict__ input" + std::to_string(i);
+   for (size_t i = 0; i < group.outputTensors.size(); ++i)
+      code += ", TOutput" + std::to_string(i) + "* __restrict__ out" + std::to_string(i);
+
+   return code + tail + ") const {\n";
+}
+
+} // anonymous
+
+class FusionCodegen {
+public:
+   explicit FusionCodegen(const RModel &model) : m(model) {}
+
+   std::string Launch(const Fusion::Group &group) const
+   {
+      const std::string suffix = group.suffix();
+      const std::string kernelName = "fusedEltwiseKernel" + suffix;
+      std::string code;
+
+      if (const auto reductionOp = ReductionOp(group)) {
+         const auto outputs = m.fOperators[*reductionOp]->GetOpOutputTensors();
+         const auto inputs = m.fOperators[*reductionOp]->GetOpInputTensors();
+         const auto dataInputs = m.fOperators[*reductionOp]->GetFusionDataInputIndices();
+
+         if (outputs.size() != 1)
+            throw std::runtime_error("Fused reduction must have exactly one output");
+         if (dataInputs.size() != 1)
+            throw std::runtime_error("Fused reduction must have exactly one data input");
+
+         const size_t inputLength = ConvertShapeToLength(m.GetTensorShape(std::string(inputs[dataInputs[0]])));
+         const size_t outputLength = ConvertShapeToLength(m.GetTensorShape(std::string(outputs[0])));
+
+         if (outputLength == 0 || inputLength % outputLength != 0)
+            throw std::runtime_error("Invalid fused reduction shape");
+
+         code += "\n//------ FUSED_REDUCTION_GPU_ALPAKA" + suffix + "\n";
+         code += SP + "{\n";
+         code += SP + SP + "alpaka::WorkDivMembers<Dim, Idx> workDiv_fused" + suffix + "(\n";
+         code += SP + SP + SP + "Vec::all(Idx{" + std::to_string(outputLength) + "u}),\n";
+         code += SP + SP + SP + "Vec::all(Idx{" + std::to_string(BlockSize(inputLength / outputLength)) + "u}),\n";
+         code += SP + SP + SP + "Vec::all(Idx{1u}));\n";
+         code += SP + SP + "auto task_fused" + suffix + " = alpaka::createTaskKernel<Acc>(workDiv_fused" + suffix + ", " + kernelName;
+         code += Pointers(group) + ");\n";
+         code += SP + SP + "alpaka::enqueue(queue, task_fused" + suffix + ");\n";
+         code += SP + "}\n";
+
+         return m.fProfile ? Profiled(code, "fused reduction group", "FusedReduction" + suffix) : code;
+      }
+
+      code += "\n//------ FUSED_ELTWISE_GPU_ALPAKA" + suffix + "\n";
+      code += SP + "{\n";
+      code += SP + SP + "auto const elementsPerThread_fused" + suffix + " = Vec::all(static_cast<Idx>(1));\n";
+      code += SP + SP + "auto const elementsPerGrid_fused" + suffix + " = Vec::all(Idx{" + group.numElements + "});\n";
+      code += SP + SP + "auto const workDiv_fused" + suffix + " = sofie_workdiv(elementsPerGrid_fused" + suffix + ");\n";
+      code += SP + SP + "auto task_fused" + suffix + " = alpaka::createTaskKernel<Acc>(workDiv_fused" + suffix + ", " + kernelName;
+      code += Pointers(group);
+
+      for (const auto &param : DynParams({&group, 1}))
+         code += ", static_cast<std::size_t>(" + param + ")";
+
+      code += ", static_cast<Idx>(" + group.numElements + "));\n";
+      code += SP + SP + "alpaka::enqueue(queue, task_fused" + suffix + ");\n";
+      code += SP + "}\n";
+
+      return m.fProfile ? Profiled(code, "fused group", "FusedKernel" + suffix) : code;
+   }
+
+   std::string Launch(const Fusion::KernelGroup &group) const
+   {
+      const std::string suffix = group.suffix();
+      std::string code;
+
+      code += "\n//------ KERNEL_FUSION_GPU_ALPAKA" + suffix + "\n";
+      code += SP + "{\n";
+      code += SP + SP + "auto const elementsPerGrid_kernelFusion" + suffix + " = Vec::all(Idx{" + group.numElements + "});\n";
+      code += SP + SP + "auto const workDiv_kernelFusion" + suffix + " = sofie_workdiv(elementsPerGrid_kernelFusion" + suffix + ");\n";
+      code += SP + SP + "auto task_kernelFusion" + suffix + " = alpaka::createTaskKernel<Acc>(workDiv_kernelFusion" + suffix + ", kernelFusionKernel" + suffix;
+
+      for (const auto &branch : group.branches)
+         code += Pointers(branch);
+
+      for (const auto &param : DynParams(group.branches))
+         code += ", static_cast<std::size_t>(" + param + ")";
+
+      code += ");\n";
+      code += SP + SP + "alpaka::enqueue(queue, task_kernelFusion" + suffix + ");\n";
+      code += SP + "}\n";
+
+      return m.fProfile ? Profiled(code, "horizontal fusion group", "KernelFusion" + suffix) : code;
+   }
+
+   std::string Kernel(const Fusion::Group &group) const
+   {
+      if (const auto reductionOp = ReductionOp(group))
+         return ReductionKernel(group, *reductionOp);
+
+      const std::string suffix = group.suffix();
+      std::string tail;
+
+      for (const auto &param : DynParams({&group, 1}))
+         tail += ", std::size_t const " + param;
+
+      tail += ", std::size_t n";
+
+      std::string code;
+      code += "\n//------ FUSED_ELTWISE_KERNEL" + suffix + "\n";
+      code += "struct FusedEltwiseKernel" + suffix + " {\n";
+      code += KernelSignature(group, tail);
+      code += SP + SP + "using T = TOutput0;\n";
+      code += SP + SP + "const auto idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
+      code += SP + SP + "if (idx < n) {\n";
+
+      Context ctx = MakeContext(group, false);
+      std::unordered_map<std::string, std::string> cache;
+
+      for (size_t outputIdx = 0; outputIdx < group.outputTensors.size(); ++outputIdx) {
+         const std::string value = Value(ctx, group.outputTensors[outputIdx], "idx", cache, code);
+         code += SP + SP + SP + "out" + std::to_string(outputIdx) + "[idx] = " + value + ";\n";
+      }
+
+      code += SP + SP + "}\n";
+      code += SP + "}\n";
+      code += "};\n";
+      return code;
+   }
+
+   std::string Kernel(const Fusion::KernelGroup &group) const
+   {
+      const std::string suffix = group.suffix();
+      std::string code;
+
+      code += "\n//------ KERNEL_FUSION_KERNEL" + suffix + "\n";
+      code += "struct KernelFusionKernel" + suffix + " {\n";
+      code += SP + "template<typename TAcc";
+
+      for (size_t branchIdx = 0; branchIdx < group.branches.size(); ++branchIdx) {
+         const auto &branch = group.branches[branchIdx];
+         const std::string prefix = std::to_string(branchIdx) + "_";
+
+         for (size_t i = 0; i < branch.externalInputs.size(); ++i)
+            code += ", typename TInput" + prefix + std::to_string(i);
+         for (size_t i = 0; i < branch.outputTensors.size(); ++i)
+            code += ", typename TOutput" + prefix + std::to_string(i);
+      }
+
+      code += ">\n";
+      code += SP + "ALPAKA_FN_ACC void operator()(TAcc const& acc";
+
+      for (size_t branchIdx = 0; branchIdx < group.branches.size(); ++branchIdx) {
+         const auto &branch = group.branches[branchIdx];
+         const std::string prefix = std::to_string(branchIdx) + "_";
+
+         for (size_t i = 0; i < branch.externalInputs.size(); ++i)
+            code += ", TInput" + prefix + std::to_string(i) + " const* __restrict__ input" + prefix + std::to_string(i);
+         for (size_t i = 0; i < branch.outputTensors.size(); ++i)
+            code += ", TOutput" + prefix + std::to_string(i) + "* __restrict__ out" + prefix + std::to_string(i);
+      }
+
+      for (const auto &param : DynParams(group.branches))
+         code += ", std::size_t const " + param;
+
+      code += ") const {\n";
+      code += SP + SP + "const auto idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
+
+      for (size_t branchIdx = 0; branchIdx < group.branches.size(); ++branchIdx) {
+         const auto &branch = group.branches[branchIdx];
+         const std::string prefix = std::to_string(branchIdx) + "_";
+         const auto outputShape = m.GetDimTensorShape(branch.outputTensors.front());
+
+         code += "\n";
+         code += SP + SP + "if (idx < " + branch.numElements + ") {\n";
+         code += SP + SP + SP + "using T = TOutput" + prefix + "0;\n";
+
+         std::unordered_map<std::string, std::string> values;
+
+         for (size_t inputIdx = 0; inputIdx < branch.externalInputs.size(); ++inputIdx) {
+            const auto &input = branch.externalInputs[inputIdx];
+            const std::string localName = "v_input_" + prefix + std::to_string(inputIdx);
+            std::string index;
+
+            if (!input.customIndexExpression.empty())
+               index = input.customIndexExpression;
+            else if (input.access == Fusion::Access::Elementwise)
+               index = "idx";
+            else if (input.access == Fusion::Access::Scalar)
+               index = "0";
+            else
+               index = BroadcastIndex(input.alignedStrides, outputShape, "idx");
+
+            code += SP + SP + SP + "auto " + localName + " = input" + prefix + std::to_string(inputIdx) + "[" + index + "];\n";
+            values[input.tensorName] = localName;
+         }
+
+         for (const size_t opIdx : branch.opIndices) {
+            const auto &op = *m.fOperators[opIdx];
+            const auto opInputs = op.GetOpInputTensors();
+            const auto outputs = op.GetOpOutputTensors();
+            std::vector<std::string> inputExpressions;
+
+            for (const size_t inputIdx : op.GetFusionDataInputIndices()) {
+               const auto valueIt = values.find(std::string(opInputs[inputIdx]));
+
+               if (valueIt == values.end())
+                  throw std::runtime_error("Missing horizontal fused value for tensor " + std::string(opInputs[inputIdx]));
+
+               inputExpressions.push_back(valueIt->second);
+            }
+
+            const std::string expression = op.GetFusionExpr(inputExpressions);
+
+            if (expression.empty())
+               throw std::runtime_error("Operator " + std::to_string(opIdx) + " does not provide a horizontal fused expression");
+
+            if (outputs.size() != 1)
+               throw std::runtime_error("Horizontally fused operator " + std::to_string(opIdx) + " must have exactly one output");
+
+            const std::string localName = "v_op_" + std::to_string(opIdx);
+            code += SP + SP + SP + "auto " + localName + " = " + expression + ";\n";
+            values[std::string(outputs[0])] = localName;
+         }
+
+         for (size_t outputIdx = 0; outputIdx < branch.outputTensors.size(); ++outputIdx) {
+            const auto valueIt = values.find(branch.outputTensors[outputIdx]);
+
+            if (valueIt == values.end())
+               throw std::runtime_error("Missing horizontal fused output value for tensor " + branch.outputTensors[outputIdx]);
+
+            code += SP + SP + SP + "out" + prefix + std::to_string(outputIdx) + "[idx] = " + valueIt->second + ";\n";
+         }
+
+         code += SP + SP + "}\n";
+      }
+
+      code += SP + "}\n";
+      code += "};\n";
+      return code;
+   }
+
+private:
+   struct Context {
+      std::unordered_map<std::string, size_t> producers;
+      std::unordered_map<std::string, size_t> externalIndices;
+      const std::unordered_map<std::string, std::string> *overrides = nullptr;
+      size_t counter = 0;
+   };
+
+   const RModel &m;
+
+   static size_t BlockSize(size_t reducedLength)
+   {
+      size_t blockSize = 32;
+      while (blockSize < reducedLength && blockSize < 256)
+         blockSize *= 2;
+      return blockSize;
+   }
+
+   std::optional<size_t> ReductionOp(const Fusion::Group &group) const
+   {
+      for (const size_t opIdx : group.opIndices) {
+         if (m.fOperators[opIdx]->IsFusionReduction())
+            return opIdx;
+      }
+
+      return std::nullopt;
+   }
+
+   std::vector<std::string> DynParams(std::span<const Fusion::Group> groups) const
+   {
+      std::vector<std::string> params;
+      std::set<std::string> seen;
+
+      const auto collect = [&](const std::string &name) {
+         for (const auto &dim : m.GetDimTensorShape(name)) {
+            if (dim.isParam)
+               CollectKnownShapeExprParams(dim.param, m.fShapeParams, params, seen);
+         }
+      };
+
+      for (const auto &group : groups) {
+         for (const auto &name : group.outputTensors)
+            collect(name);
+         for (const auto &name : group.internalTensors)
+            collect(name);
+         for (const auto &input : group.externalInputs)
+            collect(input.tensorName);
+      }
+
+      return params;
+   }
+
+   Context MakeContext(const Fusion::Group &group, bool singleOutput) const
+   {
+      Context ctx;
+
+      for (const size_t opIdx : group.opIndices) {
+         const auto outputs = m.fOperators[opIdx]->GetOpOutputTensors();
+
+         if (singleOutput ? outputs.size() != 1 : outputs.empty())
+            throw std::runtime_error("Fused operator " + std::to_string(opIdx) +
+                                     (singleOutput ? " must have exactly one output" : " has no outputs"));
+
+         for (const auto &output : outputs)
+            ctx.producers[std::string(output)] = opIdx;
+      }
+
+      for (size_t inputIdx = 0; inputIdx < group.externalInputs.size(); ++inputIdx)
+         ctx.externalIndices[group.externalInputs[inputIdx].tensorName] = inputIdx;
+
+      return ctx;
+   }
+
+   std::string InputIndex(const std::string &inputName, const std::vector<Dim> &outputShape, const std::string &outputIndex) const
+   {
+      Fusion::Access access;
+      std::vector<Dim> alignedStrides;
+
+      if (!Fusion::ResolveAccess(m, inputName, outputShape, access, alignedStrides))
+         throw std::runtime_error("Cannot resolve fused input index for tensor " + inputName);
+
+      if (access == Fusion::Access::Elementwise)
+         return outputIndex;
+
+      if (access == Fusion::Access::Scalar)
+         return "0";
+
+      return BroadcastIndex(alignedStrides, outputShape, "(" + outputIndex + ")");
+   }
+
+   std::string Value(Context &ctx, const std::string &tensorName, const std::string &index,
+                     std::unordered_map<std::string, std::string> &cache, std::string &code) const
+   {
+      if (ctx.overrides != nullptr) {
+         const auto overrideIt = ctx.overrides->find(tensorName);
+         if (overrideIt != ctx.overrides->end())
+            return overrideIt->second;
+      }
+
+      const std::string cacheKey = tensorName + "@" + index;
+      const auto cacheIt = cache.find(cacheKey);
+
+      if (cacheIt != cache.end())
+         return cacheIt->second;
+
+      const auto externalIt = ctx.externalIndices.find(tensorName);
+
+      if (externalIt != ctx.externalIndices.end()) {
+         const std::string localName = "v_input_" + std::to_string(ctx.counter++);
+         code += SP + SP + SP + "auto " + localName + " = input" + std::to_string(externalIt->second) + "[" + index + "];\n";
+         cache[cacheKey] = localName;
+         return localName;
+      }
+
+      const auto producerIt = ctx.producers.find(tensorName);
+
+      if (producerIt == ctx.producers.end())
+         throw std::runtime_error("Missing fused producer for tensor " + tensorName);
+
+      const size_t opIdx = producerIt->second;
+      const auto &op = *m.fOperators[opIdx];
+      const auto outputs = op.GetOpOutputTensors();
+
+      const auto outputIt = std::find_if(outputs.begin(), outputs.end(), [&](const auto &output) {
+         return std::string(output) == tensorName;
+      });
+
+      if (outputIt == outputs.end())
+         throw std::runtime_error("Invalid fused producer for tensor " + tensorName);
+
+      const size_t outputTensorIndex = static_cast<size_t>(std::distance(outputs.begin(), outputIt));
+      const auto outputShape = m.GetDimTensorShape(tensorName);
+      const auto opInputs = op.GetOpInputTensors();
+      const auto dataInputs = op.GetFusionDataInputIndices();
+      const auto mapping = op.GetFusionMappingType();
+
+      if (mapping == EFusionMappingType::ManyToMany) {
+         const std::string localName = "v_op_" + std::to_string(opIdx) + "_" + std::to_string(ctx.counter++);
+         code += SP + SP + SP + ConvertTypeToString(m.GetTensorType(tensorName)) + " " + localName + "{};\n";
+
+         for (size_t dataIdx = 0; dataIdx < dataInputs.size(); ++dataIdx) {
+            const size_t inputIdx = dataInputs[dataIdx];
+            const std::string inputName(opInputs[inputIdx]);
+            const auto inputShape = m.GetDimTensorShape(inputName);
+            const std::string inputIndex = op.GetFusionInputIndexExpr(inputIdx, index, inputShape, outputShape);
+
+            if (inputIndex.empty())
+               throw std::runtime_error("Missing ManyToMany index expression for operator " + std::to_string(opIdx));
+
+            std::string condition;
+
+            if (dataIdx + 1 < dataInputs.size()) {
+               condition = op.GetFusionInputConditionExpr(inputIdx, index, inputShape, outputShape);
+
+               if (condition.empty())
+                  throw std::runtime_error("Missing ManyToMany input condition for operator " + std::to_string(opIdx));
+            }
+
+            auto branchCache = cache;
+            std::string branchCode;
+            const std::string branchValue = Value(ctx, inputName, inputIndex, branchCache, branchCode);
+
+            if (dataIdx == 0)
+               code += SP + SP + SP + "if (" + condition + ") {\n";
+            else if (dataIdx + 1 < dataInputs.size())
+               code += SP + SP + SP + "else if (" + condition + ") {\n";
+            else
+               code += SP + SP + SP + "else {\n";
+
+            code += branchCode;
+            code += SP + SP + SP + SP + localName + " = " + op.GetFusionExpr({branchValue}) + ";\n";
+            code += SP + SP + SP + "}\n";
+         }
+
+         cache[cacheKey] = localName;
+         return localName;
+      }
+
+      std::vector<std::string> inputExpressions;
+
+      for (const size_t inputIdx : dataInputs) {
+         const std::string inputName(opInputs[inputIdx]);
+         const auto inputShape = m.GetDimTensorShape(inputName);
+         std::string inputIndex;
+
+         if (mapping == EFusionMappingType::Shuffle) {
+            inputIndex = op.GetFusionInputIndexExpr(inputIdx, index, inputShape, outputShape);
+
+            if (inputIndex.empty())
+               throw std::runtime_error("Missing Shuffle index expression for operator " + std::to_string(opIdx));
+         } else if (mapping == EFusionMappingType::OneToMany && outputs.size() > 1) {
+            inputIndex = op.GetFusionInputIndexExprForOutput(inputIdx, outputTensorIndex, index, inputShape, outputShape);
+
+            if (inputIndex.empty())
+               throw std::runtime_error("Missing OneToMany output index expression for operator " + std::to_string(opIdx));
+         } else if (mapping == EFusionMappingType::Reorganize) {
+            if (ConvertDimShapeToLength(inputShape) != ConvertDimShapeToLength(outputShape))
+               throw std::runtime_error("Invalid Reorganize mapping for operator " + std::to_string(opIdx));
+
+            inputIndex = index;
+         } else {
+            inputIndex = InputIndex(inputName, outputShape, index);
+         }
+
+         inputExpressions.push_back(Value(ctx, inputName, inputIndex, cache, code));
+      }
+
+      const std::string expression = op.GetFusionExpr(inputExpressions);
+
+      if (expression.empty())
+         throw std::runtime_error("Operator " + std::to_string(opIdx) + " does not provide a fused expression");
+
+      const std::string localName = "v_op_" + std::to_string(opIdx) + "_" + std::to_string(ctx.counter++);
+      code += SP + SP + SP + "auto " + localName + " = " + expression + ";\n";
+      cache[cacheKey] = localName;
+
+      return localName;
+   }
+
+   std::string ReductionKernel(const Fusion::Group &group, size_t reductionOpIdx) const
+   {
+      const auto &op = *m.fOperators[reductionOpIdx];
+      const auto inputs = op.GetOpInputTensors();
+      const auto outputs = op.GetOpOutputTensors();
+      const auto dataInputs = op.GetFusionDataInputIndices();
+
+      if (dataInputs.size() != 1 || outputs.size() != 1)
+         throw std::runtime_error("Fused reduction must have one data input and one output");
+
+      const std::string inputName(inputs[dataInputs[0]]);
+      const std::string outputName(outputs[0]);
+      const auto inputShape = m.GetDimTensorShape(inputName);
+      const auto outputShape = m.GetDimTensorShape(outputName);
+      const size_t inputLength = ConvertShapeToLength(m.GetTensorShape(inputName));
+      const size_t outputLength = ConvertShapeToLength(m.GetTensorShape(outputName));
+
+      if (outputLength == 0 || inputLength % outputLength != 0)
+         throw std::runtime_error("Invalid fused reduction shape");
+
+      const size_t reducedLength = inputLength / outputLength;
+      const size_t blockSize = BlockSize(reducedLength);
+      const std::string inputIndexExpression = op.GetFusionReductionInputIndexExpr("out_idx", "r", inputShape, outputShape);
+
+      if (inputIndexExpression.empty())
+         throw std::runtime_error("Fused reduction does not provide an input index expression");
+
+      Context ctx = MakeContext(group, true);
+      const std::string suffix = group.suffix();
+      const std::string reducedLengthStr = std::to_string(reducedLength) + "u";
+      const std::string blockSizeStr = std::to_string(blockSize) + "u";
+      std::string code;
+
+      code += "\n//------ FUSED_REDUCTION_KERNEL" + suffix + "\n";
+      code += "struct FusedEltwiseKernel" + suffix + " {\n";
+      code += KernelSignature(group, "");
+      code += SP + SP + "using T = TOutput0;\n";
+      code += SP + SP + "auto& shmem = alpaka::declareSharedVar<T[" + std::to_string(blockSize) + "], __COUNTER__>(acc);\n";
+      code += SP + SP + "const auto out_idx = alpaka::getIdx<alpaka::Grid, alpaka::Blocks>(acc)[0];\n";
+      code += SP + SP + "const auto thread_id = alpaka::getIdx<alpaka::Block, alpaka::Threads>(acc)[0];\n";
+      code += SP + SP + "if (out_idx >= " + std::to_string(outputLength) + "u) return;\n";
+      code += SP + SP + "T partial = " + op.GetFusionReductionInitExpr() + ";\n";
+      code += SP + SP + "for (std::size_t r = thread_id; r < " + reducedLengthStr + "; r += " + blockSizeStr + ") {\n";
+      code += SP + SP + SP + "const std::size_t in_idx = " + inputIndexExpression + ";\n";
+
+      std::unordered_map<std::string, std::string> inputCache;
+      std::string inputCode;
+      const std::string inputValue = Value(ctx, inputName, "in_idx", inputCache, inputCode);
+
+      code += inputCode;
+      code += SP + SP + SP + "partial = " + op.GetFusionReductionAccumulateExpr("partial", inputValue) + ";\n";
+      code += SP + SP + "}\n";
+      code += SP + SP + "shmem[thread_id] = partial;\n";
+      code += SP + SP + "alpaka::syncBlockThreads(acc);\n";
+      code += SP + SP + "for (std::size_t s = " + std::to_string(blockSize / 2) + "u; s > 0u; s >>= 1u) {\n";
+      code += SP + SP + SP + "if (thread_id < s) shmem[thread_id] = " +
+              op.GetFusionReductionCombineExpr("shmem[thread_id]", "shmem[thread_id + s]") + ";\n";
+      code += SP + SP + SP + "alpaka::syncBlockThreads(acc);\n";
+      code += SP + SP + "}\n";
+      code += SP + SP + "if (thread_id == 0u) shmem[0] = " +
+              op.GetFusionReductionFinalizeExpr("shmem[0]", std::to_string(reducedLength)) + ";\n";
+      code += SP + SP + "alpaka::syncBlockThreads(acc);\n";
+      code += SP + SP + "const T reduction_value = shmem[0];\n";
+
+      const std::unordered_map<std::string, std::string> overrides{{outputName, "reduction_value"}};
+      ctx.overrides = &overrides;
+
+      for (size_t outputIdx = 0; outputIdx < group.outputTensors.size(); ++outputIdx) {
+         const std::string &name = group.outputTensors[outputIdx];
+         const auto shape = m.GetDimTensorShape(name);
+         const bool reduced = shape == outputShape;
+
+         if (!reduced && shape != inputShape)
+            throw std::runtime_error("Fused reduction output must match the reduction input or output shape");
+
+         std::unordered_map<std::string, std::string> cache;
+         std::string valueCode;
+         const std::string value = Value(ctx, name, reduced ? "out_idx" : "element_idx", cache, valueCode);
+
+         if (reduced) {
+            code += SP + SP + "if (thread_id == 0u) {\n";
+            code += valueCode;
+            code += SP + SP + SP + "out" + std::to_string(outputIdx) + "[out_idx] = " + value + ";\n";
+            code += SP + SP + "}\n";
+            continue;
+         }
+
+         code += SP + SP + "for (std::size_t r = thread_id; r < " + reducedLengthStr + "; r += " + blockSizeStr + ") {\n";
+         code += SP + SP + SP + "const std::size_t element_idx = " + inputIndexExpression + ";\n";
+         code += valueCode;
+         code += SP + SP + SP + "out" + std::to_string(outputIdx) + "[element_idx] = " + value + ";\n";
+         code += SP + SP + "}\n";
+      }
+
+      code += SP + "}\n";
+      code += "};\n";
+      return code;
+   }
+};
+
+std::string Fusion::Launch(const RModel &model, const Group &group)
+{
+   return FusionCodegen(model).Launch(group);
+}
+
+std::string Fusion::Launch(const RModel &model, const KernelGroup &group)
+{
+   return FusionCodegen(model).Launch(group);
+}
+
+std::string Fusion::Kernel(const RModel &model, const Group &group)
+{
+   return FusionCodegen(model).Kernel(group);
+}
+
+std::string Fusion::Kernel(const RModel &model, const KernelGroup &group)
+{
+   return FusionCodegen(model).Kernel(group);
 }
 
 } // namespace SOFIE

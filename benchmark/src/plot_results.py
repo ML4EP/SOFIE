@@ -10,8 +10,8 @@ benchmark_YYYYMMDD_HHMMSS/
 └── tensorrt/benchmark.csv
 
 Usage:
-    python3 plot_cms_results.py /path/to/run1
-    python3 plot_cms_results.py /path/to/run1 /path/to/run2 /path/to/run3
+    python3 plot_results.py /path/to/run1
+    python3 plot_results.py /path/to/run1 /path/to/run2 /path/to/run3
 
 Individual benchmark.csv files may also be passed if their parent directory is
 one of the backend folders configured in BACKENDS.

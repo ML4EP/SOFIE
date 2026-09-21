@@ -17,6 +17,7 @@ set(sources_headers
    SOFIE/OperatorList.hxx
    SOFIE/RModel_Base.hxx
    SOFIE/RModel.hxx
+   SOFIE/RModelFusion_ALPAKA.hxx
    SOFIE/RModelProfiler.hxx
    SOFIE/RModelProfilerGPU.hxx
    SOFIE/ROperator.hxx

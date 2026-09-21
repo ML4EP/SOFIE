@@ -217,7 +217,7 @@ public:
                fStart[fAxes[i]] = fStartDims[i];
             else
                fStart[fAxes[i]] = Dim{size_t(istart)};
-            if (fStartDims[i].isParam)
+            if (fEndDims[i].isParam)
                fEnd[fAxes[i]] = fEndDims[i];
             else
                fEnd[fAxes[i]] = Dim{size_t(iend)};
@@ -585,7 +585,7 @@ public:
       std::stringstream out;
       out << "\n//------ SLICE_GPU_ALPAKA\n";
 
-      if (fOutputIsDynamic) {
+      if (fOutputIsDynamic && !IsOutputPooled(fNOutput)) {
          out << SP << "deviceBuf_" << fNOutput
              << " = alpaka::allocBuf<" << ConvertTypeToString(fDataType)
              << ", Idx>(devAcc, Ext1D::all(Idx{" << totalElements << "}));\n";
@@ -638,13 +638,23 @@ public:
       return inputs[0];
    }
 
-   std::string GetFusionInputIndexExpr(size_t inputIndex, const std::string &outputIndex, const std::vector<size_t> &inputShape, const std::vector<size_t> &outputShape) const override
+   // GetFusionMappingType() above only returns Shuffle once every relevant
+   // shape/start/end/step is confirmed fully static, so converting the Dim
+   // shapes down to plain sizes here is safe.
+   std::string GetFusionInputIndexExpr(size_t inputIndex, const std::string &outputIndex, const std::vector<Dim> &inputShapeDim, const std::vector<Dim> &outputShapeDim) const override
    {
       if (inputIndex != 0 || GetFusionMappingType() != EFusionMappingType::Shuffle)
          return "";
 
-      if (inputShape.size() != outputShape.size() || fStart.size() != inputShape.size() || fSteps.size() != inputShape.size())
+      if (inputShapeDim.size() != outputShapeDim.size() || fStart.size() != inputShapeDim.size() || fSteps.size() != inputShapeDim.size())
          return "";
+
+      std::vector<size_t> inputShape(inputShapeDim.size());
+      for (size_t i = 0; i < inputShapeDim.size(); ++i)
+         inputShape[i] = inputShapeDim[i].dim;
+      std::vector<size_t> outputShape(outputShapeDim.size());
+      for (size_t i = 0; i < outputShapeDim.size(); ++i)
+         outputShape[i] = outputShapeDim[i].dim;
 
       const auto inputStrides = UTILITY::ComputeStrideFromShape(inputShape);
       const auto outputStrides = UTILITY::ComputeStrideFromShape(outputShape);

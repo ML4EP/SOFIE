@@ -62,7 +62,10 @@ static int run_single_model(const std::string& model,
 int main(int argc, char *argv[]) {
     int warmup     = 10;
     int iterations = 100;
-    std::string weightsDir = ".";
+    // Absolute by default (the directory sofie_benchmark_emitter actually
+    // wrote the .dat weight files into) so the benchmark runs correctly
+    // regardless of the current working directory
+    std::string weightsDir = "@CMAKE_CURRENT_BINARY_DIR@";
     bool run_ort   = false;
     bool run_trt   = false;
     bool run_sofie = true;
@@ -91,7 +94,7 @@ int main(int argc, char *argv[]) {
                 "  Rebuild without -DSOFIE_BENCHMARK_PROFILE=ON for throughput numbers.\n\n"
                 "  --warmup,      -w <N>   Warmup iterations  (default: 10)\n"
                 "  --iterations,  -n <N>   Profiling runs      (default: 100)\n"
-                "  --weights-dir    <DIR>  SOFIE .dat files    (default: .)\n"
+                "  --weights-dir    <DIR>  SOFIE .dat files    (default: this build's benchmark dir)\n"
                 "  --single-model   <N>   Run one model (internal)\n"
                 ;
 #else
@@ -99,7 +102,7 @@ int main(int argc, char *argv[]) {
                 "Usage: sofie_benchmark [options]\n"
                 "  --warmup,      -w <N>   Warmup iterations       (default: 10)\n"
                 "  --iterations,  -n <N>   Timed iterations         (default: 100)\n"
-                "  --weights-dir    <DIR>  SOFIE .dat weight files  (default: .)\n"
+                "  --weights-dir    <DIR>  SOFIE .dat weight files  (default: this build's benchmark dir)\n"
                 #ifdef SOFIE_BENCHMARK_ORT
                 "  --onnxruntime, --ort    Also run ONNX Runtime GPU comparison\n"
                 #else
@@ -192,8 +195,14 @@ int main(int argc, char *argv[]) {
     // Single-model mode: called as a subprocess, run one model and exit.
     // All GPU memory is freed when this process exits.
     // -----------------------------------------------------------------------
-    if (!singleModel.empty())
-        return run_single_model(singleModel, warmup, iterations, weightsDir, profile, run_sofie, run_ort, run_trt, run_aot);
+    if (!singleModel.empty()) {
+        try {
+            return run_single_model(singleModel, warmup, iterations, weightsDir, profile, run_sofie, run_ort, run_trt, run_aot);
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "%s: %s\n", singleModel.c_str(), e.what());
+            return 1;
+        }
+    }
 
     // -----------------------------------------------------------------------
     // Orchestrator mode: spawn one child process per model so every model
@@ -232,7 +241,7 @@ int main(int argc, char *argv[]) {
 
     namespace fs = std::filesystem;
 
-    fs::create_directories("../../results");
+    fs::create_directories("@SOFIE_BENCHMARK_DEFAULT_RESULTS_DIR@");
 
     auto now = std::chrono::system_clock::now();
     std::time_t t = std::chrono::system_clock::to_time_t(now);
@@ -242,7 +251,7 @@ int main(int argc, char *argv[]) {
     std::strftime(timestamp, sizeof(timestamp), "%Y%m%d_%H%M%S", &tm);
 
     std::string resultsDir =
-        std::string("../../results/benchmark_") + timestamp;
+        std::string("@SOFIE_BENCHMARK_DEFAULT_RESULTS_DIR@/benchmark_") + timestamp;
 
     fs::create_directories(resultsDir);
     fs::create_directories(resultsDir + "/sofie");
@@ -294,7 +303,7 @@ int main(int argc, char *argv[]) {
     // Create results directory if it doesn't exist
     namespace fs = std::filesystem;
 
-    fs::create_directories("../../results");
+    fs::create_directories("@SOFIE_BENCHMARK_DEFAULT_RESULTS_DIR@");
 
     // Create timestamp
     auto now = std::chrono::system_clock::now();
@@ -305,7 +314,7 @@ int main(int argc, char *argv[]) {
     std::strftime(timestamp, sizeof(timestamp), "%Y%m%d_%H%M%S", &tm);
 
     std::string resultsDir =
-        std::string("../../results/benchmark_") + timestamp;
+        std::string("@SOFIE_BENCHMARK_DEFAULT_RESULTS_DIR@/benchmark_") + timestamp;
 
     fs::create_directories(resultsDir);
 

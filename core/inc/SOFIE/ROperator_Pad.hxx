@@ -281,6 +281,7 @@ public:
 
    std::string GenerateInitCode_GPU_ALPAKA() override {
       if (!fHasDynamicPaddedAxis) return "";
+      if (IsOutputPooled(fNY)) return "";
       if (fOutputShape.empty())
          throw std::runtime_error("SOFIE Pad Op called to Generate without being initialized first");
 

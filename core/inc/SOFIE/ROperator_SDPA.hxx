@@ -25,6 +25,8 @@ private:
    std::string fQKBatchStride, fQKHeadStride, fQKSeqStride;
    std::string fVYBatchStride, fVYHeadStride, fVYSeqStride;
 
+   static constexpr size_t kSdpaBlockSize = 256;
+
 public:
    ROperator_SDPA() {}
 
@@ -180,9 +182,137 @@ public:
       return out.str();
    }
 
+   // Tile size (in K/V rows) for the shared-memory-tiled kernel below, chosen
+   // at codegen time to keep the K+V tile comfortably within a block's shared
+   // memory budget regardless of head_dim, while still amortizing well.
+   static size_t TileRowsFor(int dTotal, size_t elemSize, size_t blockSize) {
+      const size_t budgetBytes = 12288; // ~12KB combined K+V tile
+      size_t rows = budgetBytes / (static_cast<size_t>(dTotal) * elemSize);
+      if (rows > blockSize) rows = blockSize;
+      if (rows < 8) rows = 8;
+      return rows;
+   }
+
    std::string Generate_GPU_Kernel_ALPAKA(std::string opName) override {
       opName = "op_" + opName;
       std::string kname = "SDPAKernel_" + opName;
+
+      // The tiled kernel below needs D/Dv (and hence the shared-memory tile
+      // and per-thread accumulator sizes) fixed at compile time. Dynamic
+      // head dims are rare (num_heads is normally a static graph attribute);
+      // fall back to the original one-thread-per-row kernel in that case.
+      bool canTile = IsInteger(fD) && IsInteger(fDv);
+
+      if (canTile) {
+         const size_t blockSize = kSdpaBlockSize;
+         int dInt  = std::stoi(fD);
+         int dvInt = std::stoi(fDv);
+         size_t elemSize = (fType == "double") ? 8 : 4;
+         size_t tileRows = TileRowsFor(dInt + dvInt, elemSize, blockSize);
+
+         std::string out;
+         out  = "\n//------ SDPA_KERNEL_ALPAKA (shared-memory K/V tiled)\n";
+         out += SP + "struct " + kname + " {\n";
+         out += SP + SP + "template<typename TAcc, typename T>\n";
+         out += SP + SP + "ALPAKA_FN_ACC void operator()(\n";
+         out += SP + SP + SP + "TAcc const& acc,\n";
+         out += SP + SP + SP + "T const* __restrict__ Q,\n";
+         out += SP + SP + SP + "T const* __restrict__ K,\n";
+         out += SP + SP + SP + "T const* __restrict__ V,\n";
+         out += (fHasMask ? (SP + SP + SP + "T const* __restrict__ mask,\n") : "");
+         out += SP + SP + SP + "T* __restrict__ Y,\n";
+         out += SP + SP + SP + "std::size_t const B,\n";
+         out += SP + SP + SP + "std::size_t const H,\n";
+         out += SP + SP + SP + "std::size_t const S,\n";
+         out += SP + SP + SP + "std::size_t const /*D*/,\n";
+         out += SP + SP + SP + "std::size_t const /*Dv*/,\n";
+         out += SP + SP + SP + "T const scale) const {\n\n";
+
+         out += SP + SP + SP + "constexpr std::size_t kD = " + std::to_string(dInt) + ";\n";
+         out += SP + SP + SP + "constexpr std::size_t kDv = " + std::to_string(dvInt) + ";\n";
+         out += SP + SP + SP + "constexpr std::size_t kTileRows = " + std::to_string(tileRows) + ";\n";
+         out += SP + SP + SP + "constexpr std::size_t kBlockSize = " + std::to_string(blockSize) + ";\n\n";
+
+         out += SP + SP + SP + "auto& kTile = alpaka::declareSharedVar<T[kTileRows * kD], __COUNTER__>(acc);\n";
+         out += SP + SP + SP + "auto& vTile = alpaka::declareSharedVar<T[kTileRows * kDv], __COUNTER__>(acc);\n\n";
+
+         out += SP + SP + SP + "auto const tid = alpaka::getIdx<alpaka::Block, alpaka::Threads>(acc)[0];\n";
+         out += SP + SP + SP + "auto const blockIdxFlat = alpaka::getIdx<alpaka::Grid, alpaka::Blocks>(acc)[0];\n";
+         out += SP + SP + SP + "std::size_t const qTilesPerBH = (S + kBlockSize - 1) / kBlockSize;\n";
+         out += SP + SP + SP + "std::size_t const bh = blockIdxFlat / qTilesPerBH;\n";
+         out += SP + SP + SP + "std::size_t const qTileIdx = blockIdxFlat % qTilesPerBH;\n";
+         out += SP + SP + SP + "std::size_t const b = bh / H;\n";
+         out += SP + SP + SP + "std::size_t const h = bh % H;\n";
+         out += SP + SP + SP + "std::size_t const s = qTileIdx * kBlockSize + tid;\n";
+         out += SP + SP + SP + "bool const active = s < S;\n\n";
+
+         const std::string qkBatch = fFolded ? "S*H*kD"  : "H*S*kD";
+         const std::string qkHead  = fFolded ? "kD"       : "S*kD";
+         const std::string qkSeq   = fFolded ? "H*kD"      : "kD";
+         const std::string vyBatch = fFolded ? "S*H*kDv" : "H*S*kDv";
+         const std::string vyHead  = fFolded ? "kDv"       : "S*kDv";
+         const std::string vySeq   = fFolded ? "H*kDv"     : "kDv";
+         const std::string qBaseExpr = "b*(" + qkBatch + ") + h*(" + qkHead + ") + s*(" + qkSeq + ")";
+         const std::string kBaseExpr = "b*(" + qkBatch + ") + h*(" + qkHead + ") + j*(" + qkSeq + ")";
+         const std::string vBaseExpr = "b*(" + vyBatch + ") + h*(" + vyHead + ") + j*(" + vySeq + ")";
+         const std::string ySBaseExpr = "b*(" + vyBatch + ") + h*(" + vyHead + ") + s*(" + vySeq + ")";
+
+         out += SP + SP + SP + "T q_local[kD];\n";
+         out += SP + SP + SP + "T acc_v[kDv] = {};\n";
+         out += SP + SP + SP + "T max_score = -std::numeric_limits<T>::max();\n";
+         out += SP + SP + SP + "T sum_exp = static_cast<T>(0);\n";
+         out += SP + SP + SP + "if (active) {\n";
+         out += SP + SP + SP + SP + "std::size_t const qBase = " + qBaseExpr + ";\n";
+         out += SP + SP + SP + SP + "for (std::size_t d = 0; d < kD; ++d) q_local[d] = Q[qBase + d];\n";
+         out += SP + SP + SP + "}\n\n";
+
+         out += SP + SP + SP + "// Sweep the whole K/V sequence in shared-memory tiles: the whole\n";
+         out += SP + SP + SP + "// block cooperatively loads each tile once and every thread (one\n";
+         out += SP + SP + SP + "// per query row) reuses it, instead of each of the S query rows\n";
+         out += SP + SP + SP + "// independently re-reading all of K/V from global memory.\n";
+         out += SP + SP + SP + "for (std::size_t tileStart = 0; tileStart < S; tileStart += kTileRows) {\n";
+         out += SP + SP + SP + SP + "std::size_t const tileLen = (tileStart + kTileRows <= S) ? kTileRows : (S - tileStart);\n\n";
+         out += SP + SP + SP + SP + "for (std::size_t idx = tid; idx < tileLen * kD; idx += kBlockSize) {\n";
+         out += SP + SP + SP + SP + SP + "std::size_t const row = idx / kD, d = idx % kD;\n";
+         out += SP + SP + SP + SP + SP + "std::size_t const j = tileStart + row;\n";
+         out += SP + SP + SP + SP + SP + "kTile[idx] = K[" + kBaseExpr + " + d];\n";
+         out += SP + SP + SP + SP + "}\n";
+         out += SP + SP + SP + SP + "for (std::size_t idx = tid; idx < tileLen * kDv; idx += kBlockSize) {\n";
+         out += SP + SP + SP + SP + SP + "std::size_t const row = idx / kDv, d = idx % kDv;\n";
+         out += SP + SP + SP + SP + SP + "std::size_t const j = tileStart + row;\n";
+         out += SP + SP + SP + SP + SP + "vTile[idx] = V[" + vBaseExpr + " + d];\n";
+         out += SP + SP + SP + SP + "}\n";
+         out += SP + SP + SP + SP + "alpaka::syncBlockThreads(acc);\n\n";
+
+         out += SP + SP + SP + SP + "if (active) {\n";
+         out += SP + SP + SP + SP + SP + "for (std::size_t row = 0; row < tileLen; ++row) {\n";
+         out += SP + SP + SP + SP + SP + SP + "std::size_t const j = tileStart + row;\n";
+         out += SP + SP + SP + SP + SP + SP + "T dot = static_cast<T>(0);\n";
+         out += SP + SP + SP + SP + SP + SP + "for (std::size_t d = 0; d < kD; ++d) dot += q_local[d] * kTile[row * kD + d];\n";
+         out += SP + SP + SP + SP + SP + SP + "T sc = dot * scale;\n";
+         if (fHasMask)
+            out += SP + SP + SP + SP + SP + SP + "sc += mask[b*H*S*S + h*S*S + s*S + j];\n";
+         out += SP + SP + SP + SP + SP + SP + "T const new_max = (sc > max_score) ? sc : max_score;\n";
+         out += SP + SP + SP + SP + SP + SP + "T const correction = alpaka::math::exp(acc, max_score - new_max);\n";
+         out += SP + SP + SP + SP + SP + SP + "T const p = alpaka::math::exp(acc, sc - new_max);\n";
+         out += SP + SP + SP + SP + SP + SP + "sum_exp = sum_exp * correction + p;\n";
+         out += SP + SP + SP + SP + SP + SP + "for (std::size_t d = 0; d < kDv; ++d)\n";
+         out += SP + SP + SP + SP + SP + SP + SP + "acc_v[d] = acc_v[d] * correction + p * vTile[row * kDv + d];\n";
+         out += SP + SP + SP + SP + SP + SP + "max_score = new_max;\n";
+         out += SP + SP + SP + SP + SP + "}\n";
+         out += SP + SP + SP + SP + "}\n";
+         out += SP + SP + SP + SP + "alpaka::syncBlockThreads(acc);\n"; // before next tile overwrites shared mem
+         out += SP + SP + SP + "}\n\n";
+
+         out += SP + SP + SP + "if (active) {\n";
+         out += SP + SP + SP + SP + "std::size_t const yBase = " + ySBaseExpr + ";\n";
+         out += SP + SP + SP + SP + "for (std::size_t d = 0; d < kDv; ++d)\n";
+         out += SP + SP + SP + SP + SP + "Y[yBase + d] = acc_v[d] / sum_exp;\n";
+         out += SP + SP + SP + "}\n";
+         out += SP + SP + "}\n" + SP + "};\n";
+         return out;
+      }
+
       std::string out;
       out  = "\n//------ SDPA_KERNEL_ALPAKA\n";
       out += SP + "struct " + kname + " {\n";
@@ -301,14 +431,30 @@ public:
          ? ("static_cast<" + fType + ">(" + std::to_string(fScale) + "f)")
          : ("static_cast<" + fType + ">(1.0f) / std::sqrt(static_cast<" + fType + ">(" + fD + "))");
 
+      bool canTile = IsInteger(fD) && IsInteger(fDv);
+
       std::stringstream out;
       out << "\n//------ SDPA_GPU_ALPAKA\n";
       out << SP << "{\n";
       out << SP << SP << fType << " const sdpaScale_" << opName << " = " << scaleVal << ";\n";
-      out << SP << SP << "auto const elementsPerGrid_" << opName
-          << " = Vec::all(Idx{" << fB << " * " << fH << " * " << fS << "});\n";
-      out << SP << SP << "auto const workDiv_" << opName
-          << " = sofie_workdiv(elementsPerGrid_" << opName << ");\n";
+      if (canTile) {
+         // One block per (batch, head, query-tile) so the K/V shared-memory
+         // tile loaded by the kernel is reused across all kSdpaBlockSize
+         // query rows in that block, instead of being re-read from global
+         // memory independently per row.
+         out << SP << SP << "std::size_t const sdpaQTiles_" << opName
+             << " = (static_cast<std::size_t>(" << fS << ") + " << kSdpaBlockSize << " - 1) / " << kSdpaBlockSize << ";\n";
+         out << SP << SP << "alpaka::WorkDivMembers<Dim, Idx> workDiv_" << opName << "(\n";
+         out << SP << SP << SP << "Vec::all(Idx{static_cast<Idx>(static_cast<std::size_t>(" << fB << ") * static_cast<std::size_t>(" << fH
+             << ") * sdpaQTiles_" << opName << ")}),\n";
+         out << SP << SP << SP << "Vec::all(Idx{" << kSdpaBlockSize << "u}),\n";
+         out << SP << SP << SP << "Vec::all(Idx{1u}));\n";
+      } else {
+         out << SP << SP << "auto const elementsPerGrid_" << opName
+             << " = Vec::all(Idx{" << fB << " * " << fH << " * " << fS << "});\n";
+         out << SP << SP << "auto const workDiv_" << opName
+             << " = sofie_workdiv(elementsPerGrid_" << opName << ");\n";
+      }
       out << SP << SP << "auto task_" << opName
           << " = alpaka::createTaskKernel<Acc>(workDiv_" << opName
           << ", sdpaKernel_" << opName << ", "

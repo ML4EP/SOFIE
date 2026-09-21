@@ -2,6 +2,7 @@
 
 #include "GPUMemoryMonitor.hxx"
 #include "GPUProfiler.hxx"
+#include "WarmupUtil.hxx"
 
 #include <NvInfer.h>
 #include <NvOnnxParser.h>
@@ -12,6 +13,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -44,11 +46,21 @@ inline std::size_t TRTTypeSize(nvinfer1::DataType type)
     }
 }
 
-inline nvinfer1::Dims TRTFixDims(nvinfer1::Dims dims)
+/// Resolve every dynamic dim of @p tensor to a concrete value: the caller's
+/// override for that dim's symbolic name (via ITensor::getDimensionName,
+/// set by the ONNX parser from the model's dim_param) if one was given,
+/// else 1
+inline nvinfer1::Dims TRTResolveDims(const nvinfer1::ITensor& tensor,
+                                     const std::map<std::string, int64_t>& shape_overrides)
 {
+    nvinfer1::Dims dims = tensor.getDimensions();
     for (int i = 0; i < dims.nbDims; ++i) {
-        if (dims.d[i] <= 0)
-            dims.d[i] = 1;
+        if (dims.d[i] > 0)
+            continue;
+        const char* dimName = tensor.getDimensionName(i);
+        auto it = (dimName && dimName[0]) ? shape_overrides.find(dimName)
+                                           : shape_overrides.end();
+        dims.d[i] = (it != shape_overrides.end()) ? it->second : 1;
     }
     return dims;
 }
@@ -68,7 +80,8 @@ inline void BenchmarkTRT_GPU(const std::string& onnxPath,
                              const std::string& modelName,
                              int warmup,
                              int iterations,
-                             bool profile){
+                             bool profile,
+                             const std::map<std::string, int64_t>& shape_overrides = {}){
     namespace fs = std::filesystem;
 
     TRTLogger logger;
@@ -88,11 +101,57 @@ inline void BenchmarkTRT_GPU(const std::string& onnxPath,
     fs::path planDir = fs::path("../../cache/tensorrt");
     fs::create_directories(planDir);
 
-    fs::path planPath = planDir / (fs::path(onnxPath).stem().string() + ".trt.plan");
+    fs::path planPath = planDir / (modelName + ".trt.plan");
 
     const bool profiling = std::getenv("SOFIE_TRT_PROFILE_ACTIVE") != nullptr;
 
     std::vector<char> serializedEngine;
+
+    auto builder = std::unique_ptr<nvinfer1::IBuilder>(nvinfer1::createInferBuilder(logger));
+
+    if (!builder) {
+        std::cerr << "[TensorRT] Failed to create builder for " << modelName << "\n";
+        return;
+    }
+
+    auto network = std::unique_ptr<nvinfer1::INetworkDefinition>(builder->createNetworkV2(0U));
+
+    if (!network) {
+        std::cerr << "[TensorRT] Failed to create network for " << modelName << "\n";
+        return;
+    }
+
+    auto parser = std::unique_ptr<nvonnxparser::IParser>(nvonnxparser::createParser(*network, logger));
+
+    if (!parser) {
+        std::cerr << "[TensorRT] Failed to create ONNX parser for " << modelName << "\n";
+        return;
+    }
+
+    if (!parser->parseFromFile(onnxPath.c_str(), static_cast<int>(nvinfer1::ILogger::Severity::kWARNING))) {
+        std::cerr << "[TensorRT] Unsupported or failed ONNX parse: " << onnxPath << "\n";
+        return;
+    }
+
+    std::map<std::string, nvinfer1::Dims> resolvedDimsByName;
+    bool hasDynamicInput = false;
+
+    for (int i = 0; i < network->getNbInputs(); ++i) {
+        nvinfer1::ITensor* input = network->getInput(i);
+
+        if (!input) {
+            std::cerr << "[TensorRT] Invalid network input in " << modelName << "\n";
+            return;
+        }
+
+        const nvinfer1::Dims originalDims = input->getDimensions();
+        resolvedDimsByName[input->getName()] = TRTResolveDims(*input, shape_overrides);
+
+        for (int d = 0; d < originalDims.nbDims; ++d) {
+            if (originalDims.d[d] <= 0)
+                hasDynamicInput = true;
+        }
+    }
 
     // Load an existing serialized engine.
     if (fs::exists(planPath)) {
@@ -131,40 +190,12 @@ inline void BenchmarkTRT_GPU(const std::string& onnxPath,
             return;
         }
 
-        auto builder = std::unique_ptr<nvinfer1::IBuilder>(nvinfer1::createInferBuilder(logger));
-
-        if (!builder) {
-            std::cerr << "[TensorRT] Failed to create builder for " << modelName << "\n";
-            return;
-        }
-
-        auto network = std::unique_ptr<nvinfer1::INetworkDefinition>(builder->createNetworkV2(0U));
-
-        if (!network) {
-            std::cerr << "[TensorRT] Failed to create network for " << modelName << "\n";
-            return;
-        }
-
-        auto parser = std::unique_ptr<nvonnxparser::IParser>(nvonnxparser::createParser(*network, logger));
-
-        if (!parser) {
-            std::cerr << "[TensorRT] Failed to create ONNX parser for " << modelName << "\n";
-            return;
-        }
-
-        if (!parser->parseFromFile(onnxPath.c_str(), static_cast<int>(nvinfer1::ILogger::Severity::kWARNING))) {
-            std::cerr << "[TensorRT] Unsupported or failed ONNX parse: " << onnxPath << "\n";
-            return;
-        }
-
         auto config = std::unique_ptr<nvinfer1::IBuilderConfig>(builder->createBuilderConfig());
 
         if (!config) {
             std::cerr << "[TensorRT] Failed to create builder config for " << modelName << "\n";
             return;
         }
-
-        bool hasDynamicInput = false;
 
         nvinfer1::IOptimizationProfile* optimizationProfile = builder->createOptimizationProfile();
 
@@ -175,29 +206,20 @@ inline void BenchmarkTRT_GPU(const std::string& onnxPath,
 
         for (int i = 0; i < network->getNbInputs(); ++i) {
             nvinfer1::ITensor* input = network->getInput(i);
-
-            if (!input) {
-                std::cerr << "[TensorRT] Invalid network input in " << modelName << "\n";
-                return;
-            }
-
             const char* inputName = input->getName();
+            const nvinfer1::Dims& resolvedDims = resolvedDimsByName.at(inputName);
             const nvinfer1::Dims originalDims = input->getDimensions();
-            const nvinfer1::Dims fixedDims = TRTFixDims(originalDims);
 
             bool inputIsDynamic = false;
-
             for (int d = 0; d < originalDims.nbDims; ++d) {
-                if (originalDims.d[d] <= 0) {
+                if (originalDims.d[d] <= 0)
                     inputIsDynamic = true;
-                    hasDynamicInput = true;
-                }
             }
 
             if (inputIsDynamic) {
-                const bool minOk = optimizationProfile->setDimensions(inputName, nvinfer1::OptProfileSelector::kMIN, fixedDims);
-                const bool optOk = optimizationProfile->setDimensions(inputName, nvinfer1::OptProfileSelector::kOPT, fixedDims);
-                const bool maxOk = optimizationProfile->setDimensions(inputName, nvinfer1::OptProfileSelector::kMAX, fixedDims);
+                const bool minOk = optimizationProfile->setDimensions(inputName, nvinfer1::OptProfileSelector::kMIN, resolvedDims);
+                const bool optOk = optimizationProfile->setDimensions(inputName, nvinfer1::OptProfileSelector::kOPT, resolvedDims);
+                const bool maxOk = optimizationProfile->setDimensions(inputName, nvinfer1::OptProfileSelector::kMAX, resolvedDims);
 
                 if (!minOk || !optOk || !maxOk) {
                     std::cerr << "[TensorRT] Failed to set dimensions for input " << inputName << " in " << modelName << "\n";
@@ -242,7 +264,7 @@ inline void BenchmarkTRT_GPU(const std::string& onnxPath,
         std::cerr << "[TensorRT] Cached engine: " << planPath << "\n";
     }
 
-    // Runtime inference: this is the path used under Nsight Compute.
+    // Runtime inference: path used under Nsight Compute.
     auto runtime = std::unique_ptr<nvinfer1::IRuntime>(nvinfer1::createInferRuntime(logger));
 
     if (!runtime) {
@@ -282,7 +304,6 @@ inline void BenchmarkTRT_GPU(const std::string& onnxPath,
 
         if (engine->getTensorIOMode(tensorName) == nvinfer1::TensorIOMode::kINPUT) {
             const nvinfer1::Dims engineDims = engine->getTensorShape(tensorName);
-            const nvinfer1::Dims fixedDims = TRTFixDims(engineDims);
 
             bool hasDynamicDimension = false;
 
@@ -293,7 +314,9 @@ inline void BenchmarkTRT_GPU(const std::string& onnxPath,
                 }
             }
 
-            if (hasDynamicDimension && !context->setInputShape(tensorName, fixedDims)) {
+            const nvinfer1::Dims& resolvedDims = resolvedDimsByName.at(tensorName);
+
+            if (hasDynamicDimension && !context->setInputShape(tensorName, resolvedDims)) {
                 std::cerr << "[TensorRT] Failed to set runtime shape for input " << tensorName << " in " << modelName << "\n";
                 cudaStreamDestroy(stream);
                 return;
@@ -378,18 +401,21 @@ inline void BenchmarkTRT_GPU(const std::string& onnxPath,
     GPUMemoryMonitor gpuMonitor;
     gpuMonitor.Start();
 
-    for (int i = 0; i < warmup; ++i) {
+    bool warmupOk = sofie_bench::RunWarmup([&]() {
         if (!context->enqueueV3(stream)) {
             std::cerr << "[TensorRT] Warmup enqueue failed for " << modelName << "\n";
-            releaseResources();
-            return;
+            return false;
         }
-    }
+        cudaError_t syncStatus = cudaStreamSynchronize(stream);
+        if (syncStatus != cudaSuccess) {
+            std::cerr << "[TensorRT] Warmup synchronization failed for " << modelName << ": "
+                       << cudaGetErrorString(syncStatus) << "\n";
+            return false;
+        }
+        return true;
+    }, warmup);
 
-    cudaStatus = cudaStreamSynchronize(stream);
-
-    if (cudaStatus != cudaSuccess) {
-        std::cerr << "[TensorRT] Warmup synchronization failed for " << modelName << ": " << cudaGetErrorString(cudaStatus) << "\n";
+    if (!warmupOk) {
         releaseResources();
         return;
     }

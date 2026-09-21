@@ -4,7 +4,7 @@ import os
 import sys
 import torch
 
-REPO = os.path.expanduser("~/Documents/TICL-GNN-Trackster-Linking") # Adapt path to https://github.com/cms-patatrack/TICL-GNN-Trackster-Linking
+REPO = os.path.expanduser(os.environ.get("SOFIE_TICL_REPO", "~/TICL-GNN-Trackster-Linking"))
 TRANSFORMER_DIR = os.path.join(REPO, "tracksterLinker", "tracksterLinker", "transformer")
 sys.path.insert(0, TRANSFORMER_DIR)
 

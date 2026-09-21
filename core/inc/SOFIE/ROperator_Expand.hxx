@@ -75,19 +75,25 @@ public:
       // Y is the common shape of fShapeX and shape
       auto ret  = SOFIE::UTILITY::MultidirectionalBroadcastShape(fShapeX, fShapeDim);
       fShapeY = ret.second;
-      fInitialized = model.IsInitializedTensor(fNX) && fInitializedShape;
       std::vector<size_t> shapeX;
       std::vector<size_t> shapeY;
       // case shape tensor and input shape are known
       if (!model.IsDynamicTensor(fNX) && !model.IsDimInputTensor(fNX) && fInitializedShape) {
          shapeX = ConvertShapeToInt(fShapeX);
          shapeY = ConvertShapeToInt(fShapeY);
-         if (!UTILITY::AreSameShape(shapeX, shapeY))
+         if (!shapeX.empty() && !shapeY.empty() && !UTILITY::AreSameShape(shapeX, shapeY))
             fInitBroadcast = true;
       }
+      // Eagerly constant-folding X into Y (below) requires the *target*
+      // shape to be fully concrete too: X can be a compile-time constant
+      // while the shape it's being broadcast to is still dynamic (e.g. a
+      // constant "ones" tensor expanded to a runtime [1, seq_length,
+      // seq_length] attention-mask shape) — ConvertShapeToInt returns an
+      // empty vector whenever any dim is symbolic, so that failure is the
+      // signal that this has to go through the ordinary runtime-broadcast
+      // codegen path (the "else" branch below) instead.
+      fInitialized = model.IsInitializedTensor(fNX) && fInitializedShape && !shapeX.empty() && !shapeY.empty();
       if (fInitialized) {
-         // cannot have Dim initialized tensors
-         assert(!shapeX.empty() && !shapeY.empty());
          // Broadcast X to the common shape shapeY
          // If X is an initialized tensor (constant)
          auto data = model.GetInitializedTensorData(fNX);
@@ -295,16 +301,7 @@ std::string Generate_GPU_ALPAKA(std::string opName, const std::vector<std::strin
 }
 
 EFusionMappingType GetFusionMappingType() const override {
-   if (fIsOutputConstant || fInitialized)
-       return EFusionMappingType::Unsupported;
-
-   const auto isStatic = [](const std::vector<Dim> &shape) {
-       return std::all_of(shape.begin(), shape.end(), [](const Dim &dim) {
-          return !dim.isParam;
-       });
-   };
-
-   if (!isStatic(fShapeX) || !isStatic(fShapeY))
+   if (fIsOutputConstant || fInitialized || fShapeY.empty())
        return EFusionMappingType::Unsupported;
 
    if (fShapeX == fShapeY)

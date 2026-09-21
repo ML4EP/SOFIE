@@ -104,7 +104,15 @@ public:
       return out.str();
    }
 
-   std::string Generate_GPU_Kernel_ALPAKA(std::string /*opName*/, const std::vector<std::string> &dynParamNames) override {
+   std::string Generate_GPU_Kernel_ALPAKA(std::string /*opName*/, const std::vector<std::string> &dynParamNames_) override {
+      // fCountName (this op's own nonzero-element count) is registered as an
+      // internal dynamic param so DOWNSTREAM operators can receive it once
+      // computed; strip it back out here since it would otherwise appear in
+      // this operator's OWN kernel signature before it's actually known —
+      // this operator is what computes it, not a consumer of it.
+      std::vector<std::string> dynParamNames = dynParamNames_;
+      dynParamNames.erase(std::remove(dynParamNames.begin(), dynParamNames.end(), fCountName), dynParamNames.end());
+
       std::string op;
       op += "\n//------ NonZero kernel\n";
       op += SP + "struct NonZeroKernel_" + fNY + " {\n";
@@ -161,7 +169,12 @@ public:
       return SP + "NonZeroKernel_" + fNY + " nonZeroKernel_" + fNY + ";\n";
    }
 
-   std::string Generate_GPU_ALPAKA(std::string /*opName*/, const std::vector<std::string> &dynParamNames) override {
+   std::string Generate_GPU_ALPAKA(std::string /*opName*/, const std::vector<std::string> &dynParamNames_) override {
+      // See Generate_GPU_Kernel_ALPAKA: fCountName must not be passed back into
+      // this operator's own kernel launch before it has been computed.
+      std::vector<std::string> dynParamNames = dynParamNames_;
+      dynParamNames.erase(std::remove(dynParamNames.begin(), dynParamNames.end(), fCountName), dynParamNames.end());
+
       std::stringstream out;
       out << "\n//------ NonZero_GPU_ALPAKA\n";
 

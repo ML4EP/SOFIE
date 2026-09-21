@@ -248,7 +248,7 @@ public:
       std::stringstream out;
       out << "\n//------ TRANSPOSE_GPU_ALPAKA\n";
 
-      if (fDynamicOutput) {
+      if (fDynamicOutput && !IsOutputPooled(fNOutput)) {
          out << SP << outputBuffer << " = alpaka::allocBuf<"
              << ConvertTypeToString(GetTemplatedType(T())) << ", Idx>(devAcc, Ext1D::all(Idx{"
              << "static_cast<Idx>(" << length << ")}));\n";
@@ -289,8 +289,8 @@ public:
    }
 
    std::string GetFusionInputIndexExpr(size_t inputIndex, const std::string &outputIndex,
-                                    const std::vector<size_t> &inputShape,
-                                    const std::vector<size_t> &outputShape) const override
+                                    const std::vector<Dim> &inputShape,
+                                    const std::vector<Dim> &outputShape) const override
    {
       if (inputIndex != 0 || GetFusionMappingType() != EFusionMappingType::Shuffle)
          return "";
@@ -314,9 +314,9 @@ public:
          if (!expression.empty())
             expression += " + ";
 
-         expression += "(((" + outputIndex + ") / " + std::to_string(outputStrides[outputAxis]) + "u) % " +
-              std::to_string(outputShape[outputAxis]) + "u) * " +
-              std::to_string(inputStrides[inputAxis]) + "u";
+         expression += "(((" + outputIndex + ") / " + outputStrides[outputAxis].GetVal() + ") % " +
+              outputShape[outputAxis].GetVal() + ") * " +
+              inputStrides[inputAxis].GetVal();
       }
 
       return "(" + expression + ")";

@@ -344,8 +344,10 @@ public:
       std::string maxLen = "((" + sx.nBefore + ") * (" + sx.nAfter + ") * " + std::to_string(fRequestedK) + "u)";
 
       std::string out;
-      out += SP + "deviceBuf_" + fNVal + " = alpaka::allocBuf<" + fType + ", Idx>(devAcc, Ext1D::all(Idx{" + maxLen + "}));\n";
-      out += SP + "deviceBuf_" + fNInd + " = alpaka::allocBuf<int64_t, Idx>(devAcc, Ext1D::all(Idx{" + maxLen + "}));\n";
+      if (!IsOutputPooled(fNVal))
+         out += SP + "deviceBuf_" + fNVal + " = alpaka::allocBuf<" + fType + ", Idx>(devAcc, Ext1D::all(Idx{" + maxLen + "}));\n";
+      if (!IsOutputPooled(fNInd))
+         out += SP + "deviceBuf_" + fNInd + " = alpaka::allocBuf<int64_t, Idx>(devAcc, Ext1D::all(Idx{" + maxLen + "}));\n";
       return out;
    }
 

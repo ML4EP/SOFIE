@@ -7,14 +7,17 @@ include(FetchContent)
 # Usage:
 #   cmake -Bbuild -DSOFIE_BENCHMARK=ON .
 #   cmake --build build --target sofie_benchmark
-#   cd build/benchmark && ./sofie_benchmark [options]
+#   cd build && ./bin/sofie_benchmark [options]
 #
 # To also benchmark with ONNX Runtime GPU:
 #   cmake -Bbuild -DSOFIE_BENCHMARK=ON -DSOFIE_BENCHMARK_ORT=ON \
 #         [-DONNXRUNTIME_ROOT=/usr/local/onnxruntime] .
-#   ./sofie_benchmark --onnxruntime
+#   ./bin/sofie_benchmark --onnxruntime
 #
 # Place .onnx models in benchmark/models/ and re-run cmake to register them.
+# sofie_benchmark lands in build/bin next to every other SOFIE binary (see
+# CMAKE_RUNTIME_OUTPUT_DIRECTORY in the top-level CMakeLists.txt) — there is
+# no separate benchmark/build tree to configure or hunt through.
 ################################################################################
 
 option(SOFIE_BENCHMARK_ORT
@@ -114,14 +117,90 @@ endif()
 
 file(GLOB BENCHMARK_ONNX_MODELS "${BENCHMARK_MODEL_DIR}/*.onnx")
 
-# Exclude base/template models with symbolic dimensions.
-# Their fixed-size specialised variants are benchmarked instead.
-list(FILTER BENCHMARK_ONNX_MODELS EXCLUDE REGEX
-        "/(gnn_h32_k2|gnn_h64_k4|punet_h32_k2_heads4_layers2|punet_h64_k4_heads4_layers2|transformer_d32_h2_L6_ff32|transformer_d64_h4_L6_ff128|gnn_large|mlpf_fp32_fused|mlpf_fp32_unfused)\\.onnx$")
+################################################################################
+# Dynamic-shape ("parametric") SOFIE model families
+#
+# These base models keep symbolic ONNX input dimensions
+# which SOFIE's GPU/Alpaka code generator supports end-to-end: the
+# generated Session constructor and infer() take the shape parameters as
+# runtime size_t arguments, so ONE generated/compiled model serves
+# every input size instead of a separately-generated-and-compiled model per
+# shape. sofie_benchmark_emitter therefore generates SOFIE code for each of
+# these base models exactly once (see EnsureBaseFamilyGenerated() in
+# src/BenchmarkEmitter.cxx.in) and every shape variant below reuses it,
+# supplying only its own concrete shape values at construction/inference time.
 
-# Models that exceed GPU memory on all backends.
-list(FILTER BENCHMARK_ONNX_MODELS EXCLUDE REGEX
-        "/(punet_h32_k2_heads4_layers2_n30000_e150000|punet_h32_k2_heads4_layers2_n100000_e500000|punet_h64_k4_heads4_layers2_n30000_e150000|punet_h64_k4_heads4_layers2_n100000_e500000)\\.onnx$")
+set(SOFIE_BENCHMARK_DYNAMIC_FAMILY_STEMS
+    gnn_large
+    mlpf_fp32_fused
+    mlpf_fp32_unfused
+    gnn_h32_k2
+    gnn_h64_k4
+    transformer_d32_h2_L6_ff32
+    transformer_d64_h4_L6_ff128
+    punet_h32_k2_heads4_layers2
+    punet_h64_k4_heads4_layers2
+)
+
+set(_dyn_family_regex "")
+foreach(_stem ${SOFIE_BENCHMARK_DYNAMIC_FAMILY_STEMS})
+    if(_dyn_family_regex)
+        set(_dyn_family_regex "${_dyn_family_regex}|${_stem}")
+    else()
+        set(_dyn_family_regex "${_stem}")
+    endif()
+endforeach()
+
+# Exclude the base/template models with symbolic dimensions from the model
+# list itself
+list(FILTER BENCHMARK_ONNX_MODELS EXCLUDE REGEX "/(${_dyn_family_regex})\\.onnx$")
+
+################################################################################
+# Shape sweep for the dynamic families 
+# Each entry below is a string using that family's
+# actual ONNX dim_param names: GNN and
+# PUNet families use n_nodes/n_edges (edges = 5x nodes, matching how these
+# graphs were generated); MLPF uses num_batch/num_elements (batch pinned to
+# 1); the Transformers use n_nodes for the source sequence length and
+# seq_length for the target.
+################################################################################
+
+function(sofie_benchmark_sweep_n_e OUT_VAR)
+    set(_sweep "")
+    foreach(_n 100 300 1000 3000 10000 30000 100000)
+        math(EXPR _e "${_n} * 5")
+        list(APPEND _sweep "n_nodes=${_n},n_edges=${_e}")
+    endforeach()
+    set(${OUT_VAR} "${_sweep}" PARENT_SCOPE)
+endfunction()
+
+function(sofie_benchmark_sweep_mlpf OUT_VAR)
+    set(_sweep "")
+    foreach(_n 128 256 512 1024 2048 4096)
+        list(APPEND _sweep "num_batch=1,num_elements=${_n}")
+    endforeach()
+    set(${OUT_VAR} "${_sweep}" PARENT_SCOPE)
+endfunction()
+
+function(sofie_benchmark_sweep_transformer OUT_VAR SEQ_LENS)
+    set(_sweep "")
+    foreach(_s ${SEQ_LENS})
+        list(APPEND _sweep "n_nodes=${_s},seq_length=${_s}")
+    endforeach()
+    set(${OUT_VAR} "${_sweep}" PARENT_SCOPE)
+endfunction()
+
+sofie_benchmark_sweep_n_e(_sweep_gnn_h32_k2)
+sofie_benchmark_sweep_n_e(_sweep_gnn_h64_k4)
+sofie_benchmark_sweep_n_e(_sweep_gnn_large)
+sofie_benchmark_sweep_n_e(_sweep_punet_h32_k2_heads4_layers2)
+sofie_benchmark_sweep_n_e(_sweep_punet_h64_k4_heads4_layers2)
+sofie_benchmark_sweep_mlpf(_sweep_mlpf_fp32_fused)
+sofie_benchmark_sweep_mlpf(_sweep_mlpf_fp32_unfused)
+sofie_benchmark_sweep_transformer(_sweep_transformer_d32_h2_L6_ff32 "10;20;30;40;50;60")
+sofie_benchmark_sweep_transformer(_sweep_transformer_d64_h4_L6_ff128 "10;20;30;40;50;60;64;128;256;512;1024;2048")
+
+set(SOFIE_BENCHMARK_DEFAULT_RESULTS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/results")
 
 if(NOT BENCHMARK_ONNX_MODELS)
     message(STATUS
@@ -148,7 +227,7 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(alpaka)
 
 ################################################################################
-# Hardware toolkit setup — CUDA (the only supported backend for now)
+# Hardware toolkit setup — CUDA
 ################################################################################
 
 enable_language(CUDA)
@@ -182,11 +261,6 @@ endif()
 set(SOFIE_ORT_FOUND FALSE)
 
 if(SOFIE_BENCHMARK_ORT)
-    # Prefer manual detection — the installed ORT CMake config may reference
-    # a wrong lib path (e.g. lib64 vs lib) and raise a hard error even with QUIET.
-    # If ONNXRUNTIME_ROOT is provided, go straight to the manual path.
-    # Otherwise attempt the CMake config with NO_DEFAULT_PATH so it only looks
-    # where we tell it, and fall through to manual on failure.
 
     set(_ort_search_roots "")
     if(ONNXRUNTIME_ROOT)
@@ -272,6 +346,48 @@ endif()
 if(SOFIE_BENCHMARK_AOT)
     find_package(Torch REQUIRED)
     message(STATUS "SOFIE Benchmark: PyTorch AOTInductor comparison enabled")
+
+    ############################################################################
+    # Real-architecture source checkouts for torch_models/*.py
+    ############################################################################
+
+    set(SOFIE_TICL_REPO "$ENV{HOME}/TICL-GNN-Trackster-Linking" CACHE PATH
+        "Local checkout of TICL-GNN-Trackster-Linking (cloned automatically here if missing)")
+    set(SOFIE_PARTICLEFLOW_REPO "$ENV{HOME}/.cache/sofie_benchmark/particleflow_src" CACHE PATH
+        "Local checkout of particleflow (cloned automatically here if missing, \
+pinned to a known-good commit; its training checkpoint under checkpoints/ is \
+not part of the repo and must still be placed there by hand)")
+    set(SOFIE_PARTICLEFLOW_GIT_TAG "8edc986f61004e8cfdf1a8a1ddfe79334a903ee4" CACHE STRING
+        "particleflow commit to clone — must match the wiring the MLPF checkpoint/.onnx were validated against")
+
+    if(NOT EXISTS "${SOFIE_TICL_REPO}/.git")
+        message(STATUS "SOFIE Benchmark AOT: cloning TICL-GNN-Trackster-Linking into ${SOFIE_TICL_REPO} ...")
+        FetchContent_Declare(ticl_gnn_trackster_linking
+            GIT_REPOSITORY https://github.com/cms-patatrack/TICL-GNN-Trackster-Linking.git
+            GIT_TAG        main
+            SOURCE_DIR     "${SOFIE_TICL_REPO}"
+        )
+        FetchContent_Populate(ticl_gnn_trackster_linking)
+    endif()
+
+    if(NOT EXISTS "${SOFIE_PARTICLEFLOW_REPO}/.git")
+        message(STATUS "SOFIE Benchmark AOT: cloning particleflow (${SOFIE_PARTICLEFLOW_GIT_TAG}) into ${SOFIE_PARTICLEFLOW_REPO} ...")
+        FetchContent_Declare(particleflow
+            GIT_REPOSITORY https://github.com/jpata/particleflow.git
+            GIT_TAG        ${SOFIE_PARTICLEFLOW_GIT_TAG}
+            SOURCE_DIR     "${SOFIE_PARTICLEFLOW_REPO}"
+        )
+        FetchContent_Populate(particleflow)
+    endif()
+
+    if(NOT EXISTS "${SOFIE_PARTICLEFLOW_REPO}/checkpoints/mlpf_model_kwargs.pkl")
+        message(WARNING
+            "SOFIE Benchmark AOT: ${SOFIE_PARTICLEFLOW_REPO}/checkpoints/ does "
+            "not have the MLPF training checkpoint yet (mlpf_model_kwargs.pkl, "
+            "mlpf_checkpoint-10-3.812332.pth). It isn't fetched automatically — "
+            "place both files there by hand before running export_aot.py for "
+            "mlpf_fp32_fused/mlpf_fp32_unfused.")
+    endif()
 endif()
 
 ################################################################################
@@ -280,7 +396,7 @@ endif()
 
 set(_EMIT_BLOCK
 "try {\n\
-    EmitBenchmarkModel(\"@1@\", \"@2@\", outDir);\n\
+    EmitBenchmarkModel(\"@1@\", \"@2@\", outDir, \"@3@\", \"@4@\", @5@);\n\
 } catch (const std::exception &e) {\n\
     std::cerr << \"[ERROR] @2@: \" << e.what() << \"\\n\";\n\
     ++failures;\n\
@@ -298,31 +414,48 @@ set(BENCHMARK_SINGLE_MODEL_CASES   "")
 set(BENCHMARK_SPAWN_CALLS          "")
 set(GENERATED_HEADERS              "")
 set(BENCHMARK_MODEL_CU_SRCS        "")
+set(DYNAMIC_BASE_ONNX_FILES        "")
 
-foreach(ONNX_FILE ${BENCHMARK_ONNX_MODELS})
-    get_filename_component(MODEL_NAME "${ONNX_FILE}" NAME_WE)
-
+macro(sofie_benchmark_emit_entry _E_ONNX_FILE _E_MODEL_NAME _E_BASE_ONNX_FILE _E_BASE_MODEL_NAME _E_SHAPE_OVERRIDES_CPP)
     set(MODEL_AOT_ENABLED TRUE)
-    if(MODEL_NAME MATCHES "^mambav2_" AND NOT SOFIE_BENCHMARK_MAMBA_AOT)
+    if(_E_MODEL_NAME MATCHES "^mambav2_" AND NOT SOFIE_BENCHMARK_MAMBA_AOT)
         set(MODEL_AOT_ENABLED FALSE)
     endif()
 
-    string(REGEX REPLACE "[^A-Za-z0-9]" "_" MODEL_CPPNAME "${MODEL_NAME}")
+    string(REGEX REPLACE "[^A-Za-z0-9]" "_" MODEL_CPPNAME "${_E_MODEL_NAME}")
 
-    set(GEN_HXX      "${CMAKE_CURRENT_BINARY_DIR}/${MODEL_NAME}_GPU_ALPAKA.hxx")
-    set(GEN_BENCH    "${CMAKE_CURRENT_BINARY_DIR}/${MODEL_NAME}_bench.hxx")
-    set(GEN_AOT_META "${CMAKE_CURRENT_BINARY_DIR}/${MODEL_NAME}_aot_meta.hxx")
-    list(APPEND GENERATED_HEADERS "${GEN_HXX}" "${GEN_BENCH}" "${GEN_AOT_META}")
+    if(_E_BASE_ONNX_FILE)
+        # Dynamic-shape variant: SOFIE code is shared, generated once from
+        # _E_BASE_ONNX_FILE (see sofie_benchmark_emitter / EnsureBaseFamilyGenerated).
+        set(GEN_HXX "${CMAKE_CURRENT_BINARY_DIR}/${_E_BASE_MODEL_NAME}_GPU_ALPAKA.hxx")
+        list(FIND GENERATED_HEADERS "${GEN_HXX}" _gen_hxx_idx)
+        if(_gen_hxx_idx EQUAL -1)
+            list(APPEND GENERATED_HEADERS "${GEN_HXX}")
+        endif()
+        list(FIND DYNAMIC_BASE_ONNX_FILES "${_E_BASE_ONNX_FILE}" _base_onnx_idx)
+        if(_base_onnx_idx EQUAL -1)
+            list(APPEND DYNAMIC_BASE_ONNX_FILES "${_E_BASE_ONNX_FILE}")
+        endif()
+    else()
+        set(GEN_HXX "${CMAKE_CURRENT_BINARY_DIR}/${_E_MODEL_NAME}_GPU_ALPAKA.hxx")
+        list(APPEND GENERATED_HEADERS "${GEN_HXX}")
+    endif()
+    set(GEN_BENCH    "${CMAKE_CURRENT_BINARY_DIR}/${_E_MODEL_NAME}_bench.hxx")
+    set(GEN_AOT_META "${CMAKE_CURRENT_BINARY_DIR}/${_E_MODEL_NAME}_aot_meta.hxx")
+    list(APPEND GENERATED_HEADERS "${GEN_BENCH}" "${GEN_AOT_META}")
 
-    string(REPLACE "@1@" "${ONNX_FILE}"  _emit_cap "${_EMIT_BLOCK}")
-    string(REPLACE "@2@" "${MODEL_NAME}" _emit_cap "${_emit_cap}")
+    string(REPLACE "@1@" "${_E_ONNX_FILE}"      _emit_cap "${_EMIT_BLOCK}")
+    string(REPLACE "@2@" "${_E_MODEL_NAME}"     _emit_cap "${_emit_cap}")
+    string(REPLACE "@3@" "${_E_BASE_ONNX_FILE}" _emit_cap "${_emit_cap}")
+    string(REPLACE "@4@" "${_E_BASE_MODEL_NAME}" _emit_cap "${_emit_cap}")
+    string(REPLACE "@5@" "${_E_SHAPE_OVERRIDES_CPP}" _emit_cap "${_emit_cap}")
     string(APPEND BENCHMARK_EMIT_CAPTURES "${_emit_cap}")
 
     string(APPEND BENCHMARK_BENCH_HEADERS
-        "#include \"${MODEL_NAME}_bench.hxx\"\n")
+        "#include \"${_E_MODEL_NAME}_bench.hxx\"\n")
 
     string(APPEND BENCHMARK_AOT_META_HEADERS
-            "#include \"${MODEL_NAME}_aot_meta.hxx\"\n")
+            "#include \"${_E_MODEL_NAME}_aot_meta.hxx\"\n")
 
     # Forward declaration for the main TU (function defined in per-model .cu)
     string(APPEND BENCHMARK_FWD_DECLS
@@ -335,11 +468,11 @@ foreach(ONNX_FILE ${BENCHMARK_ONNX_MODELS})
         "            Benchmark_${MODEL_CPPNAME}(warmup, iterations, weightsDir, profile);\n"
         "#ifdef SOFIE_BENCHMARK_ORT\n"
         "        if (run_ort)\n"
-        "            BenchmarkORT_GPU(\"${ONNX_FILE}\", \"${MODEL_NAME}\", warmup, iterations, profile);\n"
+        "            BenchmarkORT_GPU(\"${_E_ONNX_FILE}\", \"${_E_MODEL_NAME}\", warmup, iterations, profile, ${_E_SHAPE_OVERRIDES_CPP});\n"
         "#endif\n"
         "#ifdef SOFIE_BENCHMARK_TRT\n"
         "        if (run_trt)\n"
-        "            BenchmarkTRT_GPU(\"${ONNX_FILE}\", \"${MODEL_NAME}\", warmup, iterations, profile);\n"
+        "            BenchmarkTRT_GPU(\"${_E_ONNX_FILE}\", \"${_E_MODEL_NAME}\", warmup, iterations, profile, ${_E_SHAPE_OVERRIDES_CPP});\n"
         "#endif\n"
     )
 
@@ -347,8 +480,8 @@ foreach(ONNX_FILE ${BENCHMARK_ONNX_MODELS})
         string(APPEND BENCHMARK_SINGLE_MODEL_CASES
                 "#ifdef SOFIE_BENCHMARK_AOT\n"
                 "        if (run_aot)\n"
-                "            BenchmarkAOT_GPU(\"${BENCHMARK_MODEL_DIR}/aot_models/${MODEL_NAME}.pt2\","
-                " \"${MODEL_NAME}\", GetAOTInputSpecs_${MODEL_CPPNAME}(), warmup, iterations, profile);\n"
+                "            BenchmarkAOT_GPU(\"${BENCHMARK_MODEL_DIR}/aot_models/${_E_MODEL_NAME}.pt2\","
+                " \"${_E_MODEL_NAME}\", GetAOTInputSpecs_${MODEL_CPPNAME}(), warmup, iterations, profile);\n"
                 "#endif\n"
         )
     endif()
@@ -380,7 +513,7 @@ foreach(ONNX_FILE ${BENCHMARK_ONNX_MODELS})
             "                cmd += \" --force-overwrite\";\n"
             "                cmd += \" --export \";\n"
             "                cmd += std::string(resultsDir);\n"
-            "                cmd += \"/\" + suffix + \"/${MODEL_NAME}\";\n"
+            "                cmd += \"/\" + suffix + \"/${_E_MODEL_NAME}\";\n"
             "                cmd += \" --section LaunchStats\";\n"
             "                cmd += \" --section Occupancy\";\n"
             "                cmd += \" --section MemoryWorkloadAnalysis\";\n"
@@ -401,7 +534,7 @@ foreach(ONNX_FILE ${BENCHMARK_ONNX_MODELS})
 
             "            if (rc != 0) {\n"
             "                std::fprintf(stderr,\n"
-            "                    \"[ERROR] ${MODEL_NAME} (%s): subprocess exited %d\\n\",\n"
+            "                    \"[ERROR] ${_E_MODEL_NAME} (%s): subprocess exited %d — skipping, moving on.\\n\",\n"
             "                    suffix.c_str(), rc);\n"
             "                ++totalFailed;\n"
             "            }\n"
@@ -431,15 +564,56 @@ foreach(ONNX_FILE ${BENCHMARK_ONNX_MODELS})
 
     string(APPEND BENCHMARK_SPAWN_CALLS "    }\n")
 
-    # Per-model compilation unit: include one bench.hxx → one .cu file
-    set(_model_cu "${CMAKE_CURRENT_BINARY_DIR}/${MODEL_NAME}_bench.cu")
+    # Per-model compilation unit: include one bench.hxx → one .cu file.
+    # ModelBench.cu.in's own placeholder is "@MODEL_NAME@" — this
+    # configure_file(@ONLY) substitutes it from whatever variable is named
+    # exactly MODEL_NAME in scope, not from this macro's own parameter
+    set(MODEL_NAME "${_E_MODEL_NAME}")
+    set(_model_cu "${CMAKE_CURRENT_BINARY_DIR}/${_E_MODEL_NAME}_bench.cu")
     configure_file(
         "${CMAKE_CURRENT_SOURCE_DIR}/src/ModelBench.cu.in"
         "${_model_cu}"
         @ONLY
     )
     list(APPEND BENCHMARK_MODEL_CU_SRCS "${_model_cu}")
+endmacro()
+
+# static models discovered on disk
+foreach(ONNX_FILE ${BENCHMARK_ONNX_MODELS})
+    get_filename_component(MODEL_NAME "${ONNX_FILE}" NAME_WE)
+    sofie_benchmark_emit_entry("${ONNX_FILE}" "${MODEL_NAME}" "" "" "{}")
 endforeach()
+
+# Dynamic families: one entry per swept shape, all sharing the family's one
+# .onnx file
+foreach(_stem ${SOFIE_BENCHMARK_DYNAMIC_FAMILY_STEMS})
+    set(_base_onnx "${BENCHMARK_MODEL_DIR}/${_stem}.onnx")
+    foreach(_point ${_sweep_${_stem}})
+        string(REPLACE "," ";" _point_pairs "${_point}")
+        set(_name_suffix "")
+        set(_overrides_cpp "{")
+        set(_first TRUE)
+        foreach(_pair ${_point_pairs})
+            string(REPLACE "=" ";" _kv "${_pair}")
+            list(GET _kv 0 _k)
+            list(GET _kv 1 _v)
+            string(APPEND _name_suffix "_${_k}${_v}")
+            if(NOT _first)
+                string(APPEND _overrides_cpp ",")
+            endif()
+            string(APPEND _overrides_cpp "{\"${_k}\",${_v}}")
+            set(_first FALSE)
+        endforeach()
+        string(APPEND _overrides_cpp "}")
+        string(REGEX REPLACE "_n_nodes([0-9]+)_n_edges([0-9]+)" "_n\\1_e\\2" _name_suffix "${_name_suffix}")
+        string(REGEX REPLACE "_num_batch([0-9]+)_num_elements([0-9]+)" "_b\\1_n\\2" _name_suffix "${_name_suffix}")
+        string(REGEX REPLACE "_n_nodes([0-9]+)_seq_length([0-9]+)" "_n\\1_s\\2" _name_suffix "${_name_suffix}")
+
+        sofie_benchmark_emit_entry("${_base_onnx}" "${_stem}${_name_suffix}" "${_base_onnx}" "${_stem}" "${_overrides_cpp}")
+    endforeach()
+endforeach()
+
+list(LENGTH BENCHMARK_MODEL_CU_SRCS N_MODELS)
 
 ################################################################################
 # Configure emitter and runner sources
@@ -452,7 +626,7 @@ configure_file(
 )
 
 # Main runner: only main() + forward declarations (no model headers).
-# Each model is compiled in its own _bench.cu TU (see BENCHMARK_MODEL_CU_SRCS).
+# Each model is compiled in its own _bench.cu TU
 set(RUNNER_SRC "${CMAKE_CURRENT_BINARY_DIR}/BenchmarkRunner_main.cpp")
 configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/src/BenchmarkRunner.cxx.in"
@@ -495,7 +669,7 @@ add_custom_command(
     OUTPUT  ${GENERATED_HEADERS}
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}"
     COMMAND "$<TARGET_FILE:sofie_benchmark_emitter>" "${CMAKE_CURRENT_BINARY_DIR}"
-    DEPENDS sofie_benchmark_emitter ${BENCHMARK_ONNX_MODELS}
+    DEPENDS sofie_benchmark_emitter ${BENCHMARK_ONNX_MODELS} ${DYNAMIC_BASE_ONNX_FILES}
     WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
     COMMENT "SOFIE Benchmark: generating headers for ${N_MODELS} model(s)..."
     VERBATIM
@@ -587,7 +761,6 @@ set_target_properties(sofie_benchmark PROPERTIES
     CUDA_ARCHITECTURES          "${SOFIE_BENCHMARK_CUDA_ARCH}"
     CUDA_STANDARD               20
     CUDA_STANDARD_REQUIRED      ON
-    RUNTIME_OUTPUT_DIRECTORY    "${CMAKE_CURRENT_BINARY_DIR}"
 )
 
 target_compile_definitions(sofie_benchmark PRIVATE
@@ -651,12 +824,7 @@ if(testing)
 endif()
 
 ################################################################################
-# Large-input benchmark (cluster GPUs: A100 / H100 / MI300X, ≥40 GB VRAM)
-#
-# Enables:
-#  • All models excluded from sofie_benchmark due to OOM on ≤8 GB GPUs
-#  • New very-large GNN / PUNet variants: n=30 000 / n=100 000 nodes
-#  • transformer_d32_h2_L6_ff32_n60_s60  (max sequence length for this arch)
+# Large-input benchmark
 #
 # Usage:
 #   cmake -Bbuild . -DSOFIE_BENCHMARK=ON -DSOFIE_BENCHMARK_LARGE=ON \
@@ -674,32 +842,10 @@ if(SOFIE_BENCHMARK_LARGE)
         "CUDA SM architecture(s) for sofie_benchmark_large (e.g. 80=A100, 90=H100)")
 
     set(LARGE_MODEL_NAMES
-        # ── PUNet h32/k2  (OOM + new) ──────────────────────────────────────
-        "punet_h32_k2_heads4_layers2_n1000_e5000"
-        "punet_h32_k2_heads4_layers2_n3000_e15000"
-        "punet_h32_k2_heads4_layers2_n10000_e50000"
-        "punet_h32_k2_heads4_layers2_n30000_e150000"
-        "punet_h32_k2_heads4_layers2_n100000_e500000"
-        # ── PUNet h64/k4  (OOM + new) ──────────────────────────────────────
-        "punet_h64_k4_heads4_layers2_n100_e500"
-        "punet_h64_k4_heads4_layers2_n300_e1500"
-        "punet_h64_k4_heads4_layers2_n1000_e5000"
-        "punet_h64_k4_heads4_layers2_n3000_e15000"
-        "punet_h64_k4_heads4_layers2_n10000_e50000"
-        "punet_h64_k4_heads4_layers2_n30000_e150000"
-        "punet_h64_k4_heads4_layers2_n100000_e500000"
-        # ── GNN h32/k2  (new large) ────────────────────────────────────────
-        "gnn_h32_k2_n30000_e150000"
-        "gnn_h32_k2_n100000_e500000"
-        # ── GNN h64/k4  (new large) ────────────────────────────────────────
-        "gnn_h64_k4_n30000_e150000"
-        "gnn_h64_k4_n100000_e500000"
         # ── Transformers (OOM on 8 GB) ──────────────────────────────────────
         "transformer_L100_B100"
         "transformer_L1000_B100"
         "transformer_L8000_B1"
-        # ── Transformer d32 (max sequence length for this architecture) ─────
-        "transformer_d32_h2_L6_ff32_n60_s60"
     )
 
     set(_large_regex "")
@@ -718,8 +864,8 @@ if(SOFIE_BENCHMARK_LARGE)
     if(NOT _ALL_LARGE_ONNX)
         message(WARNING
             "SOFIE_BENCHMARK_LARGE=ON but none of the expected large-input .onnx "
-            "files were found in benchmark/models/.  Run specialize_models.py "
-            "(with the extended GNN_VARIANTS list) first, then re-run cmake.")
+            "files were found in benchmark/models/.  Add them there, then "
+            "re-run cmake.")
     else()
         list(LENGTH _ALL_LARGE_ONNX N_LARGE)
         message(STATUS
@@ -733,17 +879,23 @@ if(SOFIE_BENCHMARK_LARGE)
         set(LARGE_GENERATED_HEADERS  "")
         set(LARGE_MODEL_CU_SRCS      "")
 
+        # Every LARGE_MODEL_NAMES entry is a genuinely-static, standalone
+        # model (no symbolic ONNX dims)
         foreach(ONNX_FILE ${_ALL_LARGE_ONNX})
             get_filename_component(MODEL_NAME "${ONNX_FILE}" NAME_WE)
             string(REGEX REPLACE "[^A-Za-z0-9]" "_" MODEL_CPPNAME "${MODEL_NAME}")
 
-            set(GEN_HXX      "${CMAKE_CURRENT_BINARY_DIR}/${MODEL_NAME}_GPU_ALPAKA.hxx")
+            set(GEN_HXX "${CMAKE_CURRENT_BINARY_DIR}/${MODEL_NAME}_GPU_ALPAKA.hxx")
+            list(APPEND LARGE_GENERATED_HEADERS "${GEN_HXX}")
             set(GEN_BENCH    "${CMAKE_CURRENT_BINARY_DIR}/${MODEL_NAME}_bench.hxx")
             set(GEN_AOT_META "${CMAKE_CURRENT_BINARY_DIR}/${MODEL_NAME}_aot_meta.hxx")
-            list(APPEND LARGE_GENERATED_HEADERS "${GEN_HXX}" "${GEN_BENCH}" "${GEN_AOT_META}")
+            list(APPEND LARGE_GENERATED_HEADERS "${GEN_BENCH}" "${GEN_AOT_META}")
 
             string(REPLACE "@1@" "${ONNX_FILE}"  _ec "${_EMIT_BLOCK}")
             string(REPLACE "@2@" "${MODEL_NAME}" _ec "${_ec}")
+            string(REPLACE "@3@" ""              _ec "${_ec}")
+            string(REPLACE "@4@" ""              _ec "${_ec}")
+            string(REPLACE "@5@" "{}"            _ec "${_ec}")
             string(APPEND LARGE_EMIT_CAPTURES "${_ec}")
 
             string(APPEND BENCHMARK_FWD_DECLS
@@ -858,7 +1010,6 @@ if(SOFIE_BENCHMARK_LARGE)
             CUDA_ARCHITECTURES          "${SOFIE_BENCHMARK_LARGE_CUDA_ARCH}"
             CUDA_STANDARD               20
             CUDA_STANDARD_REQUIRED      ON
-            RUNTIME_OUTPUT_DIRECTORY    "${CMAKE_CURRENT_BINARY_DIR}"
         )
 
         target_compile_definitions(sofie_benchmark_large PRIVATE

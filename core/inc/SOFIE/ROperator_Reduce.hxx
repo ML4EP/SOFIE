@@ -214,10 +214,10 @@ public:
       return "((" + left + ") + (" + right + "))";
    }
 
-   std::string GetFusionReductionFinalizeExpr(const std::string &accumulator, size_t reducedLength) const override
+   std::string GetFusionReductionFinalizeExpr(const std::string &accumulator, const std::string &reducedLength) const override
    {
       if (fReduceOpMode == ReduceMean)
-         return "((" + accumulator + ") / static_cast<T>(" + std::to_string(reducedLength) + "u))";
+         return "((" + accumulator + ") / static_cast<T>(" + reducedLength + "))";
       if (fReduceOpMode == ReduceL2)
          return "std::sqrt(" + accumulator + ")";
       return accumulator;
@@ -229,10 +229,17 @@ public:
    // has confirmed the operator is static, so converting them down to plain sizes here
    // is safe.
    std::string GetFusionReductionInputIndexExpr(const std::string &outputIndex, const std::string &reductionIndex,
-      const std::vector<size_t> &inputShape, const std::vector<size_t> &outputShape) const override
+      const std::vector<Dim> &inputShapeDim, const std::vector<Dim> &outputShapeDim) const override
    {
       if (fInputDimShape || fShapeX.empty() || fShapeY.empty())
          return "";
+
+      std::vector<size_t> inputShape(inputShapeDim.size());
+      for (size_t i = 0; i < inputShapeDim.size(); ++i)
+         inputShape[i] = inputShapeDim[i].dim;
+      std::vector<size_t> outputShape(outputShapeDim.size());
+      for (size_t i = 0; i < outputShapeDim.size(); ++i)
+         outputShape[i] = outputShapeDim[i].dim;
 
       std::vector<size_t> shapeX(fShapeX.size());
       for (size_t i = 0; i < fShapeX.size(); ++i)

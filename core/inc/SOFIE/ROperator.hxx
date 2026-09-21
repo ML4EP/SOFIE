@@ -180,22 +180,22 @@ public:
    }
 
    virtual std::string GetFusionInputIndexExpr(size_t /*inputIndex*/, const std::string &/*outputIndex*/,
-                                                const std::vector<size_t> &/*inputShape*/,
-                                                const std::vector<size_t> &/*outputShape*/) const
+                                                const std::vector<Dim> &/*inputShape*/,
+                                                const std::vector<Dim> &/*outputShape*/) const
    {
       return "";
    }
 
    virtual std::string GetFusionInputIndexExprForOutput(size_t inputIndex, size_t /*outputTensorIndex*/,
                                                          const std::string &outputIndex,
-                                                         const std::vector<size_t> &inputShape,
-                                                         const std::vector<size_t> &outputShape) const
+                                                         const std::vector<Dim> &inputShape,
+                                                         const std::vector<Dim> &outputShape) const
    {
       return GetFusionInputIndexExpr(inputIndex, outputIndex, inputShape, outputShape);
    }
 
    virtual std::string GetFusionInputConditionExpr(size_t /*inputIndex*/, const std::string &/*outputIndex*/,
-      const std::vector<size_t> &/*inputShape*/, const std::vector<size_t> &/*outputShape*/) const
+      const std::vector<Dim> &/*inputShape*/, const std::vector<Dim> &/*outputShape*/) const
    {
       return "";
    }
@@ -207,9 +207,9 @@ public:
    virtual std::string GetFusionReductionInitExpr() const { return ""; }
    virtual std::string GetFusionReductionAccumulateExpr(const std::string &/*accumulator*/, const std::string &/*value*/) const { return ""; }
    virtual std::string GetFusionReductionCombineExpr(const std::string &/*left*/, const std::string &/*right*/) const { return ""; }
-   virtual std::string GetFusionReductionFinalizeExpr(const std::string &/*accumulator*/, size_t /*reducedLength*/) const { return ""; }
+   virtual std::string GetFusionReductionFinalizeExpr(const std::string &/*accumulator*/, const std::string &/*reducedLength*/) const { return ""; }
    virtual std::string GetFusionReductionInputIndexExpr(const std::string &/*outputIndex*/, const std::string &/*reductionIndex*/,
-      const std::vector<size_t> &/*inputShape*/, const std::vector<size_t> &/*outputShape*/) const
+      const std::vector<Dim> &/*inputShape*/, const std::vector<Dim> &/*outputShape*/) const
    {
       return "";
    }
@@ -242,7 +242,12 @@ protected:
    mutable std::vector<std::string> fInputTensorNames;
    mutable std::vector<std::string> fOutputTensorNames;
 
+   std::set<std::string> fPooledOutputNames;
+
 public:
+   void MarkOutputAsPooled(const std::string &name) { fPooledOutputNames.insert(name); }
+   bool IsOutputPooled(const std::string &name) const { return fPooledOutputNames.count(name) > 0; }
+
    std::span<const std::string> GetOpInputTensors() const {
       return fInputTensorNames;
    }

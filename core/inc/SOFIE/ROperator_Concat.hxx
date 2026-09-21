@@ -540,10 +540,20 @@ std::string GetFusionExpr(const std::vector<std::string> &inputs) const override
    return inputs[0];
 }
 
-std::string GetFusionInputConditionExpr(size_t inputIndex, const std::string &outputIndex, const std::vector<size_t> &inputShape, const std::vector<size_t> &outputShape) const override
+// GetFusionMappingType() above only returns ManyToMany once every input and
+// output shape is confirmed fully static, so converting the Dim shapes down
+// to plain sizes here is safe
+std::string GetFusionInputConditionExpr(size_t inputIndex, const std::string &outputIndex, const std::vector<Dim> &inputShapeDim, const std::vector<Dim> &outputShapeDim) const override
 {
-   if (GetFusionMappingType() != EFusionMappingType::ManyToMany || inputIndex >= fInputShapes.size() || inputShape.size() != outputShape.size())
+   if (GetFusionMappingType() != EFusionMappingType::ManyToMany || inputIndex >= fInputShapes.size() || inputShapeDim.size() != outputShapeDim.size())
       return "";
+
+   std::vector<size_t> inputShape(inputShapeDim.size());
+   for (size_t i = 0; i < inputShapeDim.size(); ++i)
+      inputShape[i] = inputShapeDim[i].dim;
+   std::vector<size_t> outputShape(outputShapeDim.size());
+   for (size_t i = 0; i < outputShapeDim.size(); ++i)
+      outputShape[i] = outputShapeDim[i].dim;
 
    const size_t axis = static_cast<size_t>(fAxis);
    const auto outputStrides = UTILITY::ComputeStrideFromShape(outputShape);
@@ -563,10 +573,17 @@ std::string GetFusionInputConditionExpr(size_t inputIndex, const std::string &ou
    return "(" + withinOuter + " >= " + std::to_string(prefixElements) + "u && " + withinOuter + " < " + std::to_string(prefixElements + inputBlockSize) + "u)";
 }
 
-std::string GetFusionInputIndexExpr(size_t inputIndex, const std::string &outputIndex, const std::vector<size_t> &inputShape, const std::vector<size_t> &outputShape) const override
+std::string GetFusionInputIndexExpr(size_t inputIndex, const std::string &outputIndex, const std::vector<Dim> &inputShapeDim, const std::vector<Dim> &outputShapeDim) const override
 {
-   if (GetFusionMappingType() != EFusionMappingType::ManyToMany || inputIndex >= fInputShapes.size() || inputShape.size() != outputShape.size())
+   if (GetFusionMappingType() != EFusionMappingType::ManyToMany || inputIndex >= fInputShapes.size() || inputShapeDim.size() != outputShapeDim.size())
       return "";
+
+   std::vector<size_t> inputShape(inputShapeDim.size());
+   for (size_t i = 0; i < inputShapeDim.size(); ++i)
+      inputShape[i] = inputShapeDim[i].dim;
+   std::vector<size_t> outputShape(outputShapeDim.size());
+   for (size_t i = 0; i < outputShapeDim.size(); ++i)
+      outputShape[i] = outputShapeDim[i].dim;
 
    const size_t axis = static_cast<size_t>(fAxis);
    const auto outputStrides = UTILITY::ComputeStrideFromShape(outputShape);

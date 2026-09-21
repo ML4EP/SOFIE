@@ -20,7 +20,14 @@ class ROperator_L2Normalization final : public ROperator {
 private:
    std::string fNX;
    std::string fNY;
-   std::vector<size_t> fShapeX;
+   std::vector<Dim> fShapeX;
+   // Length of the last (normalized) dimension, and product of every other
+   // dimension, each as an expression string — a plain number for a fully
+   // static shape, or a symbolic expression (e.g. "n_elements") when fShapeX
+   // carries a dynamic dimension. Computed once in Initialize() and reused
+   // by both the CPU and GPU/Alpaka code generators.
+   std::string fVectorLength;
+   std::string fNumVectors;
    T fEpsilon = static_cast<T>(0);
 
    std::string ToStringHighPrec(T value) const
@@ -68,23 +75,32 @@ public:
       if (!model.CheckIfTensorAlreadyExist(fNX))
          throw std::runtime_error("SOFIE L2Normalization input tensor " + fNX + " is not found");
 
-      if (model.IsDynamicTensor(fNX))
-         throw std::runtime_error("SOFIE L2Normalization does not currently support dynamic input shapes");
+      fShapeX = model.GetDimTensorShape(fNX);
 
-      fShapeX = model.GetTensorShape(fNX);
+      if (fShapeX.empty())
+         throw std::runtime_error("SOFIE L2Normalization requires a non-empty shape");
 
-      if (fShapeX.empty() || fShapeX.back() == 0)
+      // Only a concrete (non-parametric) trailing dimension can be checked
+      // here; a dynamic one is trusted to be non-empty at runtime.
+      if (!fShapeX.back().isParam && fShapeX.back().dim == 0)
          throw std::runtime_error("SOFIE L2Normalization requires a non-empty final dimension");
 
       if (fEpsilon < static_cast<T>(0))
          throw std::runtime_error("SOFIE L2Normalization epsilon must be non-negative");
+
+      // The normalized vector is always the trailing dimension; every other
+      // dimension is flattened into a single "which vector" index — this
+      // holds regardless of which (if any) dimension is dynamic, since it
+      // only relies on row-major contiguous layout.
+      fVectorLength = fShapeX.back().GetVal();
+      fNumVectors = ConvertDimShapeToLength(std::vector<Dim>(fShapeX.begin(), fShapeX.end() - 1));
 
       model.AddIntermediateTensor(fNY, model.GetTensorType(fNX), fShapeX);
       model.AddNeededStdLib("cmath");
 
       if (model.Verbose()) {
          std::cout << "L2Normalization : " << fNX << " epsilon=" << fEpsilon
-                   << " -> " << fNY << " shape " << ConvertShapeToString(fShapeX) << std::endl;
+                   << " -> " << fNY << " shape " << ConvertDimShapeToString(fShapeX) << std::endl;
       }
    }
 
@@ -93,23 +109,20 @@ public:
       if (fShapeX.empty())
          throw std::runtime_error("SOFIE L2Normalization called to Generate without initialization");
 
-      const size_t vectorLength = fShapeX.back();
-      const size_t inputLength = ConvertShapeToLength(fShapeX);
-      const size_t numVectors = inputLength / vectorLength;
       const std::string epsilon = ToStringHighPrec(fEpsilon);
       std::stringstream out;
 
       out << "\n//------ L2NORMALIZATION op_" << opName << "\n";
-      out << SP << "for (std::size_t vectorIdx = 0; vectorIdx < " << numVectors << "u; ++vectorIdx) {\n";
-      out << SP << SP << "const std::size_t base = vectorIdx * " << vectorLength << "u;\n";
+      out << SP << "for (std::size_t vectorIdx = 0; vectorIdx < " << fNumVectors << "; ++vectorIdx) {\n";
+      out << SP << SP << "const std::size_t base = vectorIdx * " << fVectorLength << ";\n";
       out << SP << SP << "float sumSquares = 0.0f;\n";
-      out << SP << SP << "for (std::size_t elementIdx = 0; elementIdx < " << vectorLength << "u; ++elementIdx) {\n";
+      out << SP << SP << "for (std::size_t elementIdx = 0; elementIdx < " << fVectorLength << "; ++elementIdx) {\n";
       out << SP << SP << SP << "const float value = tensor_" << fNX << "[base + elementIdx];\n";
       out << SP << SP << SP << "sumSquares += value * value;\n";
       out << SP << SP << "}\n";
       out << SP << SP << "float norm = std::sqrt(sumSquares);\n";
       out << SP << SP << "norm = norm < " << epsilon << " ? " << epsilon << " : norm;\n";
-      out << SP << SP << "for (std::size_t elementIdx = 0; elementIdx < " << vectorLength << "u; ++elementIdx)\n";
+      out << SP << SP << "for (std::size_t elementIdx = 0; elementIdx < " << fVectorLength << "; ++elementIdx)\n";
       out << SP << SP << SP << "tensor_" << fNY << "[base + elementIdx] = tensor_" << fNX << "[base + elementIdx] / norm;\n";
       out << SP << "}\n";
 
@@ -166,23 +179,26 @@ public:
       if (fShapeX.empty())
          throw std::runtime_error("SOFIE L2Normalization called to Generate_GPU_ALPAKA without initialization");
 
-      const size_t vectorLength = fShapeX.back();
-      const size_t inputLength = ConvertShapeToLength(fShapeX);
-      const size_t numVectors = inputLength / vectorLength;
       const std::string epsilon = ToStringHighPrec(fEpsilon);
       std::stringstream out;
 
+      // fVectorLength/fNumVectors may be symbolic expressions (e.g. "n_elements")
+      // rather than literal numbers; this code is emitted directly into
+      // _infer_impl's body, which already has the model's dynamic shape
+      // parameters in scope as plain local variables/arguments, so referencing
+      // them here needs no extra plumbing (unlike a value used *inside* a
+      // separate kernel functor, which must be passed in explicitly).
       out << "\n//------ L2Normalization_GPU_ALPAKA op_" << opName << "\n";
       out << SP << "alpaka::WorkDivMembers<Dim, Idx> workDiv_l2norm_" << opName << "(\n";
-      out << SP << SP << "Vec::all(Idx{" << numVectors << "u}),\n";
+      out << SP << SP << "Vec::all(Idx{" << fNumVectors << "}),\n";
       out << SP << SP << "Vec::all(Idx{256u}),\n";
       out << SP << SP << "Vec::all(Idx{1u}));\n";
       out << SP << "alpaka::exec<Acc>(queue, workDiv_l2norm_" << opName;
       out << ", l2NormalizationKernel_op_" << opName;
       out << ", alpaka::getPtrNative(deviceBuf_" << fNX << ")";
       out << ", alpaka::getPtrNative(deviceBuf_" << fNY << ")";
-      out << ", static_cast<std::size_t>(" << vectorLength << "u)";
-      out << ", static_cast<std::size_t>(" << numVectors << "u)";
+      out << ", static_cast<std::size_t>(" << fVectorLength << ")";
+      out << ", static_cast<std::size_t>(" << fNumVectors << ")";
       out << ", static_cast<" << TensorType<T>::Name() << ">(" << epsilon << "));\n";
 
       return out.str();

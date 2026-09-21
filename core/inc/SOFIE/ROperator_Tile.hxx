@@ -197,6 +197,7 @@ public:
 
    std::string GenerateInitCode_GPU_ALPAKA() override {
       if (!fHasDynamicTiledAxis) return "";
+      if (IsOutputPooled(fNY)) return "";
       if (fShapeInput.empty() || fShapeY.empty())
          throw std::runtime_error("SOFIE Operator Tile called to Generate without being initialized first");
 
@@ -256,7 +257,7 @@ public:
       return inputs[0];
    }
 
-   std::string GetFusionInputIndexExpr(size_t inputIndex, const std::string &outputIndex, const std::vector<size_t> &inputShape, const std::vector<size_t> &outputShape) const override
+   std::string GetFusionInputIndexExpr(size_t inputIndex, const std::string &outputIndex, const std::vector<Dim> &inputShape, const std::vector<Dim> &outputShape) const override
    {
       if (inputIndex != 1 || GetFusionMappingType() != EFusionMappingType::Shuffle)
          return "";
@@ -272,7 +273,7 @@ public:
          if (!expression.empty())
             expression += " + ";
 
-         expression += "(((((" + outputIndex + ") / " + std::to_string(outputStrides[d]) + "u) % " + std::to_string(outputShape[d]) + "u) % " + std::to_string(inputShape[d]) + "u) * " + std::to_string(inputStrides[d]) + "u)";
+         expression += "(((((" + outputIndex + ") / " + outputStrides[d].GetVal() + ") % " + outputShape[d].GetVal() + ") % " + inputShape[d].GetVal() + ") * " + inputStrides[d].GetVal() + ")";
       }
 
       return "(" + expression + ")";

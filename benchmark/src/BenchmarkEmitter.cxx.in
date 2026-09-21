@@ -14,24 +14,112 @@
 #include <cctype>
 #include <fstream>
 #include <iostream>
+#include <map>
+#include <set>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace SOFIE;
 
-static size_t resolveDim(const Dim &d) {
+static size_t resolveDim(const Dim &d, const std::map<std::string, int64_t> &overrides = {}) {
+    if (d.isParam) {
+        auto it = overrides.find(d.param);
+        if (it != overrides.end())
+            return static_cast<size_t>(it->second);
+    }
     return (d.dim > 0) ? static_cast<size_t>(d.dim) : 1u;
 }
 
-static int EmitBenchmarkModel(const std::string &onnxPath,
-                              const std::string &modelName,
-                              const std::string &outDir)
+namespace {
+
+std::string SanitizeCppName(std::string name) {
+    for (char &c : name)
+        if (!std::isalnum(static_cast<unsigned char>(c))) c = '_';
+    return name;
+}
+
+struct InputDimInfo {
+    std::string name;
+    std::vector<Dim> dims;
+};
+
+std::vector<InputDimInfo> CollectInputDims(RModel &model) {
+    std::vector<InputDimInfo> result;
+    for (const auto &n : model.GetInputTensorNames()) {
+        InputDimInfo info;
+        info.name = n;
+        try {
+            info.dims = model.GetDimTensorShape(n);
+        } catch (...) {}
+        result.push_back(std::move(info));
+    }
+    return result;
+}
+
+struct BaseFamilyInfo {
+    std::string cppName;
+    std::vector<InputDimInfo> inputDims;
+};
+
+// Parses and generates a dynamic-shape family's base model exactly once
+// (memoized across every EmitBenchmarkModel() call in this process) and
+// writes its shared <baseModelName>_GPU_ALPAKA.hxx/.dat. Every shape variant
+// of the family reuses this one generated Session — it only supplies the
+// runtime shape values (see EmitBenchmarkModel).
+const BaseFamilyInfo &EnsureBaseFamilyGenerated(const std::string &baseOnnxPath,
+                                                const std::string &baseModelName,
+                                                const std::string &outDir)
 {
-    std::cout << "[Benchmark] Processing: " << onnxPath << "\n";
+    static std::map<std::string, BaseFamilyInfo> cache;
+
+    auto it = cache.find(baseModelName);
+    if (it != cache.end())
+        return it->second;
+
+    std::cout << "[Benchmark] Generating shared dynamic-shape model: "
+              << baseOnnxPath << " (shared by all " << baseModelName << "_* variants)\n";
 
     RModelParser_ONNX parser;
-    RModel model = parser.Parse(onnxPath);
+    RModel baseModel = parser.Parse(baseOnnxPath);
+
+    BaseFamilyInfo info;
+    info.inputDims = CollectInputDims(baseModel);
+    info.cppName = SanitizeCppName(baseModelName);
+
+#ifdef SOFIE_BENCHMARK_PROFILE
+    baseModel.GenerateGPU_ALPAKA(Options::kProfile);
+#else
+    baseModel.GenerateGPU_ALPAKA();
+#endif
+
+    std::string baseHxxPath = outDir + "/" + baseModelName + "_GPU_ALPAKA.hxx";
+    baseModel.OutputGenerated(baseHxxPath);
+    std::cout << "[Benchmark] Wrote: " << baseHxxPath << "\n";
+
+    auto inserted = cache.emplace(baseModelName, std::move(info));
+    return inserted.first->second;
+}
+
+} // namespace
+
+static int EmitBenchmarkModel(const std::string &onnxPath,
+                              const std::string &modelName,
+                              const std::string &outDir,
+                              const std::string &baseOnnxPath = "",
+                              const std::string &baseModelName = "",
+                              const std::map<std::string, int64_t> &shapeOverrides = {})
+{
+    const bool isDynamicFamily = !baseOnnxPath.empty();
+
+    std::cout << "[Benchmark] Processing: " << modelName;
+    if (isDynamicFamily)
+        std::cout << " (dynamic shape variant of " << baseModelName << ")";
+    std::cout << "\n";
+
+    RModelParser_ONNX parser;
+    RModel model = parser.Parse(isDynamicFamily ? baseOnnxPath : onnxPath);
 
     const auto &inputNames = model.GetInputTensorNames();
     if (inputNames.empty()) {
@@ -79,7 +167,7 @@ static int EmitBenchmarkModel(const std::string &onnxPath,
         m.numElements = 1;
         try {
             for (const auto &d : model.GetDimTensorShape(n)) {
-                const size_t dim = resolveDim(d);
+                const size_t dim = resolveDim(d, shapeOverrides);
                 m.shape.push_back(dim);
                 m.numElements *= dim;
             }
@@ -87,10 +175,14 @@ static int EmitBenchmarkModel(const std::string &onnxPath,
         inputs.push_back(m);
     }
 
-    // Generate SOFIE GPU/Alpaka inference code first — this calls Initialize()
-    // which runs shape inference on all operators.  Output tensor shapes are only
-    // available *after* Initialize(), so we must call GenerateGPU_ALPAKA() before
-    // querying output metadata.
+    const BaseFamilyInfo *baseInfo = nullptr;
+    if (isDynamicFamily)
+        baseInfo = &EnsureBaseFamilyGenerated(baseOnnxPath, baseModelName, outDir);
+
+    // Generate SOFIE GPU/Alpaka inference code for this exact model object —
+    // this calls Initialize() which runs shape inference on all operators.
+    // Output tensor shapes are only available *after* Initialize(), so we
+    // must call GenerateGPU_ALPAKA() before querying output metadata.
 #ifdef SOFIE_BENCHMARK_PROFILE
     model.GenerateGPU_ALPAKA(Options::kProfile);
 #else
@@ -112,7 +204,7 @@ static int EmitBenchmarkModel(const std::string &onnxPath,
         m.numElements = 1;
         try {
             for (const auto &d : model.GetDimTensorShape(n)) {
-                const size_t dim = resolveDim(d);
+                const size_t dim = resolveDim(d, shapeOverrides);
                 m.shape.push_back(dim);
                 m.numElements *= dim;
             }
@@ -124,12 +216,37 @@ static int EmitBenchmarkModel(const std::string &onnxPath,
     std::string benchPath = outDir + "/" + modelName + "_bench.hxx";
     std::string aotMetaPath = outDir + "/" + modelName + "_aot_meta.hxx";
 
-    model.OutputGenerated(hxxPath);
+    if (!isDynamicFamily)
+        model.OutputGenerated(hxxPath);
 
     // Sanitize model name into a valid C++ identifier
-    std::string cppName = modelName;
-    for (char &c : cppName)
-        if (!std::isalnum(static_cast<unsigned char>(c))) c = '_';
+    std::string cppName = SanitizeCppName(modelName);
+
+    const std::string &sessionCppName = isDynamicFamily ? baseInfo->cppName : cppName;
+
+    std::vector<std::vector<std::pair<std::string, size_t>>> newParamsPerInput(inputs.size());
+    std::vector<std::pair<std::string, size_t>> orderedParams;
+    if (isDynamicFamily) {
+        const auto &baseInputs = baseInfo->inputDims;
+        if (baseInputs.size() != inputs.size())
+            throw std::runtime_error(modelName + ": has " + std::to_string(inputs.size()) +
+                                     " input(s) but base model " + baseModelName + " has " +
+                                     std::to_string(baseInputs.size()));
+        std::set<std::string> seen;
+        for (size_t i = 0; i < inputs.size(); ++i) {
+            if (baseInputs[i].name != inputs[i].name)
+                throw std::runtime_error(modelName + ": input " + std::to_string(i) + " is '" +
+                                         inputs[i].name + "' but base model " + baseModelName +
+                                         " input " + std::to_string(i) + " is '" + baseInputs[i].name + "'");
+            const auto &baseDims = baseInputs[i].dims;
+            for (size_t j = 0; j < baseDims.size() && j < inputs[i].shape.size(); ++j) {
+                if (baseDims[j].isParam && seen.insert(baseDims[j].param).second) {
+                    newParamsPerInput[i].push_back({baseDims[j].param, inputs[i].shape[j]});
+                    orderedParams.push_back({baseDims[j].param, inputs[i].shape[j]});
+                }
+            }
+        }
+    }
 
     std::ofstream aotMeta(aotMetaPath);
     if (!aotMeta.is_open()) {
@@ -171,14 +288,26 @@ static int EmitBenchmarkModel(const std::string &onnxPath,
     aotMeta << "    };\n";
     aotMeta << "}\n";
 
-    // Build "session.infer(input_d_0, input_d_1, ...)"
     std::ostringstream inferCall;
+    std::ostringstream inferCallNosync;
     inferCall << "session.infer(";
-    for (size_t i = 0; i < inputs.size(); ++i) {
-        if (i) inferCall << ", ";
-        inferCall << "input_d_" << i;
+    inferCallNosync << "session.infer_nosync(";
+    {
+        bool first = true;
+        auto emit = [&](const std::string &tok) {
+            if (!first) { inferCall << ", "; inferCallNosync << ", "; }
+            inferCall << tok;
+            inferCallNosync << tok;
+            first = false;
+        };
+        for (size_t i = 0; i < inputs.size(); ++i) {
+            for (auto &p : newParamsPerInput[i])
+                emit(std::to_string(p.second));
+            emit("input_d_" + std::to_string(i));
+        }
     }
     inferCall << ")";
+    inferCallNosync << ")";
 
     std::ofstream bench(benchPath);
     if (!bench.is_open()) {
@@ -192,10 +321,11 @@ static int EmitBenchmarkModel(const std::string &onnxPath,
         << "// Backend is selected at compile time via -DSOFIE_BACKEND_CUDA / -DSOFIE_BACKEND_HIP\n"
         << "// (see BenchmarkBackend.hxx for the sofie_bench:: type aliases).\n"
         << "#pragma once\n\n"
-        << "#include \"" << modelName << "_GPU_ALPAKA.hxx\"\n"
+        << "#include \"" << sessionCppName << "_GPU_ALPAKA.hxx\"\n"
         << "#include \"BenchmarkBackend.hxx\"\n"
         << "#include \"GPUProfiler.hxx\"\n"
         << "#include \"GPUMemoryMonitor.hxx\"\n"
+        << "#include \"WarmupUtil.hxx\"\n"
         << "#include <chrono>\n"
         << "#include <fstream>\n"
         << "#include <iostream>\n"
@@ -258,12 +388,16 @@ static int EmitBenchmarkModel(const std::string &onnxPath,
     }
     bench << "    alpaka::wait(queue);\n\n";
 
+    std::ostringstream ctorArgs;
+    for (auto &p : orderedParams)
+        ctorArgs << ", " << p.second;
+
     bench
         << "    // ---- Create session (loads weights) ----\n"
         << "    std::string weightFile = weightsDir + \"/"
-        << modelName << "_GPU_ALPAKA.dat\";\n"
-        << "    SOFIE_" << cppName
-        << "::Session<AccTag> session(weightFile);\n"
+        << sessionCppName << "_GPU_ALPAKA.dat\";\n"
+        << "    SOFIE_" << sessionCppName
+        << "::Session<AccTag> session(weightFile" << ctorArgs.str() << ");\n"
         << "    double sofie_pool_mem_mb = "
         << "static_cast<double>(session.GetIntermediateMemoryPoolSize()) / (1024.0 * 1024.0);\n"
 
@@ -302,7 +436,7 @@ static int EmitBenchmarkModel(const std::string &onnxPath,
     };
 
     bench << "    // ---- Warmup (not timed) ----\n"
-          << "    for (int w = 0; w < warmup; ++w) {\n";
+          << "    sofie_bench::RunWarmup([&]() {\n";
     // H2D: inputs host → device
     for (size_t i = 0; i < inputs.size(); ++i)
         bench << "        alpaka::memcpy(queue, input_d_" << i
@@ -316,7 +450,8 @@ static int EmitBenchmarkModel(const std::string &onnxPath,
         bench << "        alpaka::memcpy(queue, out_h_" << i
               << ", " << outBufExpr(i) << ");\n";
     bench << "        alpaka::wait(queue);\n"
-          << "    }\n"
+          << "        return true;\n"
+          << "    }, warmup);\n"
           << "    cudaDeviceSynchronize();\n\n";
 
     // ---- Profiling path (mutually exclusive with benchmark path) ----
@@ -358,7 +493,7 @@ static int EmitBenchmarkModel(const std::string &onnxPath,
         << "    }\n"
         << "    auto t0_infer = std::chrono::high_resolution_clock::now();\n"
         << "    for (int _i = 0; _i < iterations; ++_i)\n"
-        << "        " << inferCall.str() << ";\n"
+        << "        " << inferCallNosync.str() << ";\n"
         << "    alpaka::wait(session.queue);\n"
         << "    SOFIE_BENCH_DEVICE_SYNC();\n"
         << "    auto t1_infer = std::chrono::high_resolution_clock::now();\n"
@@ -401,7 +536,7 @@ static int EmitBenchmarkModel(const std::string &onnxPath,
         << "                gpu_peak_mem_mb);\n"
         << "    {\n"
         << "        const char *resultsPath = std::getenv(\"SOFIE_BENCHMARK_RESULTS\");\n"
-        << "        std::ofstream results(resultsPath ? resultsPath : \"../../results/benchmark.csv\", std::ios::app);\n"
+        << "        std::ofstream results(resultsPath ? resultsPath : \"@SOFIE_BENCHMARK_DEFAULT_RESULTS_DIR@/benchmark.csv\", std::ios::app);\n"
         << "        results << \"" << modelName << ",\"\n"
         << "                << avg_infer_ms << \",\"\n"
         << "                << avg_in_ms << \",\"\n"
@@ -419,8 +554,16 @@ static int EmitBenchmarkModel(const std::string &onnxPath,
 
     bench.close();
 
-    std::cout << "[Benchmark] Wrote: " << hxxPath  << "\n"
-              << "            Wrote: " << benchPath << "\n";
+    if (!isDynamicFamily)
+        std::cout << "[Benchmark] Wrote: " << hxxPath << "\n";
+    std::cout << "            Wrote: " << benchPath;
+    if (isDynamicFamily) {
+        std::cout << "  (shapes:";
+        for (auto &p : orderedParams)
+            std::cout << " " << p.first << "=" << p.second;
+        std::cout << ")";
+    }
+    std::cout << "\n";
     return 0;
 }
 

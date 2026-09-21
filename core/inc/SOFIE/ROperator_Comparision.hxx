@@ -479,10 +479,10 @@ public:
 
    EFusionMappingType GetFusionMappingType() const override
    {
-      if (fIsOutputConstant || fShapeX1.empty() || fShapeX2.empty() || fShapeY.empty())
+      if (fIsOutputConstant || fDimShapeY.empty())
          return EFusionMappingType::Unsupported;
 
-      if (fShapeX1 == fShapeY && fShapeX2 == fShapeY)
+      if (fDimShapeX1 == fDimShapeY && fDimShapeX2 == fDimShapeY)
          return EFusionMappingType::OneToOne;
 
       return EFusionMappingType::OneToMany;
