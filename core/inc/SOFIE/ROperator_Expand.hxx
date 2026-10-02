@@ -75,19 +75,25 @@ public:
       // Y is the common shape of fShapeX and shape
       auto ret  = SOFIE::UTILITY::MultidirectionalBroadcastShape(fShapeX, fShapeDim);
       fShapeY = ret.second;
-      fInitialized = model.IsInitializedTensor(fNX) && fInitializedShape;
       std::vector<size_t> shapeX;
       std::vector<size_t> shapeY;
       // case shape tensor and input shape are known
       if (!model.IsDynamicTensor(fNX) && !model.IsDimInputTensor(fNX) && fInitializedShape) {
          shapeX = ConvertShapeToInt(fShapeX);
          shapeY = ConvertShapeToInt(fShapeY);
-         if (!UTILITY::AreSameShape(shapeX, shapeY))
+         if (!shapeX.empty() && !shapeY.empty() && !UTILITY::AreSameShape(shapeX, shapeY))
             fInitBroadcast = true;
       }
+      // Eagerly constant-folding X into Y (below) requires the *target*
+      // shape to be fully concrete too: X can be a compile-time constant
+      // while the shape it's being broadcast to is still dynamic (e.g. a
+      // constant "ones" tensor expanded to a runtime [1, seq_length,
+      // seq_length] attention-mask shape) — ConvertShapeToInt returns an
+      // empty vector whenever any dim is symbolic, so that failure is the
+      // signal that this has to go through the ordinary runtime-broadcast
+      // codegen path (the "else" branch below) instead.
+      fInitialized = model.IsInitializedTensor(fNX) && fInitializedShape && !shapeX.empty() && !shapeY.empty();
       if (fInitialized) {
-         // cannot have Dim initialized tensors
-         assert(!shapeX.empty() && !shapeY.empty());
          // Broadcast X to the common shape shapeY
          // If X is an initialized tensor (constant)
          auto data = model.GetInitializedTensorData(fNX);
@@ -292,6 +298,32 @@ std::string Generate_GPU_ALPAKA(std::string opName, const std::vector<std::strin
    out << SP <<"alpaka::enqueue(queue, task_" << opName << ");\n";
 
     return out.str();
+}
+
+EFusionMappingType GetFusionMappingType() const override {
+   if (fIsOutputConstant || fInitialized || fShapeY.empty())
+       return EFusionMappingType::Unsupported;
+
+   if (fShapeX == fShapeY)
+       return EFusionMappingType::OneToOne;
+
+   return EFusionMappingType::OneToMany;
+}
+
+std::string GetFusionExpr(const std::vector<std::string> &inputs) const override {
+   if (inputs.size() != 1)
+       return "";
+
+   const auto mapping = GetFusionMappingType();
+   if (mapping != EFusionMappingType::OneToOne && mapping != EFusionMappingType::OneToMany)
+       return "";
+
+   return inputs[0];
+}
+
+bool SupportsFusionTypes(const std::vector<ETensorType> &inputTypes, ETensorType outputType) const override
+{
+   return inputTypes.size() == 1 && inputTypes[0] == outputType;
 }
 };
 }//SOFIE

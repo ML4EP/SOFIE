@@ -1,12 +1,6 @@
 #pragma once
 // GPU occupancy/utilization sampler for the SOFIE Alpaka benchmark.
 //
-// This answers "is the current inference approach actually keeping the GPU
-// busy, or is it launch-overhead/transfer bound?" by sampling the device's
-// SM (compute) and memory-controller activity from a background thread
-// while the timed inference loop runs, then reporting the average/peak
-// values alongside the existing latency/throughput numbers.
-//
 // It currently only supports NVIDIA CUDA. 
 // NVML's `nvmlDeviceGetUtilizationRates` reports the percentage of the last
 // sampling period (driver-dependent, commonly on the order of a few ms to
@@ -15,7 +9,7 @@
 // short inference loops the sample count may be low; increase
 // `--iterations` for a more representative reading.
 //
-// Only wired up for CUDA today (SOFIE_BENCH_HAVE_NVML, set by
+// Only wired up for CUDA (SOFIE_BENCH_HAVE_NVML, set by
 // benchmark/CMakeLists.txt when libnvidia-ml is found).
 
 #if defined(SOFIE_BACKEND_CUDA) && defined(SOFIE_BENCH_HAVE_NVML)

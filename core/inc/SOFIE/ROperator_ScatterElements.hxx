@@ -394,6 +394,8 @@ public:
 
       if (fReduction.empty() || fReduction == "none") {
          op += SP + SP + SP + SP + "Y[out_idx] = U[elem_idx];\n";
+      } else if (fReduction == "add") {
+         op += SP + SP + SP + SP + "alpaka::atomicAdd(acc, &Y[out_idx], U[elem_idx]);\n";
       } else if (fReduction == "mul") {
          op += SP + SP + SP + SP + "alpaka::atomicMul(acc, &Y[out_idx], U[elem_idx]);\n";
       } else if (fReduction == "max") {

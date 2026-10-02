@@ -71,6 +71,7 @@ public:
       fShapeY = {Dim{fRank}, Dim{fCountName, size_t(-1)}};
       model.AddDynamicTensor(fNY, ETensorType::INT64, fShapeY);
       model.AddIntermediateTensor(fCountScratchName, ETensorType::INT64, {Dim{1}});
+      model.RegisterInternalDynamicParam(fCountName);
    }
 
    std::string Generate(std::string /*opName*/) override {
@@ -103,7 +104,15 @@ public:
       return out.str();
    }
 
-   std::string Generate_GPU_Kernel_ALPAKA(std::string /*opName*/, const std::vector<std::string> &dynParamNames) override {
+   std::string Generate_GPU_Kernel_ALPAKA(std::string /*opName*/, const std::vector<std::string> &dynParamNames_) override {
+      // fCountName (this op's own nonzero-element count) is registered as an
+      // internal dynamic param so DOWNSTREAM operators can receive it once
+      // computed; strip it back out here since it would otherwise appear in
+      // this operator's OWN kernel signature before it's actually known —
+      // this operator is what computes it, not a consumer of it.
+      std::vector<std::string> dynParamNames = dynParamNames_;
+      dynParamNames.erase(std::remove(dynParamNames.begin(), dynParamNames.end(), fCountName), dynParamNames.end());
+
       std::string op;
       op += "\n//------ NonZero kernel\n";
       op += SP + "struct NonZeroKernel_" + fNY + " {\n";
@@ -160,7 +169,12 @@ public:
       return SP + "NonZeroKernel_" + fNY + " nonZeroKernel_" + fNY + ";\n";
    }
 
-   std::string Generate_GPU_ALPAKA(std::string /*opName*/, const std::vector<std::string> &dynParamNames) override {
+   std::string Generate_GPU_ALPAKA(std::string /*opName*/, const std::vector<std::string> &dynParamNames_) override {
+      // See Generate_GPU_Kernel_ALPAKA: fCountName must not be passed back into
+      // this operator's own kernel launch before it has been computed.
+      std::vector<std::string> dynParamNames = dynParamNames_;
+      dynParamNames.erase(std::remove(dynParamNames.begin(), dynParamNames.end(), fCountName), dynParamNames.end());
+
       std::stringstream out;
       out << "\n//------ NonZero_GPU_ALPAKA\n";
 
@@ -184,6 +198,11 @@ public:
              << ", alpaka::getPtrNative(deviceBuf_" << fNX << "), alpaka::getPtrNative(deviceBuf_" << fNY << "), " << countPtr << ");\n";
       }
       out << SP << "alpaka::enqueue(queue, taskNonZero_" << fNY << ");\n";
+
+      out << SP << "auto nonZeroCountHost_" << fNY << " = alpaka::allocBuf<int64_t, Idx>(hostAcc, Ext1D::all(Idx{1}));\n";
+      out << SP << "alpaka::memcpy(queue, nonZeroCountHost_" << fNY << ", deviceBuf_" << fCountScratchName << ");\n";
+      out << SP << "alpaka::wait(queue);\n";
+      out << SP << "size_t " << fCountName << " = static_cast<size_t>(*alpaka::getPtrNative(nonZeroCountHost_" << fNY << "));\n";
       return out.str();
    }
 

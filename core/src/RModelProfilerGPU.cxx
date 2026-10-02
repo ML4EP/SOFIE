@@ -99,7 +99,7 @@ RModelProfilerGPU::MemoryInfo RModelProfilerGPU::ComputeMemoryInfo(const RModel 
    // Skip fused-kernel intermediates: those tensors share the fused kernel's
    // input/output buffers and are never separately allocated on the device.
    for (const auto &it : model.fIntermediateTensorInfos) {
-      if (model.fFusionIntermediateTensors.count(it.first)) continue;
+      if (model.fFusion.internal.count(it.first)) continue;
       size_t len = ConvertShapeToLength(it.second.shape);
       info.intermediateGPUBytes += len * GetTypeSize(it.second.type);
    }

@@ -95,6 +95,13 @@ std::vector<Dim> RModel::GetDimTensorShape(const std::string & name) const {
    if (auto f = fInputTensorInfos.find(name); f != fInputTensorInfos.end()) {
       return f->second.shape;
    }
+   // A subgraph (e.g. an If/Loop branch) can reference a tensor defined in
+   // an enclosing scope by name without declaring it as one of its own
+   // inputs; delegate to the parent graph's dynamic-aware lookup before
+   // falling back to GetTensorShape() below, which throws for any tensor
+   // that is dynamic in the parent scope (see GetTensorShape()).
+   if (fIsSubGraph && fParentGraph && fParentGraph->IsDynamicTensor(name))
+      return fParentGraph->GetDimTensorShape(name);
    // in case is not a dynamic tensor convert normal shape to Dim one
    // for this we need to return the vector by value
    return ConvertShapeToDim(GetTensorShape(name));
@@ -256,6 +263,20 @@ bool RModel::IsAliasTensor(const std::string & tensor_name) const {
    return fAliasTensors.count(tensor_name) != 0;
 }
 
+std::string RModel::ResolveAliasTensor(const std::string &tensorName) const {
+   std::string resolved = tensorName;
+   std::set<std::string> visited;
+
+   while (IsAliasTensor(resolved)) {
+      if (!visited.insert(resolved).second)
+         throw std::runtime_error("sofie: alias cycle detected for tensor " + tensorName);
+
+      resolved = fAliasTensors.at(resolved);
+   }
+
+   return resolved;
+}
+
 const std::vector<Dim> & RModel::GetShapeTensorValues(const std::string & tensor_name) const {
    //if (!IsShapeTensor(tensor_name) ) return std::vector<Dim>{};
    return fShapeTensors.at(tensor_name).first;
@@ -284,7 +305,15 @@ bool RModel::IsWeightTensor(const std::string& tensorName) const {
 bool RModel::IsDynamicTensor(const std::string& tensorName) const {
    std::string name = UTILITY::Clean_name(tensorName);
    bool ret = fDynamicTensorInfos.find(name) != fDynamicTensorInfos.end();
-   return (ret) ? true : IsDimInputTensor(tensorName);
+   if (ret || IsDimInputTensor(tensorName))
+      return true;
+   // A subgraph (e.g. an If/Loop branch) can reference a tensor defined in
+   // an enclosing scope by name without declaring it as one of its own
+   // inputs; such a tensor is invisible to the checks above (they only see
+   // this subgraph's own maps), so check the parent graph too.
+   if (fIsSubGraph && fParentGraph)
+      return fParentGraph->IsDynamicTensor(tensorName);
+   return false;
 }
 bool RModel::IsDimInputTensor(const std::string& tensorName) const {
    std::string name = UTILITY::Clean_name(tensorName);

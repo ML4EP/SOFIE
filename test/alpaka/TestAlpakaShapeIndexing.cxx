@@ -66,6 +66,7 @@
 #include "input_models/references/Slice_Default_Axis.ref.hxx"
 #include "input_models/references/Slice_Default_Steps.ref.hxx"
 #include "input_models/references/Slice_Neg.ref.hxx"
+#include "NonZero_FromONNX_GPU_ALPAKA.hxx"
 
 #include "NonZero_FromONNX_GPU_ALPAKA.hxx"
 #include "DynamicNonZero_FromONNX_GPU_ALPAKA.hxx"

@@ -2,23 +2,24 @@
 // Generic benchmark: loads any ONNX model, introspects shapes, runs with the
 // CUDA ExecutionProvider.  Float inputs are filled with uniform random values;
 // integer inputs are zeroed (safe for index tensors like edge_index).
-//
-// Data stays on the HOST side of the ORT API (ORT handles H↔D transfers
-// internally) — this measures end-to-end latency from the application's
-// perspective.  Use the optional IOBinding path (--ort-device-io, WIP) to
-// measure pure GPU compute time comparable to the SOFIE numbers.
 #pragma once
 
 #include <onnxruntime_cxx_api.h>
 #include <cuda_runtime.h>
+#include "GPUMemoryMonitor.hxx"
+#include "GPUProfiler.hxx"
+#include "WarmupUtil.hxx"
 
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <random>
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <fstream>
+#include <cstdlib>
 
 namespace sofie_ort_bench_detail {
 
@@ -46,22 +47,27 @@ inline const char* ortTypeName(ONNXTensorElementDataType t) {
 /// Run @p model_path through ONNX Runtime's CUDAExecutionProvider.
 /// Results are printed in the same table format as the SOFIE Alpaka benchmark.
 ///
-/// @param model_path   Full path to the .onnx file.
+/// @param model_path   Full path to the .onnx file. May carry symbolic
+///                      (dynamic) input dimensions — see @p shape_overrides.
 /// @param model_name   Display name shown in the table (typically the stem).
 /// @param warmup       Number of warm-up iterations (not timed).
 /// @param iterations   Number of timed iterations.
+/// @param shape_overrides  Concrete value for each symbolic dimension name
+///                      the model declares, read via GetSymbolicDimensions()
 /// @param device_id    CUDA device index (default 0).
 /// @param verbose      If true, print per-input shape/type information.
 inline void BenchmarkORT_GPU(const std::string& model_path,
-                              const std::string& model_name,
-                              int warmup,
-                              int iterations,
-                              int  device_id = 0,
-                              bool verbose   = false)
+                             const std::string& model_name,
+                             int warmup,
+                             int iterations,
+                             bool profile,
+                             const std::map<std::string, int64_t>& shape_overrides = {},
+                             int device_id = 0,
+                             bool verbose = false)
 {
     using namespace sofie_ort_bench_detail;
 
-    Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "sofie_ort_bench");
+    Ort::Env env(ORT_LOGGING_LEVEL_VERBOSE, "sofie_ort_bench");
 
     Ort::SessionOptions opts;
     opts.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
@@ -109,7 +115,17 @@ inline void BenchmarkORT_GPU(const std::string& model_path,
         input_types[i]  = tinfo.GetElementType();
         input_shapes[i] = tinfo.GetShape();
 
-        for (auto& d : input_shapes[i]) if (d < 0) d = 1;
+        // Resolve every symbolic dim to a concrete value: the caller's
+        // override for that dim's name if one was given, else 1.
+        std::vector<const char*> dim_names = tinfo.GetSymbolicDimensions();
+        for (std::size_t d = 0; d < input_shapes[i].size(); ++d) {
+            if (input_shapes[i][d] >= 0)
+                continue;
+            const char* dimName = (d < dim_names.size()) ? dim_names[d] : "";
+            auto it = (dimName && dimName[0]) ? shape_overrides.find(dimName)
+                                               : shape_overrides.end();
+            input_shapes[i][d] = (it != shape_overrides.end()) ? it->second : 1;
+        }
 
         std::size_t n = shapeToSize(input_shapes[i]);
 
@@ -183,28 +199,80 @@ inline void BenchmarkORT_GPU(const std::string& model_path,
     }
 
     Ort::RunOptions run_opts;
+    GPUMemoryMonitor gpuMonitor;
 
-    for (int w = 0; w < warmup; ++w) {
+    if (profile) {
+        // Unprofiled first run for ORT and CUDA lazy initialization.
         session.Run(run_opts,
-                    input_names_ptr.data(),  input_tensors.data(),  num_inputs,
+                    input_names_ptr.data(), input_tensors.data(), num_inputs,
                     output_names_ptr.data(), num_outputs);
+        cudaDeviceSynchronize();
+    } else {
+        sofie_bench::RunWarmup([&]() {
+            session.Run(run_opts,
+                        input_names_ptr.data(), input_tensors.data(), num_inputs,
+                        output_names_ptr.data(), num_outputs);
+            cudaDeviceSynchronize();
+            return true;
+        }, warmup);
     }
-    cudaDeviceSynchronize();
+
+    const int measuredIterations = profile ? 1 : iterations;
+
+    gpuMonitor.Start();
+
+    if (profile)
+        sofie_bench::StartGpuProfiler();
 
     auto t0 = std::chrono::high_resolution_clock::now();
-    for (int it = 0; it < iterations; ++it) {
+
+    for (int it = 0; it < measuredIterations; ++it) {
         session.Run(run_opts,
-                    input_names_ptr.data(),  input_tensors.data(),  num_inputs,
+                    input_names_ptr.data(), input_tensors.data(), num_inputs,
                     output_names_ptr.data(), num_outputs);
     }
+
     cudaDeviceSynchronize();
+
     auto t1 = std::chrono::high_resolution_clock::now();
 
-    double avg_ms   = std::chrono::duration<double, std::milli>(t1 - t0).count()
-                      / iterations;
-    double throughput = (avg_ms > 0.0) ? 1000.0 / avg_ms : 0.0;
+    if (profile)
+        sofie_bench::StopGpuProfiler();
 
-    std::string label = std::string(model_name) + " [ORT-GPU]";
-    std::printf("%-30s  avg %8.4f ms  (%8.1f inf/s)\n",
-                label.c_str(), avg_ms, throughput);
+    gpuMonitor.Stop();
+
+    double avg_ms =
+        std::chrono::duration<double, std::milli>(t1 - t0).count() /
+        measuredIterations;
+    double throughput = (avg_ms > 0.0) ? 1000.0 / avg_ms : 0.0;
+    double peakGpuMB = gpuMonitor.PeakMB();
+
+    std::string label = std::string(model_name);
+
+    std::printf(
+    "%-50s %12.4f %14s %15s %16.1f %10s %10s %10s %10s %10s %12.2f\n",
+    (label + " (ORT-GPU)").c_str(),
+    avg_ms,
+    "-",
+    "-",
+    throughput,
+    "-",
+    "-",
+    "-",
+    "-",
+    "-",
+    peakGpuMB);
+
+    const char* ortResultsFile = std::getenv("SOFIE_ORT_RESULTS");
+
+    if (ortResultsFile) {
+        std::ofstream results(ortResultsFile, std::ios::app);
+
+        results
+            << label << ","
+            << avg_ms << ","
+            << throughput << ","
+            << peakGpuMB
+            << "\n";
+    }
 }

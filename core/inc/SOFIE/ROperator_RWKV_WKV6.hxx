@@ -141,13 +141,13 @@ public:
       out += SP + SP + SP + SP + SP + "T y_j = static_cast<T>(0);\n";
       out += SP + SP + SP + SP + SP + "for (std::size_t i = 0; i < Dh; ++i) {\n";
       out += SP + SP + SP + SP + SP + SP + "T const kv_ij = k[rBase+i] * v[rBase+j];\n";
-      out += SP + SP + SP + SP + SP + SP + "y_j += r[rBase+i] * (state[sBase+i*Dh+j] + alpaka::math::exp(acc, u[uBase+i]) * kv_ij);\n";
+      out += SP + SP + SP + SP + SP + SP + "y_j += r[rBase+i] * (state[sBase+i*Dh+j] + SOFIE_DEVICE_exp(acc, u[uBase+i]) * kv_ij);\n";
       out += SP + SP + SP + SP + SP + "}\n";
       out += SP + SP + SP + SP + SP + "y[rBase+j] = y_j;\n";
       out += SP + SP + SP + SP + "}\n";
       // Update state
       out += SP + SP + SP + SP + "for (std::size_t i = 0; i < Dh; ++i) {\n";
-      out += SP + SP + SP + SP + SP + "T const decay_i = alpaka::math::exp(acc, -alpaka::math::exp(acc, w[rBase+i]));\n";
+      out += SP + SP + SP + SP + SP + "T const decay_i = SOFIE_DEVICE_exp(acc, -SOFIE_DEVICE_exp(acc, w[rBase+i]));\n";
       out += SP + SP + SP + SP + SP + "for (std::size_t j = 0; j < Dh; ++j)\n";
       out += SP + SP + SP + SP + SP + SP + "state[sBase+i*Dh+j] = decay_i * state[sBase+i*Dh+j] + k[rBase+i] * v[rBase+j];\n";
       out += SP + SP + SP + SP + "}\n";
@@ -167,6 +167,10 @@ public:
 
    std::string GenerateResetStateCode_GPU_ALPAKA() override {
       return SP + "alpaka::memset(queue, deviceBuf_" + fNState + ", 0);\n";
+   }
+
+   std::vector<std::string> GetPersistentTensorNames_GPU_ALPAKA() const override {
+      return {fNState};
    }
 
    std::string Generate_GPU_ALPAKA(std::string opName) override {

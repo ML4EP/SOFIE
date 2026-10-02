@@ -23,6 +23,7 @@ private:
 
    bool fVerbose = false;
    bool fDimInput = false;
+   bool fInputIsAlias = false;
    bool fDynamicShape = false;
    ReshapeOpMode fOpMode = Reshape;   // type of Reshape operator
 
@@ -76,7 +77,8 @@ public:
 
 
    // output shape
-   std::vector<Dim> DoShapeInference(const std::vector<Dim> & input_shape, const std::vector<Dim> & target_shape)  {
+   std::vector<Dim> DoShapeInference(const std::vector<Dim> & input_shape, const std::vector<Dim> & target_shape,
+                                     bool inputIsScalar = false)  {
       if (fOpMode == Reshape) {
          // correct the provided shape (here we have the value) for 0 or -1
          // the target_shape can be a scalar in case of not present shape input tensor
@@ -229,10 +231,13 @@ public:
       else if (fOpMode == Unsqueeze) {
          // unsqueeze
          assert(!fAttrAxes.empty());
-         auto output_shape = input_shape;
+         // A scalar tensor is ONNX-rank-0 even though SOFIE stores it with a
+         // dummy {1} shape (see RModel::fScalarTensors) — start from a true
+         // empty shape here so that dummy dimension isn't unsqueezed too.
+         auto output_shape = inputIsScalar ? std::vector<Dim>{} : input_shape;
          auto &axes = fAttrAxes;
          // output rank
-         int64_t r = input_shape.size() + axes.size();
+         int64_t r = static_cast<int64_t>(output_shape.size()) + static_cast<int64_t>(axes.size());
          for (auto &a : axes) {
             int64_t i = static_cast<int64_t>(a);
             if (i < -r || i > r - 1)
@@ -262,6 +267,8 @@ public:
       }
       fShapeInput = model.GetDimTensorShape(fNData);
       fDimInput = model.IsDynamicTensor(fNData);
+      fInputIsAlias = model.IsAliasTensor(fNData);
+      bool inputIsScalar = model.IsScalarTensor(fNData);
       // check if optional tensor exists defining shape or axes
       if (!fNInput2.empty()) {
          if (model.CheckIfTensorAlreadyExist(fNInput2)) {
@@ -280,12 +287,12 @@ public:
                   fAttrAxes = std::vector<int64_t>(values, values + n);
 
                std::vector<Dim> targetShape(fShape.begin(),fShape.end());
-               fShapeOutput = DoShapeInference(fShapeInput, targetShape);
+               fShapeOutput = DoShapeInference(fShapeInput, targetShape, inputIsScalar);
                // set flag to not write tensor in weight file. Its data will be hard-coded in way model is constructed
                model.SetNotWritableInitializedTensor(fNInput2);
             } else if (model.IsShapeTensor(fNInput2)) {
                auto shapeData = model.GetShapeTensorValues(fNInput2);
-               fShapeOutput = DoShapeInference(fShapeInput, shapeData);
+               fShapeOutput = DoShapeInference(fShapeInput, shapeData, inputIsScalar);
                if (model.Verbose())
                   std::cout << "Reshape op - get output shape from shape tensor " << fNInput2 << " with value " << ConvertDimShapeToString(shapeData) << std::endl;
             } else {
@@ -306,9 +313,9 @@ public:
          }
       } else if (!fAttrAxes.empty()) {
          // case fNShape is empty and axes are provided as attributes (e.g. for Unsqueeze)
-         fShapeOutput = DoShapeInference(fShapeInput, std::vector<Dim>{});
+         fShapeOutput = DoShapeInference(fShapeInput, std::vector<Dim>{}, inputIsScalar);
       } else if (fOpMode == Flatten || fOpMode == Squeeze) {
-         fShapeOutput = DoShapeInference(fShapeInput, std::vector<Dim>{});
+         fShapeOutput = DoShapeInference(fShapeInput, std::vector<Dim>{}, inputIsScalar);
       } else {
          throw std::runtime_error("TMVA Reshape Op : Invalid Input/Attribute data");
       }
@@ -339,6 +346,7 @@ public:
       else {
          // non-constant case
          model.AddIntermediateTensor(fNOutput, model.GetTensorType(fNData), fShapeOutput);
+         model.AddAliasTensor(fNOutput, fNData);
          if (model.Verbose())
             std::cout << Name() << " : " << fNData << " " << ConvertDimShapeToString(fShapeInput) << " -->  "<< fNOutput << "  " << ConvertDimShapeToString(fShapeOutput)  << std::endl;
       }
@@ -402,14 +410,8 @@ std::string Generate_GPU_ALPAKA(std::string opName) override {
 
     opName = "op_" + opName;
 
-    if (fIsOutputParamShape) {
-        // shape tensor output: fill host-side tensor values, no device copy needed
-        std::stringstream out;
-        for (int i = 0; i < static_cast<int>(fShapeOutput[0].dim); i++) {
-            out << SP << "tensor_" << fNOutput << "[" << i << "] = " << fOutputShapeData[i].GetVal() << ";\n";
-        }
-        return out.str();
-    }
+    if (fIsOutputParamShape)
+       return "";
 
     std::string opType = "Reshape";
     if (fOpMode == Flatten)   opType = "Flatten";
@@ -433,12 +435,37 @@ std::string Generate_GPU_ALPAKA(std::string opName) override {
     // Instead of a GPU memcpy + CPU synchronisation barrier, create a local non-owning
     // view that aliases the source buffer.  All downstream getPtrNative() calls on the
     // local view return the same device pointer as the source — no data movement at all.
-    auto outputLength = ConvertDimShapeToLength(fShapeOutput);
-    out << SP << "auto deviceBuf_" << fNOutput
-        << " = alpaka::createView(devAcc, alpaka::getPtrNative(deviceBuf_" << fNData
-        << "), static_cast<Idx>(" << outputLength << "));\n";
+      auto outputLength = ConvertDimShapeToLength(fShapeOutput);
+      const std::string inputBuffer = "deviceBuf_" + fNData;
+
+      out << SP << "auto deviceBuf_" << fNOutput
+          << " = alpaka::createView(devAcc, alpaka::getPtrNative(" << inputBuffer
+          << "), static_cast<Idx>(" << outputLength << "));\n";
 
     return out.str();
+}
+
+EFusionMappingType GetFusionMappingType() const override
+{
+   return fIsOutputConstant ? EFusionMappingType::Unsupported : EFusionMappingType::Reorganize;
+}
+
+std::vector<size_t> GetFusionDataInputIndices() const override
+{
+   return {0};
+}
+
+bool SupportsFusionTypes(const std::vector<ETensorType> &inputTypes, ETensorType outputType) const override
+{
+   return inputTypes.size() == 1 && inputTypes[0] == outputType;
+}
+
+std::string GetFusionExpr(const std::vector<std::string> &inputs) const override
+{
+   if (fIsOutputConstant || inputs.size() != 1)
+      return "";
+
+   return inputs[0];
 }
 
 };

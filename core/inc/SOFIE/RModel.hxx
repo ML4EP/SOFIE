@@ -2,6 +2,7 @@
 #define SOFIE_RMODEL
 
 #include "SOFIE/RModel_Base.hxx"
+#include "SOFIE/RModelFusion_ALPAKA.hxx"
 #include "SOFIE/SOFIE_common.hxx"
 #include "SOFIE/ROperator.hxx"
 
@@ -16,6 +17,8 @@ class RModel final : public RModel_Base {
 
    friend class RModelProfiler;
    friend class RModelProfilerGPU;
+   friend class FusionPlanner;
+   friend class FusionCodegen;
 
 private:
    bool fIsInitialized = false;
@@ -38,8 +41,13 @@ private:
    std::unordered_map<std::string, InitializedTensor> fInitializedTensors;
    std::unordered_map<std::string, TensorInfo> fIntermediateTensorInfos;
    std::unordered_map<std::string, DynamicTensorInfo> fDynamicTensorInfos;
+   std::vector<std::string> fUnifiedPoolTensorNames; // intermediate tensors (static + dynamic) placed in the unified runtime pool
    std::unordered_map<std::string, std::pair<std::vector<Dim>, bool>> fShapeTensors; // constant tensors describing a shape
    std::unordered_map<std::string, std::string> fAliasTensors; // alias tensors (name -> original tensor name)
+
+   std::set<std::string> fScalarTensors;
+   
+   std::set<std::string> fInternalDynamicParams;
    std::unordered_map<std::string, std::string>
       fShapeParams; // parameters defining the dynamic shape (e.g. batch size), store also its default value
    std::vector<std::string> fDimShapeNames; // parameter names used to define the shapes
@@ -58,28 +66,7 @@ private:
    std::unordered_map<std::string_view, size_t> fIntermediateTensorFrequencyLookup;    ///<!  lookup table for intermediate tensor frequency (transient)
 
    std::string fExtraCodeForDimShapes; // extra code needed for initialization of dynamic parameters (e.g. number of non zero elements in NonZero operator)
-
-   // GPU ALPAKA elementwise kernel fusion state (transient, computed in GenerateGPU_ALPAKA)
-   struct EltwiseFusionGroup {
-      std::vector<size_t> opIndices; ///< consecutive op indices forming this group
-      std::string inputTensor;       ///< input tensor name of the first op
-      std::string outputTensor;      ///< output tensor name of the last op
-      std::string iterationLengthExpr;        ///< element count: literal for static tensors, runtime expression for dynamic
-      bool isFused() const { return opIndices.size() > 1; }
-      std::string suffix() const {
-         std::string s;
-         for (auto i : opIndices) s += "_" + std::to_string(i);
-         return s;
-      }
-   };
-   std::vector<EltwiseFusionGroup> fEltwiseFusionGroups; ///<!
-   std::unordered_map<size_t, size_t> fOpToFusionGroupIdx; ///<!  op_idx -> fusion group index
-   std::set<std::string> fFusionIntermediateTensors;        ///<!  intermediate tensors whose alloc is skipped
-   std::set<size_t>      fSkipOperators;                    ///<!  ops swallowed by a preceding fusion (e.g. GEMM+LeakyReLU)
-   void ComputeEltwiseFusionGroups();
-   /// GPU-only pass: fuse GEMM→LeakyReLU (and GEMM→ReLU where not already
-   /// handled by the ONNX parser) into a single in-place kernel sequence.
-   void FuseGemmActivations_GPU();
+   Fusion::Plan fFusion; ///<!
 
 public:
    // Rule of five: explicitly define move semantics, disallow copy
@@ -154,6 +141,15 @@ public:
    void AddShapeTensor(const std::string & name, const std::vector<Dim> & shapeValues, bool scalar = false);
    void AddAliasTensor(const std::string & name, const std::string & origin);
    bool IsAliasTensor(const std::string & tensor_name) const;
+   std::string ResolveAliasTensor(const std::string &tensorName) const;
+
+   void MarkScalarTensor(const std::string & name) { fScalarTensors.insert(name); }
+   bool IsScalarTensor(const std::string & name) const { return fScalarTensors.count(name) != 0; }
+
+   // see fInternalDynamicParams
+   void RegisterInternalDynamicParam(const std::string & name) { fInternalDynamicParams.insert(name); }
+
+   std::vector<std::string> GetOperatorKernelParams(size_t opIdx, const std::vector<std::string> &baseDynParamNames) const;
 
    void AddExtraCodeForDimShapes(const std::string & code) { fExtraCodeForDimShapes += code; }
 
@@ -233,6 +229,7 @@ public:
    std::string AllocateIntermediateMemory(std::span<const std::string> op_output_tensors);
    void CheckAndFlushIntermediateMemory(std::span<const std::string> op_output_tensors, const size_t& op_idx);
 
+
 protected:
    // internal functions
    // generate code for the initialized tensors
@@ -263,6 +260,7 @@ protected:
    void GenerateSessionCode();
    void GenerateSessionCode_GPU_ALPAKA();
    void GenerateGPU_ALPAKA_Buffers();
+   void GeneratePersistentTensorInfo_GPU_ALPAKA();
 
    void CheckAndFuseOperators();
    bool IsInputTensorShapeParam(std::string const &paramName) const;

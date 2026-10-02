@@ -154,8 +154,6 @@ public:
          }
       }
 
-      std::cout << "bias + scale " << ConvertDimShapeToString(fShapeB) << "  " << ConvertDimShapeToString(fShapeScale) << std::endl;
-
       // // Broadcast the bias
       // if (!fNB.empty()) {
       //    fShapeB = model.GetTensorShape(fNB);
@@ -316,7 +314,7 @@ public:
       return out.str();
    }
 
-   std::string Generate_GPU_Kernel_ALPAKA(std::string opName) override {
+   std::string Generate_GPU_Kernel_ALPAKA(std::string opName, const std::vector<std::string> &dynParamNames) override {
       opName = "op_" + opName;
       if (fShapeX.empty())
          throw std::runtime_error("TMVA::SOFIE LayerNormalization called to Generate without being initialized first");
@@ -363,6 +361,12 @@ public:
       for (size_t i = 0; i < fSize; i++)
          inputShape[i] = fShapeX[i].GetVal();
 
+      // Render a Dim as an unsigned-literal token when it's a concrete
+      // constant, or as its bare symbolic/expression text when it's parametric
+      auto dimLit = [](const Dim &d) -> std::string {
+         return d.isParam ? d.GetVal() : (d.GetVal() + "u");
+      };
+
       auto strides      = UTILITY::ComputeStrideFromShape(fShapeX);
       auto scaleStrides = UTILITY::ComputeStrideFromShape(fShapeScale);
       auto biasStrides  = (!fNB.empty()) ? UTILITY::ComputeStrideFromShape(fShapeB)
@@ -390,6 +394,12 @@ public:
       if (!fNInvStdDev.empty())
          op += SP + SP + SP + "T* __restrict__ out_invstd,\n";
       op += SP + SP + SP + "T* __restrict__ Y,\n";
+      // Dynamic-shape parameters (e.g. a symbolic batch/row-count dim) referenced
+      // by the axis/stride expressions below must be passed in explicitly: the
+      // kernel functor is a free-standing struct, not a closure, so it has no
+      // access to _infer_impl's local n_<param> variables otherwise.
+      for (auto &p : dynParamNames)
+         op += SP + SP + SP + "std::size_t const " + p + ",\n";
       op += SP + SP + SP + "std::size_t const axesLength) const {\n\n";
 
       // Sum of "axis_i * stride_i" over outer axes where the scale/bias tensor
@@ -401,7 +411,7 @@ public:
          std::vector<std::string> terms;
          for (size_t i = 0; i < fAxis; ++i) {
             if (shapeVec[i].dim != 1)
-               terms.push_back("axis_" + std::to_string(i) + " * " + strideVec[i].GetVal() + "u");
+               terms.push_back("axis_" + std::to_string(i) + " * " + dimLit(strideVec[i]));
          }
          if (terms.empty()) return ind + "0u";
          std::string s;
@@ -431,12 +441,12 @@ public:
          auto emitOffsets = [&](const std::string &idxVar, const std::string &ind) -> std::string {
             std::string s;
             if (fSize - fAxis == 1) {
-               s += ind + "std::size_t const norm_offset = " + idxVar + " * " + strides[fAxis].GetVal() + "u;\n";
+               s += ind + "std::size_t const norm_offset = " + idxVar + " * " + dimLit(strides[fAxis]) + ";\n";
                s += ind + "std::size_t const s_norm_offset = ";
-               s += (fShapeScale[fAxis].dim != 1) ? (idxVar + " * " + scaleStrides[fAxis].GetVal() + "u;\n") : "0u;\n";
+               s += (fShapeScale[fAxis].dim != 1) ? (idxVar + " * " + dimLit(scaleStrides[fAxis]) + ";\n") : "0u;\n";
                if (!fNB.empty()) {
                   s += ind + "std::size_t const b_norm_offset = ";
-                  s += (fShapeB[fAxis].dim != 1) ? (idxVar + " * " + biasStrides[fAxis].GetVal() + "u;\n") : "0u;\n";
+                  s += (fShapeB[fAxis].dim != 1) ? (idxVar + " * " + dimLit(biasStrides[fAxis]) + ";\n") : "0u;\n";
                }
             } else {
                s += ind + "std::size_t norm_offset = 0u, s_norm_offset = 0u";
@@ -446,13 +456,13 @@ public:
                s += ind + SP + "std::size_t norm_rem = " + idxVar + ";\n";
                for (size_t j = fAxis; j < fSize; ++j) {
                   size_t ji = j - fAxis;
-                  s += ind + SP + "{ std::size_t nj = norm_rem / " + normInner[ji].GetVal() + "u;"
-                     + " norm_rem %= " + normInner[ji].GetVal() + "u;"
-                     + " norm_offset += nj * " + strides[j].GetVal() + "u;";
+                  s += ind + SP + "{ std::size_t nj = norm_rem / " + dimLit(normInner[ji]) + ";"
+                     + " norm_rem %= " + dimLit(normInner[ji]) + ";"
+                     + " norm_offset += nj * " + dimLit(strides[j]) + ";";
                   if (fShapeScale[j].dim != 1)
-                     s += " s_norm_offset += nj * " + scaleStrides[j].GetVal() + "u;";
+                     s += " s_norm_offset += nj * " + dimLit(scaleStrides[j]) + ";";
                   if (!fNB.empty() && fShapeB[j].dim != 1)
-                     s += " b_norm_offset += nj * " + biasStrides[j].GetVal() + "u;";
+                     s += " b_norm_offset += nj * " + dimLit(biasStrides[j]) + ";";
                   s += " }\n";
                }
                s += ind + "}\n";
@@ -472,8 +482,8 @@ public:
          if (fAxis > 0) {
             for (size_t i = 0; i < fAxis; ++i) {
                op += SP + SP + SP + "std::size_t const axis_" + std::to_string(i)
-                  + " = (row / " + axesStrides[i].GetVal() + "u) % "
-                  + inputShape[i] + "u;\n";
+                  + " = (row / " + dimLit(axesStrides[i]) + ") % "
+                  + dimLit(fShapeX[i]) + ";\n";
             }
             op += "\n";
          }
@@ -485,7 +495,7 @@ public:
          } else {
             for (size_t i = 0; i < fAxis; ++i) {
                op += SP + SP + SP + SP + "axis_" + std::to_string(i)
-                  + " * " + strides[i].GetVal() + "u";
+                  + " * " + dimLit(strides[i]);
                op += (i + 1 < fAxis) ? " +\n" : ";\n\n";
             }
          }
@@ -579,8 +589,8 @@ public:
          if (fAxis > 0) {
             for (size_t i = 0; i < fAxis; ++i) {
                op += SP + SP + SP + SP + "std::size_t const axis_" + std::to_string(i)
-                  + " = (row / " + axesStrides[i].GetVal() + "u) % "
-                  + inputShape[i] + "u;\n";
+                  + " = (row / " + dimLit(axesStrides[i]) + ") % "
+                  + dimLit(fShapeX[i]) + ";\n";
             }
             op += "\n";
          }
@@ -591,7 +601,7 @@ public:
          } else {
             for (size_t i = 0; i < fAxis; ++i) {
                op += SP + SP + SP + SP + SP + "axis_" + std::to_string(i)
-                  + " * " + strides[i].GetVal() + "u";
+                  + " * " + dimLit(strides[i]);
                op += (i + 1 < fAxis) ? " +\n" : ";\n\n";
             }
          }
@@ -604,11 +614,11 @@ public:
          op += SP + SP + SP + SP + "T mean = static_cast<T>(0);\n";
          for (size_t j = fAxis; j < fSize; ++j)
             op += SP + SP + SP + SP + "for (std::size_t n_" + std::to_string(j)
-               + " = 0; n_" + std::to_string(j) + " < " + inputShape[j]
-               + "u; n_" + std::to_string(j) + "++) {\n";
+               + " = 0; n_" + std::to_string(j) + " < " + dimLit(fShapeX[j])
+               + "; n_" + std::to_string(j) + "++) {\n";
          op += SP + SP + SP + SP + SP + "std::size_t const norm_idx = row_base";
          for (size_t j = fAxis; j < fSize; ++j)
-            op += " + n_" + std::to_string(j) + " * " + strides[j].GetVal() + "u";
+            op += " + n_" + std::to_string(j) + " * " + dimLit(strides[j]);
          op += ";\n";
          op += SP + SP + SP + SP + SP + "mean += X[norm_idx];\n";
          for (size_t j = fAxis; j < fSize; ++j) op += SP + SP + SP + SP + "}\n";
@@ -617,11 +627,11 @@ public:
          op += SP + SP + SP + SP + "T sum = static_cast<T>(0);\n";
          for (size_t j = fAxis; j < fSize; ++j)
             op += SP + SP + SP + SP + "for (std::size_t n_" + std::to_string(j)
-               + " = 0; n_" + std::to_string(j) + " < " + inputShape[j]
-               + "u; n_" + std::to_string(j) + "++) {\n";
+               + " = 0; n_" + std::to_string(j) + " < " + dimLit(fShapeX[j])
+               + "; n_" + std::to_string(j) + "++) {\n";
          op += SP + SP + SP + SP + SP + "std::size_t const norm_idx = row_base";
          for (size_t j = fAxis; j < fSize; ++j)
-            op += " + n_" + std::to_string(j) + " * " + strides[j].GetVal() + "u";
+            op += " + n_" + std::to_string(j) + " * " + dimLit(strides[j]);
          op += ";\n";
          op += SP + SP + SP + SP + SP + "T tmp = X[norm_idx] - mean;\n";
          op += SP + SP + SP + SP + SP + "sum += tmp * tmp;\n";
@@ -638,16 +648,16 @@ public:
 
          for (size_t j = fAxis; j < fSize; ++j)
             op += SP + SP + SP + SP + "for (std::size_t n_" + std::to_string(j)
-               + " = 0; n_" + std::to_string(j) + " < " + inputShape[j]
-               + "u; n_" + std::to_string(j) + "++) {\n";
+               + " = 0; n_" + std::to_string(j) + " < " + dimLit(fShapeX[j])
+               + "; n_" + std::to_string(j) + "++) {\n";
          op += SP + SP + SP + SP + SP + "std::size_t const norm_idx = row_base";
          for (size_t j = fAxis; j < fSize; ++j)
-            op += " + n_" + std::to_string(j) + " * " + strides[j].GetVal() + "u";
+            op += " + n_" + std::to_string(j) + " * " + dimLit(strides[j]);
          op += ";\n";
          op += SP + SP + SP + SP + SP + "std::size_t const s_idx = scale_base";
          for (size_t j = fAxis; j < fSize; ++j) {
             if (fShapeScale[j].dim != 1)
-               op += " + n_" + std::to_string(j) + " * " + scaleStrides[j].GetVal() + "u";
+               op += " + n_" + std::to_string(j) + " * " + dimLit(scaleStrides[j]);
          }
          op += ";\n";
          op += SP + SP + SP + SP + SP + "T val = scale[s_idx] * invStdDev * (X[norm_idx] - mean);\n";
@@ -655,7 +665,7 @@ public:
             op += SP + SP + SP + SP + SP + "std::size_t const b_idx = bias_base";
             for (size_t j = fAxis; j < fSize; ++j) {
                if (fShapeB[j].dim != 1)
-                  op += " + n_" + std::to_string(j) + " * " + biasStrides[j].GetVal() + "u";
+                  op += " + n_" + std::to_string(j) + " * " + dimLit(biasStrides[j]);
             }
             op += ";\n";
             op += SP + SP + SP + SP + SP + "val += bias[b_idx];\n";
@@ -677,7 +687,7 @@ public:
       return SP + kname + " layerNormKernel_" + opName + ";\n";
    }
 
-   std::string Generate_GPU_ALPAKA(std::string opName) override {
+   std::string Generate_GPU_ALPAKA(std::string opName, const std::vector<std::string> &dynParamNames) override {
       opName = "op_" + opName;
       if (fShapeX.empty())
          throw std::runtime_error("TMVA::SOFIE LayerNormalization called to Generate without being initialized first");
@@ -703,6 +713,8 @@ public:
       if (!fNInvStdDev.empty())
          args += ", alpaka::getPtrNative(deviceBuf_" + fNInvStdDev + ")";
       args += ", alpaka::getPtrNative(deviceBuf_" + fNY + ")";
+      for (auto &p : dynParamNames)
+         args += ", static_cast<std::size_t>(" + p + ")";
       args += ", static_cast<Idx>(" + axesLengthStr + ")";
 
       std::stringstream out;
