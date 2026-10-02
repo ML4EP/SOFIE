@@ -1,8 +1,6 @@
 #include "SOFIE/RModelParser_ONNX.hxx"
 #include "SOFIE/ROperator_Split.hxx"
-#include "onnx_proto3.pb.h"
-
-
+#include "onnx.hxx"
 namespace SOFIE {
 
 ParserFuncSignature ParseSplit = [](RModelParser_ONNX &parser, const onnx::NodeProto &nodeproto) {
@@ -12,7 +10,7 @@ ParserFuncSignature ParseSplit = [](RModelParser_ONNX &parser, const onnx::NodeP
    if (parser.IsRegisteredTensorType(input_name)) {
       input_type = parser.GetTensorType(input_name);
    } else {
-      throw std::runtime_error("TMVA::SOFIE ONNX Parser Split op has input tensor" + input_name +
+      throw std::runtime_error("SOFIE ONNX Parser Split op has input tensor" + input_name +
                                " but its type is not yet registered");
    }
 
@@ -20,7 +18,7 @@ ParserFuncSignature ParseSplit = [](RModelParser_ONNX &parser, const onnx::NodeP
    if (nodeproto.input_size() > 1) {
       split_name = nodeproto.input(1);
       if (!parser.IsRegisteredTensorType(split_name)) {
-         throw std::runtime_error("TMVA::SOFIE ONNX Parser Split op has input tensor" + split_name +
+         throw std::runtime_error("SOFIE ONNX Parser Split op has input tensor" + split_name +
                                   " but its type is not yet registered");
       }
    }
@@ -36,7 +34,7 @@ ParserFuncSignature ParseSplit = [](RModelParser_ONNX &parser, const onnx::NodeP
          num_outputs = nodeproto.attribute(i).i();
       }
       else
-         throw std::runtime_error("TMVA::SOFIE ONNX Parser Split operator: attribute" + attribute_name +  "is not yet supported");
+         throw std::runtime_error("SOFIE ONNX Parser Split operator: attribute" + attribute_name +  "is not yet supported");
    }
 
    // number of splits are given by the number of output tensors
@@ -46,7 +44,7 @@ ParserFuncSignature ParseSplit = [](RModelParser_ONNX &parser, const onnx::NodeP
       output_names[i] = nodeproto.output(i);
 
    if (num_outputs > 0 && num_outputs != output_size)
-      throw std::runtime_error("TMVA::SOFIE ONNX Parser Split - invalid output size: " + std::to_string(output_size) + " instead of " +
+      throw std::runtime_error("SOFIE ONNX Parser Split - invalid output size: " + std::to_string(output_size) + " instead of " +
          std::to_string(num_outputs));
 
    std::unique_ptr<ROperator> op(new ROperator_Split(input_name, split_name, axis, output_names));

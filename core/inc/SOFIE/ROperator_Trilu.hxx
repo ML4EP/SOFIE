@@ -53,16 +53,6 @@ public:
       fOutputTensorNames = { fNY };
    }
 
-   std::vector<ETensorType> TypeInference(std::vector<ETensorType> input) override {
-      return { input[0] };
-   }
-
-   std::vector<std::vector<size_t>> ShapeInference(std::vector<std::vector<size_t>> input) override {
-      if (input.empty())
-         throw std::runtime_error("SOFIE Trilu ShapeInference: no input shapes");
-      return { input[0] };   // output has the same shape as input
-   }
-
    void Initialize(RModel& model) override {
       if (!model.CheckIfTensorAlreadyExist(fNX))
          throw std::runtime_error("SOFIE Trilu: input tensor '" + fNX +

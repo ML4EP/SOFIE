@@ -1,31 +1,29 @@
 #include "SOFIE/RModelParser_ONNX.hxx"
 #include "SOFIE/ROperator_ScatterElements.hxx"
-#include "onnx_proto3.pb.h"
-
-
+#include "onnx.hxx"
 namespace SOFIE {
 
 ParserFuncSignature ParseScatterElements = [](RModelParser_ONNX &parser, const onnx::NodeProto &nodeproto) {
 
    if (nodeproto.input_size() != 3) {
-      throw std::runtime_error("TMVA::SOFIE ONNX Parser ScatterElements op has invalid input size");
+      throw std::runtime_error("SOFIE ONNX Parser ScatterElements op has invalid input size");
    }
    // data is input 0
    if (!parser.IsRegisteredTensorType(nodeproto.input(0))){
-      throw std::runtime_error("TMVA::SOFIE ONNX Parser ScatterElements op has input tensor " +  nodeproto.input(0)
+      throw std::runtime_error("SOFIE ONNX Parser ScatterElements op has input tensor " +  nodeproto.input(0)
                                 + " but its type is not yet registered");
    }
    if (!parser.IsRegisteredTensorType(nodeproto.input(1))){
-      throw std::runtime_error("TMVA::SOFIE ONNX Parser ScatterElements op has input tensor " +  nodeproto.input(1)
+      throw std::runtime_error("SOFIE ONNX Parser ScatterElements op has input tensor " +  nodeproto.input(1)
                                 + " but its type is not yet registered");
    }
    if (!parser.IsRegisteredTensorType(nodeproto.input(2))){
-      throw std::runtime_error("TMVA::SOFIE ONNX Parser ScatterElements op has input tensor " +  nodeproto.input(2)
+      throw std::runtime_error("SOFIE ONNX Parser ScatterElements op has input tensor " +  nodeproto.input(2)
                                 + " but its type is not yet registered");
    }
    ETensorType input_type = parser.GetTensorType(nodeproto.input(0));
    if (parser.GetTensorType(nodeproto.input(2)) != input_type) {
-      throw std::runtime_error("TMVA::SOFIE ONNX parser ScatterElements op has input tensors of different types: " +
+      throw std::runtime_error("SOFIE ONNX parser ScatterElements op has input tensors of different types: " +
                   nodeproto.input(2) + " : " + ConvertTypeToString(parser.GetTensorType(nodeproto.input(2))) +
                      " and " +  nodeproto.input(0) + " : " + ConvertTypeToString(input_type));
    }

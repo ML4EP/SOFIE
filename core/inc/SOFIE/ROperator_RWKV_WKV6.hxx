@@ -39,12 +39,6 @@ public:
       fOutputTensorNames = { fNY };
    }
 
-   std::vector<std::vector<size_t>> ShapeInference(std::vector<std::vector<size_t>> input) override
-   { return { input[0] }; }
-
-   std::vector<ETensorType> TypeInference(std::vector<ETensorType> input) override
-   { return { input[0] }; }
-
    void Initialize(RModel &model) override {
       if (!model.CheckIfTensorAlreadyExist(fNR))
          throw std::runtime_error("SOFIE RWKV_WKV6: tensor " + fNR + " not found");

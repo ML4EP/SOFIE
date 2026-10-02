@@ -144,7 +144,6 @@ jobs:
         run: |
           cmake -B sofie-pr/build -S sofie-pr \
             -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
-            -DSOFIE_WITH_ROOT=OFF \
             -DSOFIE_BENCHMARK=ON \
             -DSOFIE_BENCHMARK_BACKEND=CUDA \
             "-DSOFIE_BENCHMARK_CUDA_ARCH=${{ env.CUDA_ARCH }}" \
@@ -177,7 +176,6 @@ jobs:
         run: |
           cmake -B sofie-main/build -S sofie-main \
             -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
-            -DSOFIE_WITH_ROOT=OFF \
             -DSOFIE_BENCHMARK=ON \
             -DSOFIE_BENCHMARK_BACKEND=CUDA \
             "-DSOFIE_BENCHMARK_CUDA_ARCH=${{ env.CUDA_ARCH }}" \

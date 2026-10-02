@@ -1,7 +1,6 @@
 #include "SOFIE/RModelParser_ONNX.hxx"
 #include "SOFIE/ROperator_Basic_Is.hxx"
-#include "onnx_proto3.pb.h"
-
+#include "onnx.hxx"
 namespace SOFIE {
 
 template <EBasicIsOperator Op>
@@ -15,7 +14,6 @@ std::unique_ptr<ROperator> ParseBasicIs(RModelParser_ONNX &parser, const onnx::N
                                   " but its type is not yet registered");
    }
 
-   // get attributes for the IsInf operator
    int detect_negative = 1;
    int detect_positive = 1;
    for (int_t i = 0; i < nodeproto.attribute_size(); i++) {
@@ -29,14 +27,13 @@ std::unique_ptr<ROperator> ParseBasicIs(RModelParser_ONNX &parser, const onnx::N
    if (detect_positive == 0 && detect_negative == 0)
       throw std::runtime_error("SOFIE ONNX Parser IsInf op has invalide attributes");
 
-
    std::unique_ptr<ROperator> op;
    std::string output_name = nodeproto.output(0);
 
    if (nodeproto.attribute_size() == 0 || (detect_negative == 1 && detect_positive == 1))
       op.reset(new ROperator_Basic_Is<Op>(input_name, output_name));
    else if (nodeproto.attribute_size() > 0) {
-      // case detect_negative or detective_positive are set
+
       if (detect_negative == 0)
          op.reset(new ROperator_Basic_Is<EBasicIsOperator::kIsInfPos>(input_name, output_name));
       else if (detect_positive == 0)
@@ -44,7 +41,6 @@ std::unique_ptr<ROperator> ParseBasicIs(RModelParser_ONNX &parser, const onnx::N
    } else
       throw std::runtime_error("SOFIE ONNX Parser " + IsOpTraits<Op>::Name() + " operator - invalid attributes");
 
-   // Register the output type (is always BOOL)
    if (!parser.IsRegisteredTensorType(output_name)) {
       parser.RegisterTensorType(output_name, ETensorType::BOOL);
    }
@@ -52,15 +48,10 @@ std::unique_ptr<ROperator> ParseBasicIs(RModelParser_ONNX &parser, const onnx::N
    return op;
 };
 
-// Parse IsNaN
-ParserFuncSignature ParseIsNaN = [](RModelParser_ONNX &parser, const onnx::NodeProto &nodeproto) {
-   return ParseBasicIs<EBasicIsOperator::kIsNaN>(parser, nodeproto);
-};
+void RegisterBasicIsParsers(RModelParser_ONNX &parser)
+{
+   parser.RegisterOperator("IsNaN", ParseBasicIs<EBasicIsOperator::kIsNaN>);
+   parser.RegisterOperator("IsInf", ParseBasicIs<EBasicIsOperator::kIsInf>);
+}
 
-// Parse IsInf
-ParserFuncSignature ParseIsInf = [](RModelParser_ONNX &parser, const onnx::NodeProto &nodeproto) {
-   return ParseBasicIs<EBasicIsOperator::kIsInf>(parser, nodeproto);
-};
-
-
-} // namespace SOFIE
+}

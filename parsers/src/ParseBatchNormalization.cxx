@@ -1,8 +1,6 @@
 #include "SOFIE/RModelParser_ONNX.hxx"
 #include "SOFIE/ROperator_BatchNormalization.hxx"
-#include "onnx_proto3.pb.h"
-
-
+#include "onnx.hxx"
 namespace SOFIE {
 
 ParserFuncSignature ParseBatchNormalization = [](RModelParser_ONNX &parser, const onnx::NodeProto &nodeproto) {
@@ -12,7 +10,7 @@ ParserFuncSignature ParseBatchNormalization = [](RModelParser_ONNX &parser, cons
    if (parser.IsRegisteredTensorType(input_name)) {
       input_type = parser.GetTensorType(input_name);
    } else {
-      throw std::runtime_error("TMVA::SOFIE ONNX Parser BatchNorm op has input tensor " + input_name +
+      throw std::runtime_error("SOFIE ONNX Parser BatchNorm op has input tensor " + input_name +
                                " but its type is not yet registered");
    }
 
@@ -21,6 +19,13 @@ ParserFuncSignature ParseBatchNormalization = [](RModelParser_ONNX &parser, cons
    float fepsilon = 1e-05;
    float fmomentum = 0.9;
    std::size_t ftraining_mode = 0;
+   for (int_t i = 0; i < nodeproto.attribute_size(); i++) {
+      const std::string &attribute_name = nodeproto.attribute(i).name();
+      if (attribute_name == "epsilon")
+         fepsilon = nodeproto.attribute(i).f();
+      else if (attribute_name == "momentum")
+         fmomentum = nodeproto.attribute(i).f();
+   }
 
    switch (input_type) {
    case ETensorType::FLOAT:
@@ -28,10 +33,13 @@ ParserFuncSignature ParseBatchNormalization = [](RModelParser_ONNX &parser, cons
          op.reset(new ROperator_BatchNormalization<float>(fepsilon, fmomentum, ftraining_mode, nodeproto.input(0),
                                                           nodeproto.input(1), nodeproto.input(2), nodeproto.input(3),
                                                           nodeproto.input(4), output_name));
+      } else {
+         throw std::runtime_error("SOFIE ONNX Parser BatchNormalization op requires exactly 5 inputs, got " +
+                                  std::to_string(nodeproto.input_size()));
       }
       break;
    default:
-      throw std::runtime_error("TMVA::SOFIE - Unsupported - Operator BatchNorm does not yet support input type " +
+      throw std::runtime_error("SOFIE - Unsupported - Operator BatchNorm does not yet support input type " +
                                std::to_string(static_cast<int>(input_type)));
    }
 

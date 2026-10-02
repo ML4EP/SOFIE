@@ -1,10 +1,11 @@
-#ifndef SOFIE_SOFIE_ROperator_BasicBinary
-#define SOFIE_SOFIE_ROperator_BasicBinary
+#ifndef SOFIE_ROperator_BasicBinary
+#define SOFIE_ROperator_BasicBinary
 
 #include "SOFIE/SOFIE_common.hxx"
 #include "SOFIE/ROperator.hxx"
 #include "SOFIE/RModel.hxx"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -12,15 +13,7 @@
 
 namespace SOFIE {
 
-enum EBasicBinaryOperator {
-   Add,
-   Sub,
-   Mul,
-   Div,
-   Pow,
-   Mod,
-   FMod
-};
+enum EBasicBinaryOperator { Add, Sub, Mul, Div, Pow, Mod, FMod };
 
 template <typename T, EBasicBinaryOperator Op1>
 struct BinaryOperatorTrait {};
@@ -129,17 +122,6 @@ public:
    {
       fInputTensorNames = {fNA, fNB};
       fOutputTensorNames = {fNY};
-   }
-
-   // type of output given input
-   std::vector<ETensorType> TypeInference(std::vector<ETensorType> input) override { return input; }
-
-   // shape of output tensors given input tensors
-   std::vector<std::vector<size_t>> ShapeInference(std::vector<std::vector<size_t>> input) override
-   {
-      // assume now inputs have same shape (no broadcasting)
-      auto ret = std::vector<std::vector<size_t>>(1, input[0]); // return vector size 1 with first input
-      return ret;
    }
 
    void Initialize(RModel &model) override
@@ -636,8 +618,25 @@ public:
       return BinaryOperatorTrait<T, Op>::Op(inputs[0], inputs[1]);
    }
 
-   
 };
+
+inline std::unique_ptr<ROperator> createBasicBinary(std::string layerDType, std::string layerType, std::string nameA,
+                                                    std::string nameB, std::string nameY)
+{
+   if (ConvertStringToType(layerDType) != ETensorType::FLOAT) {
+      throw std::runtime_error(
+         ("SOFIE - Unsupported - Operator BasicBinary does not yet support input type " + layerDType).c_str());
+   }
+   if (layerType == "Add")
+      return std::make_unique<ROperator_BasicBinary<float, EBasicBinaryOperator::Add>>(nameA, nameB, nameY);
+   if (layerType == "Subtract")
+      return std::make_unique<ROperator_BasicBinary<float, EBasicBinaryOperator::Sub>>(nameA, nameB, nameY);
+   if (layerType == "Multiply")
+      return std::make_unique<ROperator_BasicBinary<float, EBasicBinaryOperator::Mul>>(nameA, nameB, nameY);
+
+   throw std::runtime_error(
+      ("SOFIE - Unsupported - Operator BasicBinary does not yet support layer type " + layerType).c_str());
+}
 
 } // namespace SOFIE
 

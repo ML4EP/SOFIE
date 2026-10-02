@@ -1,8 +1,6 @@
 #include "SOFIE/RModelParser_ONNX.hxx"
 #include "SOFIE/ROperator_RNN.hxx"
-#include "onnx_proto3.pb.h"
-
-
+#include "onnx.hxx"
 namespace SOFIE {
 
 ParserFuncSignature ParseRNN = [](RModelParser_ONNX &parser, const onnx::NodeProto &nodeproto) {
@@ -12,7 +10,7 @@ ParserFuncSignature ParseRNN = [](RModelParser_ONNX &parser, const onnx::NodePro
    if (parser.IsRegisteredTensorType(input_name)) {
       input_type = parser.GetTensorType(input_name);
    } else {
-      throw std::runtime_error("TMVA::SOFIE ONNX Parser RNN op has input tensor " + input_name +
+      throw std::runtime_error("SOFIE ONNX Parser RNN op has input tensor " + input_name +
                                " but its type is not yet registered");
    }
 
@@ -35,7 +33,7 @@ ParserFuncSignature ParseRNN = [](RModelParser_ONNX &parser, const onnx::NodePro
       } else if (attribute_name == "activations") {
          attr_activations = {nodeproto.attribute(i).strings().begin(), nodeproto.attribute(i).strings().end()};
       } else if (attribute_name == "clip") {
-         attr_clip = nodeproto.attribute(i).i();
+         attr_clip = nodeproto.attribute(i).f();
       } else if (attribute_name == "direction") {
          attr_direction = nodeproto.attribute(i).s();
       } else if (attribute_name == "hidden_size") {
@@ -78,7 +76,7 @@ ParserFuncSignature ParseRNN = [](RModelParser_ONNX &parser, const onnx::NodePro
                                         name_initial_h, name_y, name_y_h));
       break;
    default:
-      throw std::runtime_error("TMVA::SOFIE - Unsupported - Operator RNN does not yet support input type " +
+      throw std::runtime_error("SOFIE - Unsupported - Operator RNN does not yet support input type " +
                                std::to_string(static_cast<int>(input_type)));
    }
 

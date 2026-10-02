@@ -28,8 +28,8 @@ private:
    std::string fNMean;
    std::string fNVar;
    std::string fNY;
-   std::string fNFusedScale;   // scale/sqrt(var+eps) fused over channels, shape [C]
    EActivationType fActivation;
+   std::string fNFusedScale;   // scale/sqrt(var+eps) fused over channels, shape [C]
 
    std::vector<Dim> fShapeX;
    std::vector<Dim> fShapeY;
@@ -50,11 +50,10 @@ public:
    {
       fInputTensorNames = { fNX };
       fOutputTensorNames = { fNY };
-
       fNFusedScale = fNScale + "_fused_inv_std_dev";
 
       if(std::is_same<T, float>::value){
-      fType = "float";
+         fType = "float";
       }
       else{
 	      throw
@@ -62,11 +61,6 @@ public:
       }
    }
 
-
-   std::vector<ETensorType> TypeInference(std::vector<ETensorType> input) override {
-      ETensorType out = input[0];
-      return {out};
-   }
 
    void Initialize(RModel& model) override {
       if (!model.CheckIfTensorAlreadyExist(fNX)) {

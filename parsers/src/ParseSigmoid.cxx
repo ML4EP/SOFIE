@@ -1,8 +1,6 @@
 #include "SOFIE/RModelParser_ONNX.hxx"
 #include "SOFIE/ROperator_Sigmoid.hxx"
-#include "onnx_proto3.pb.h"
-
-
+#include "onnx.hxx"
 namespace SOFIE {
 
 ParserFuncSignature ParseSigmoid = [](RModelParser_ONNX &parser, const onnx::NodeProto &nodeproto) {
@@ -12,7 +10,7 @@ ParserFuncSignature ParseSigmoid = [](RModelParser_ONNX &parser, const onnx::Nod
    if (parser.IsRegisteredTensorType(input_name)) {
       input_type = parser.GetTensorType(input_name);
    } else {
-      throw std::runtime_error("TMVA::SOFIE ONNX Parser Sigmoid op has input tensor" + input_name +
+      throw std::runtime_error("SOFIE ONNX Parser Sigmoid op has input tensor" + input_name +
                                " but its type is not yet registered");
    }
 
@@ -22,7 +20,7 @@ ParserFuncSignature ParseSigmoid = [](RModelParser_ONNX &parser, const onnx::Nod
    switch (input_type) {
    case ETensorType::FLOAT: op.reset(new ROperator_Sigmoid<float>(input_name, output_name)); break;
    default:
-      throw std::runtime_error("TMVA::SOFIE - Unsupported - Operator Sigmoid does not yet support input type " +
+      throw std::runtime_error("SOFIE - Unsupported - Operator Sigmoid does not yet support input type " +
                                std::to_string(static_cast<int>(input_type)));
    }
 

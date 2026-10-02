@@ -42,8 +42,8 @@ RModel BuildModel(const std::string &name, const std::vector<float> &W, const st
    RModel model(name, "now");
    model.AddInputTensorInfo("X", ETensorType::FLOAT, std::vector<Dim>{Dim(kM), Dim(kK)});
    model.AddInputTensorName("X");
-   model.AddInitializedTensor<float>("W", {kK, kN}, const_cast<float *>(W.data()));
-   model.AddInitializedTensor<float>("B", {kN}, const_cast<float *>(Bias.data()));
+   model.AddInitializedTensor("W", ETensorType::FLOAT, std::vector<std::size_t>{kK, kN}, const_cast<float *>(W.data()));
+   model.AddInitializedTensor("B", ETensorType::FLOAT, std::vector<std::size_t>{kN}, const_cast<float *>(Bias.data()));
    auto op = std::make_unique<ROperator_Gemm<float>>(1.0, 1.0, 0, 0, "X", "W", "B", "Y");
    model.AddOperator(std::move(op));
    model.AddOutputTensorNameList({"Y"});

@@ -6,8 +6,6 @@
 #include "SOFIE/RModel.hxx"
 
 #include <sstream>
-
-
 namespace SOFIE{
 
 template<typename T>
@@ -26,6 +24,7 @@ private:
 
    bool fInitialized = false;
    bool fInitializedShape = false;
+   bool fDimShapeValues = false;
    bool fInitBroadcast = false;
 
 public:
@@ -38,6 +37,7 @@ public:
 
 
    void Initialize(RModel& model) override {
+      model.AddNeededHelperFunction("UnidirectionalBroadcast");
       // input must be a graph input, or already initialized intermediate tensor
       if (!model.CheckIfTensorAlreadyExist(fNX)) {
         throw std::runtime_error("SOFIE Expand Op Input Tensor " + fNX + " is not found in model");
@@ -49,20 +49,20 @@ public:
            static_cast<int64_t *>(model.GetInitializedTensorData(fNShape).get());
          fShape = model.GetTensorShape(fNShape);
          if (fShape.size() != 1) {
-            throw std::runtime_error("TMVA::SOFIE - Expand operator shape must be a 1d tensor.");
+            throw std::runtime_error("SOFIE - Expand operator shape must be a 1d tensor.");
          }
          size_t N = fShape[0];
          // what do we do if shapeData contains negative values?
          for (size_t i = 0; i < N; i++) {
             if ( shapeData[i] < 0)
-               throw std::runtime_error("TMVA::SOFIE - Expand: invalid shape value " + std::to_string(shapeData[i]));
+               throw std::runtime_error("SOFIE - Expand: invalid shape value " + std::to_string(shapeData[i]));
          }
          std::vector<size_t> shape(shapeData, shapeData + N);
          fShapeDim = ConvertShapeToDim(shape);
       } else if (model.IsShapeTensor(fNShape)) {
          // case input shape is a shape tensor
          fShapeDim = model.GetShapeTensorValues(fNShape);
-         fInitializedShape = true;
+         fDimShapeValues = true;
       } else {
          // assume shape of input shape is known (size is 1)
          auto shapeOfInputShape = model.GetTensorShape(fNShape);
@@ -73,27 +73,20 @@ public:
          }
       }
       // Y is the common shape of fShapeX and shape
-      auto ret  = SOFIE::UTILITY::MultidirectionalBroadcastShape(fShapeX, fShapeDim);
+      auto ret  = UTILITY::MultidirectionalBroadcastShape(fShapeX, fShapeDim);
       fShapeY = ret.second;
+      fInitialized = model.IsInitializedTensor(fNX) && fInitializedShape;
       std::vector<size_t> shapeX;
       std::vector<size_t> shapeY;
       // case shape tensor and input shape are known
       if (!model.IsDynamicTensor(fNX) && !model.IsDimInputTensor(fNX) && fInitializedShape) {
          shapeX = ConvertShapeToInt(fShapeX);
          shapeY = ConvertShapeToInt(fShapeY);
-         if (!shapeX.empty() && !shapeY.empty() && !UTILITY::AreSameShape(shapeX, shapeY))
+         if (!UTILITY::AreSameShape(shapeX, shapeY))
             fInitBroadcast = true;
       }
-      // Eagerly constant-folding X into Y (below) requires the *target*
-      // shape to be fully concrete too: X can be a compile-time constant
-      // while the shape it's being broadcast to is still dynamic (e.g. a
-      // constant "ones" tensor expanded to a runtime [1, seq_length,
-      // seq_length] attention-mask shape) — ConvertShapeToInt returns an
-      // empty vector whenever any dim is symbolic, so that failure is the
-      // signal that this has to go through the ordinary runtime-broadcast
-      // codegen path (the "else" branch below) instead.
-      fInitialized = model.IsInitializedTensor(fNX) && fInitializedShape && !shapeX.empty() && !shapeY.empty();
       if (fInitialized) {
+         assert(!shapeX.empty() && !shapeY.empty());
          // Broadcast X to the common shape shapeY
          // If X is an initialized tensor (constant)
          auto data = model.GetInitializedTensorData(fNX);
@@ -117,22 +110,12 @@ public:
          }
       } else {
          // // case input is not initialized
-         // if (shapeX.empty() && shapeDim.empty()) {
-
-         // }
-         // if (fInitializedShape)
-            model.AddIntermediateTensor(fNY, model.GetTensorType(fNX), fShapeY);
+         model.AddIntermediateTensor(fNY, model.GetTensorType(fNX), fShapeY);
       }
       fType = ConvertTypeToString(model.GetTensorType(fNX));
       if (model.Verbose()) {
          std::cout << "Expand - input " << fNX << " shape " << ConvertDimShapeToString(fShapeX) << " --> " << fNY << " shape "
                   << ConvertDimShapeToString(fShapeY) << (fIsOutputConstant ? ConvertValuesToString(model.GetTensorData<T>(fNY)) + " (constant)" : "") << std::endl;
-      }
-
-      if (fInitializedShape && model.IsInitializedTensor(fNShape)) {
-         // Shape values are fully consumed into fShapeY/fShapeDim at generation time —
-         // no device buffer needed for fNShape for Heterogeneous inference
-         model.SetNotWritableInitializedTensor(fNShape);
       }
    }
 
@@ -156,19 +139,29 @@ public:
       std::stringstream out;
       out << SP << "\n//------ Expand " << opName << " --> " << ConvertDimShapeToString(fShapeY) << "\n";
       // need to declare shape parameters for non initialized shapes
-      if (!fInitializedShape) {
+      if (!fInitializedShape && !fDimShapeValues) {
          for (size_t i = 0; i < fShapeDim.size(); i++) {
             out << SP << "size_t " << fShapeDim[i] << " = " << "tensor_" << fNShape << "[" << i << "];\n";
          }
       }
       // No need to broadcast A if it's an initialized tensor or shapes are the same
-      if (!fInitialized && fShapeX != fShapeY) {
-         out << SP << "// Broadcasting uninitialized tensor " << fNX << "\n";
-         out << SP << "SOFIE::UTILITY::UnidirectionalBroadcast(tensor_" << fNX << ", " << ConvertDimShapeToString(fShapeX) << ", " << ConvertDimShapeToString(fShapeY)
+      auto lengthX = ConvertDimShapeToLength(fShapeX);
+      auto lengthY = ConvertDimShapeToLength(fShapeY);
+      if (lengthX != lengthY) {
+         out << SP << "if ( (" << lengthX << ") < (" << lengthY << ") ) {\n";
+         out << SP << SP << "// Broadcasting uninitialized tensor " << fNX << "\n";
+         out << SP << SP << "UTILITY::UnidirectionalBroadcast(tensor_" << fNX << ", " << ConvertDimShapeToString(fShapeX) << ", " << ConvertDimShapeToString(fShapeY)
                    << ", tensor_"<<fNY<<");\n";
+         out << SP << "} else {\n";
+         out << SP << SP << "std::copy(tensor_" << fNX << ", " << "tensor_" << fNX << " + (" << lengthX << "), tensor_" << fNY << ");\n";
+         out << SP << "}\n";
+      } else {
+         out << SP << "std::copy(tensor_" << fNX << ", " << "tensor_" << fNX << " + (" << lengthX << "), tensor_" << fNY << ");\n";
       }
+
       return out.str();
    }
+
 
    // fShapeX left-padded to fShapeY's rank with Dim{1} entries
    std::vector<Dim> PaddedShapeX() const {
@@ -326,6 +319,8 @@ bool SupportsFusionTypes(const std::vector<ETensorType> &inputTypes, ETensorType
    return inputTypes.size() == 1 && inputTypes[0] == outputType;
 }
 };
+
 }//SOFIE
+
 
 #endif //SOFIE_ROperator_Expand

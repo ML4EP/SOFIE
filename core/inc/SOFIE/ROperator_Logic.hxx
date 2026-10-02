@@ -1,7 +1,6 @@
 #ifndef SOFIE_ROPERATOR_LOGIC
 #define SOFIE_ROPERATOR_LOGIC
 
-
 #include "SOFIE/SOFIE_common.hxx"
 #include "SOFIE/ROperator.hxx"
 #include "SOFIE/RModel.hxx"
@@ -23,7 +22,6 @@ enum class ELogicBinaryOp {
    BitwiseOr,
    BitwiseXor,
 };
-
 
 template <typename T, ELogicBinaryOp Op>
 struct LogicBinaryTrait {};
@@ -117,16 +115,6 @@ public:
    }
 
    // ── Type / shape inference ────────────────────────────────────────────────
-   std::vector<ETensorType> TypeInference(std::vector<ETensorType> input) override {
-      return { Trait::OutputType() };
-   }
-
-   std::vector<std::vector<size_t>> ShapeInference(std::vector<std::vector<size_t>> input) override {
-      if (input.size() < 2)
-         throw std::runtime_error("SOFIE " + Trait::Name() +
-                                  " ShapeInference requires 2 inputs");
-      return { input[0] };
-   }
 
    void Initialize(RModel& model) override {
       if (!model.CheckIfTensorAlreadyExist(fNA))
@@ -280,14 +268,6 @@ public:
    {
       fInputTensorNames  = { fNX };
       fOutputTensorNames = { fNY };
-   }
-
-   std::vector<ETensorType> TypeInference(std::vector<ETensorType> input) override {
-      return input;
-   }
-
-   std::vector<std::vector<size_t>> ShapeInference(std::vector<std::vector<size_t>> input) override {
-      return input;
    }
 
    void Initialize(RModel& model) override {

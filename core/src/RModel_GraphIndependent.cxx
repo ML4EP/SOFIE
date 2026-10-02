@@ -56,6 +56,7 @@ RModel_GraphIndependent::RModel_GraphIndependent(GraphIndependent_Init& graph_in
 
 void RModel_GraphIndependent::Generate() {
     std::string hgname;
+    AddNeededCustomHeader("SOFIE/SOFIE_common.hxx");
     GenerateHeaderInfo(hgname);
 
     std::ofstream f;
@@ -229,6 +230,12 @@ void RModel_GraphIndependent::Generate() {
 
     fGC += ("}\n};\n} //SOFIE_" + fName + "\n");
     fGC += "\n#endif  // SOFIE_" + hgname + "\n";
+
+    for (auto *block : {edges_update_block.get(), nodes_update_block.get(), globals_update_block.get()}) {
+        if (block)
+            AddNeededHelperFunctions(block->GetFunctionBlock()->GetNeededHelperFunctions());
+    }
+    EmitHelperFunctionsCode();
 
 }
 

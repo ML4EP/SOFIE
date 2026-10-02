@@ -1,12 +1,15 @@
 #ifndef SOFIE_ROPERATOR
 #define SOFIE_ROPERATOR
 
-#include <vector>
-#include <set>
-#include <memory>
-
 #include "SOFIE/SOFIE_common.hxx"
 
+#include <algorithm>
+#include <functional>
+#include <set>
+#include <span>
+#include <memory>
+#include <string>
+#include <vector>
 
 namespace SOFIE{
 
@@ -102,14 +105,11 @@ inline const char* toString(OperatorKind kind) {
 
 inline std::set<OperatorKind> FusableKinds = { OperatorKind::RELU, OperatorKind::LAYERNORM, OperatorKind::BATCHNORM};
 
-class ROperator{
-
+class ROperator {
 
 public:
    virtual std::vector<std::string> GetBlasRoutines() { return {}; }
    virtual std::vector<std::string> GetStdLibs() { return {}; }
-   virtual std::vector<std::vector<size_t>> ShapeInference(std::vector<std::vector<size_t>>) { return {}; };
-   virtual std::vector<ETensorType> TypeInference(std::vector<ETensorType>) { return {}; };
    virtual void Initialize(RModel&) = 0;
    virtual std::string Generate(std::string OpName) = 0;  //expect unique opName for each operator within the same RModel
    virtual std::string Generate_GPU_ALPAKA(std::string OpName){ return "";} //expect unique opName for each operator within the same RModel
@@ -224,6 +224,9 @@ public:
 
       return indices;
    }
+
+   bool IsOutputConstant() const { return fIsOutputConstant; }
+
    //virtual void Forward_reference() = 0;
    //virtual void Forward_blas() = 0;
    virtual ~ROperator(){}
@@ -235,29 +238,27 @@ protected:
    OperatorKind fKind = OperatorKind::UNDEFINED;
    size_t fOpOrder = 0;
    const std::string SP = "   ";    ///< space used to correctly indent the generated C++ code
-   bool fUseSession = false;        ///< flag to identify if using the session class
    bool fIsOutputConstant = false;  ///< flag to identify if operator has a constant output (no need to generate code)
    bool fIsOutputParamShape = false;     ///< flag to identify of the output represents a parametric shape (can be known at compile time)
 
-   mutable std::vector<std::string> fInputTensorNames;
-   mutable std::vector<std::string> fOutputTensorNames;
+   mutable std::vector<std::string_view> fInputTensorNames;
+   mutable std::vector<std::string_view> fOutputTensorNames;
 
    std::set<std::string> fPooledOutputNames;
 
 public:
-   void MarkOutputAsPooled(const std::string &name) { fPooledOutputNames.insert(name); }
-   bool IsOutputPooled(const std::string &name) const { return fPooledOutputNames.count(name) > 0; }
+   void MarkOutputAsPooled(std::string_view name) { fPooledOutputNames.insert(std::string(name)); }
+   bool IsOutputPooled(std::string_view name) const { return fPooledOutputNames.count(std::string(name)) > 0; }
 
-   std::span<const std::string> GetOpInputTensors() const {
+   std::span<const std::string_view> GetOpInputTensors() const {
       return fInputTensorNames;
    }
 
-   std::span<const std::string> GetOpOutputTensors() const {
+   std::span<const std::string_view> GetOpOutputTensors() const {
       return fOutputTensorNames;
    }
 
    OperatorKind GetKind() const { return fKind; }
-   bool IsOutputConstant() const { return fIsOutputConstant; }
 
    void RegisterOperatorOrder(const size_t ord){
       fOpOrder = ord;
@@ -268,8 +269,6 @@ public:
 
 };
 
-
-
-}//SOFIE
+}
 
 #endif //SOFIE_OPERATOR

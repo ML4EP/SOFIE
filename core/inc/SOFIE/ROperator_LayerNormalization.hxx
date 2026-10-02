@@ -2,6 +2,7 @@
 #define SOFIE_ROPERATOR_LAYERNORMALIZATION
 
 #include "SOFIE/RModel.hxx"
+#include "SOFIE/ROperator.hxx"
 #include "SOFIE/SOFIE_common.hxx"
 #include <sstream>
 #include <string>
@@ -71,18 +72,13 @@ public:
          }
    }
 
-   std::vector<std::vector<size_t>> ShapeInference(std::vector<std::vector<size_t>> input) override { return input; }
-
-   std::vector<ETensorType> TypeInference(std::vector<ETensorType> input) override { return input; }
-
    void Initialize(RModel& model) override {
       if (!model.CheckIfTensorAlreadyExist(fNX)) {
-         throw std::runtime_error("TMVA::SOFIE - LayerNormalization - Tensor " + fNX + " not found.");
+         throw std::runtime_error("SOFIE - LayerNormalization - Tensor " + fNX + " not found.");
       }
       bool isDynamic = model.IsDynamicTensor(fNX);
       fShapeX = model.GetDimTensorShape(fNX);
       fShapeY = fShapeX;
-      model.AddIntermediateTensor(fNY, model.GetTensorType(fNX), fShapeY);
       // Type of the output
       fType = ConvertTypeToString(model.GetTensorType(fNX));
       // Size of the input
@@ -122,10 +118,6 @@ public:
       if (fAttrStashType == 1 && model.GetTensorType(fNX) != ETensorType::FLOAT) {
          fCastToFloat = true;
          fType = "float";
-         // fNCastedX = "Casted" + fNX;
-         // model.AddIntermediateTensor(fNCastedX, ETensorType::FLOAT, fShapeX);
-         // fNNormalizedX = "Normalized" + fNX;
-         // model.AddIntermediateTensor(fNNormalizedX, ETensorType::FLOAT, fShapeX);
       }
       // scale shape
       fShapeScale = model.GetDimTensorShape(fNScale);
@@ -138,7 +130,7 @@ public:
       // check also shape if consistent now
       for (size_t i = 0; i < fSize; i++) {
          if (fShapeScale[i].dim != 1 && fShapeScale[i] != fShapeX[i])
-            throw std::runtime_error("TMVA::SOFIE - LayerNormalization - Scale Tensor has invalid shape " + ConvertDimShapeToString(fShapeScale));
+            throw std::runtime_error("SOFIE - LayerNormalization - Scale Tensor has invalid shape " + ConvertDimShapeToString(fShapeScale));
       }
       if (!fNB.empty()) {
          fShapeB = model.GetDimTensorShape(fNB);
@@ -150,20 +142,21 @@ public:
          }
          for (size_t i = 0; i < fSize; i++) {
             if (fShapeB[i].dim != 1 && fShapeB[i] != fShapeX[i])
-               throw std::runtime_error("TMVA::SOFIE - LayerNormalization - Bias Tensor has invalid shape " + ConvertDimShapeToString(fShapeScale));
+               throw std::runtime_error("SOFIE - LayerNormalization - Bias Tensor has invalid shape " + ConvertDimShapeToString(fShapeScale));
          }
       }
 
-      // // Broadcast the bias
-      // if (!fNB.empty()) {
-      //    fShapeB = model.GetTensorShape(fNB);
-      //    size_t lengthB = ConvertShapeToLength(fShapeB);
-      //    if (isDynamic || lengthB < static_cast<size_t>(std::stoi(fLength))) {
-      //       fNBroadcastedB = "Broadcasted" + fNB;
-      //       model.AddIntermediateTensor(fNBroadcastedB, ConvertStringToType(fType), fShapeX);
-      //    }
-      // }
+      model.AddIntermediateTensor(fNY, model.GetTensorType(fNX), fShapeY);
+      if (model.Verbose()){
+         std::cout << "LayerNormalization : " << fNX << " -> " << fNY << " shape " << ConvertDimShapeToString(fShapeY)
+                  << " using bias and scale with shapes " << ConvertDimShapeToString(fShapeB) << "  " << ConvertDimShapeToString(fShapeScale)
+                  << std::endl;
+      }
+
       model.AddNeededStdLib("cmath");
+
+      if (!fNBroadcastedB.empty())
+         model.AddNeededHelperFunction("UnidirectionalBroadcast");
    }
 
    std::string GenerateInitCode() override
@@ -172,7 +165,7 @@ public:
       if (!fNBroadcastedB.empty()) {
          out << SP << "// Broadcasting the bias of LayerNormalization op\n";
          out << SP << "{\n";
-         out << SP << SP << "float* data = SOFIE::UTILITY::UnidirectionalBroadcast(tensor_";
+         out << SP << SP << "float* data = UTILITY::UnidirectionalBroadcast(tensor_";
          out << fNB << ", " << ConvertDimShapeToString(fShapeB) << ", " << ConvertDimShapeToString(fShapeX) << ");\n";
          out << SP << "std::copy(data, data + " << fLength << ", tensor_" << fNBroadcastedB << ");\n";
          out << SP << "delete[] data;\n";
@@ -185,7 +178,7 @@ public:
    {
       opName = "op_" + opName;
       if (fShapeX.empty()) {
-         throw std::runtime_error("TMVA::SOFIE LayerNormalization operator " + opName +
+         throw std::runtime_error("SOFIE LayerNormalization operator " + opName +
                                   " called to generate without being initialized first.");
       }
 
@@ -317,7 +310,7 @@ public:
    std::string Generate_GPU_Kernel_ALPAKA(std::string opName, const std::vector<std::string> &dynParamNames) override {
       opName = "op_" + opName;
       if (fShapeX.empty())
-         throw std::runtime_error("TMVA::SOFIE LayerNormalization called to Generate without being initialized first");
+         throw std::runtime_error("SOFIE LayerNormalization called to Generate without being initialized first");
 
       // -----------------------------------------------------------------------
       // Parallel block-per-row strategy (for any static normalizedLength):
@@ -690,7 +683,7 @@ public:
    std::string Generate_GPU_ALPAKA(std::string opName, const std::vector<std::string> &dynParamNames) override {
       opName = "op_" + opName;
       if (fShapeX.empty())
-         throw std::runtime_error("TMVA::SOFIE LayerNormalization called to Generate without being initialized first");
+         throw std::runtime_error("SOFIE LayerNormalization called to Generate without being initialized first");
 
       std::string axesLengthStr = fAxesLength;
       std::string kname = "layerNormKernel_" + opName;

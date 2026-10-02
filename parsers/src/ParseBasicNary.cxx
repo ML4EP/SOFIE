@@ -1,6 +1,6 @@
 #include "SOFIE/RModelParser_ONNX.hxx"
 #include "SOFIE/ROperator_BasicNary.hxx"
-#include "onnx_proto3.pb.h"
+#include "onnx.hxx"
 #include <memory>
 
 
@@ -20,8 +20,8 @@ std::unique_ptr<ROperator> ParseBasicNary(RModelParser_ONNX& parser, const onnx:
          else
             assert(parser.GetTensorType(input_name) == input_type);
       } else {
-         throw std::runtime_error("TMVA::SOFIE ONNX Parser Max op has input tensor" + input_name +
-                                  " but its type is not yet registered");
+         throw std::runtime_error("SOFIE ONNX Parser " + nodeproto.op_type() + " op has input tensor " +
+                                  input_name + " but its type is not yet registered");
       }
       inputs.emplace_back(input_name);
    }
@@ -31,8 +31,12 @@ std::unique_ptr<ROperator> ParseBasicNary(RModelParser_ONNX& parser, const onnx:
 
    switch (input_type) {
    case ETensorType::FLOAT: op.reset(new ROperator_BasicNary<float, Op>(inputs, output_name)); break;
+   case ETensorType::DOUBLE: op.reset(new ROperator_BasicNary<double, Op>(inputs, output_name)); break;
+   case ETensorType::INT32: op.reset(new ROperator_BasicNary<int32_t, Op>(inputs, output_name)); break;
+   case ETensorType::INT64: op.reset(new ROperator_BasicNary<int64_t, Op>(inputs, output_name)); break;
    default:
-      throw std::runtime_error("TMVA::SOFIE - Unsupported - Operator Max does not yet support input type " + ConvertTypeToString(input_type));
+      throw std::runtime_error("SOFIE - Unsupported - Operator " + nodeproto.op_type() +
+                               " does not yet support input type " + ConvertTypeToString(input_type));
    }
 
    if (!parser.IsRegisteredTensorType(output_name)) {
@@ -42,21 +46,12 @@ std::unique_ptr<ROperator> ParseBasicNary(RModelParser_ONNX& parser, const onnx:
    return op;
 }
 
-
-ParserFuncSignature ParseMax = [](RModelParser_ONNX &parser, const onnx::NodeProto &nodeproto) {
-   return ParseBasicNary<EBasicNaryOperator::Max>(parser, nodeproto);
-};
-
-ParserFuncSignature ParseMin= [](RModelParser_ONNX &parser, const onnx::NodeProto &nodeproto) {
-   return ParseBasicNary<EBasicNaryOperator::Min>(parser, nodeproto);
-};
-
-ParserFuncSignature ParseMean = [](RModelParser_ONNX &parser, const onnx::NodeProto &nodeproto) {
-   return ParseBasicNary<EBasicNaryOperator::Mean>(parser, nodeproto);
-};
-
-ParserFuncSignature ParseSum = [](RModelParser_ONNX &parser, const onnx::NodeProto &nodeproto) {
-   return ParseBasicNary<EBasicNaryOperator::Sum>(parser, nodeproto);
-};
+void RegisterBasicNaryParsers(RModelParser_ONNX &parser)
+{
+   parser.RegisterOperator("Max", ParseBasicNary<EBasicNaryOperator::Max>);
+   parser.RegisterOperator("Min", ParseBasicNary<EBasicNaryOperator::Min>);
+   parser.RegisterOperator("Mean", ParseBasicNary<EBasicNaryOperator::Mean>);
+   parser.RegisterOperator("Sum", ParseBasicNary<EBasicNaryOperator::Sum>);
+}
 
 } // namespace SOFIE

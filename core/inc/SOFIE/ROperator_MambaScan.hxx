@@ -83,12 +83,6 @@ public:
       fOutputTensorNames = { fNY };
    }
 
-   std::vector<std::vector<size_t>> ShapeInference(std::vector<std::vector<size_t>> input) override
-   { return { input[0] }; }
-
-   std::vector<ETensorType> TypeInference(std::vector<ETensorType> input) override
-   { return { input[0] }; }
-
    void Initialize(RModel &model) override {
       if (!model.CheckIfTensorAlreadyExist(fNU))
          throw std::runtime_error("SOFIE MambaScan: tensor " + fNU + " not found");
@@ -100,7 +94,6 @@ public:
       fShapeU = model.GetDimTensorShape(fNU);
       if (fShapeU.size() != 3)
          throw std::runtime_error("SOFIE MambaScan: u must be rank-3 [B, D, L]");
-
 
       auto shapeA = model.GetDimTensorShape(fNA);
       if (shapeA.size() != 2)
