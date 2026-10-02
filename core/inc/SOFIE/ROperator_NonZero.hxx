@@ -4,107 +4,205 @@
 #include "SOFIE/SOFIE_common.hxx"
 #include "SOFIE/ROperator.hxx"
 #include "SOFIE/RModel.hxx"
-#include "onnx_proto3.pb.h"
 
 #include <algorithm>
 #include <sstream>
-#include <string>
-#include <vector>
+namespace SOFIE{
 
-namespace SOFIE {
-
-template <typename T>
+template<class T>
 class ROperator_NonZero final : public ROperator
 {
+
 private:
+
    std::string fNX;
    std::string fNY;
+   std::string fNonZeroParam;
+   bool fDeclaresParam = false;
    std::vector<Dim> fShapeX;
    std::vector<Dim> fShapeY;
    size_t fRank = 0;
-   bool fIsInputDynamic = false;  // true if any input dim is only known at runtime
-
-   // Valid only when !fIsInputDynamic: baked into the kernel as compile-time constants so
-   // the static case keeps its fully-optimized launch. When the input
-   // is dynamic, N/P/chunkSize become runtime kernel parameters instead.
+   bool fIsInputDynamic = false;
    size_t fInputLength = 0;
    size_t fNumChunks = 1;
    size_t fChunkSize = 0;
-
    std::string fCountName;
-   std::string fCountScratchName;  // persistent 1-element on-device int64 scratch tensor
+   std::string fCountScratchName;
 
 public:
-   ROperator_NonZero() {}
+   ROperator_NonZero(){}
+   ROperator_NonZero(std::string nameX, std::string nameY):
+      fNX(UTILITY::Clean_name(nameX)), fNY(UTILITY::Clean_name(nameY)){
+         fInputTensorNames = { fNX };
+         fOutputTensorNames = { fNY };
+      }
 
-   ROperator_NonZero(std::string nameX, std::string nameY)
-      : fNX(UTILITY::Clean_name(nameX)), fNY(UTILITY::Clean_name(nameY)), fCountName(fNY + "_nonzero_count"),
-        fCountScratchName(fCountName + "_scratch")
-   {
-      fInputTensorNames = {fNX};
-      fOutputTensorNames = {fNY};
-   }
 
-   std::vector<ETensorType> TypeInference(std::vector<ETensorType> /*input*/) override {
-      return {ETensorType::INT64};
-   }
 
-   void Initialize(RModel &model) override {
-      if (!model.CheckIfTensorAlreadyExist(fNX))
+   void Initialize(RModel& model) override {
+      if (model.CheckIfTensorAlreadyExist(fNX) == false){
          throw std::runtime_error("SOFIE NonZero Op Input Tensor " + fNX + " is not found in model");
-
-      fShapeX = model.GetDimTensorShape(fNX);
-      fRank = fShapeX.size();
-      fIsInputDynamic = std::any_of(fShapeX.begin(), fShapeX.end(), [](const Dim &d) { return d.isParam; });
-
-      if (!fIsInputDynamic) {
-         // Split the compaction across up to 256 chunks (one GPU thread per chunk, single
-         // block) instead of doing it on a single thread.
-         std::vector<size_t> concreteShape(fRank);
-         for (size_t i = 0; i < fRank; i++)
-            concreteShape[i] = fShapeX[i].dim;
-         fInputLength = ConvertShapeToLength(concreteShape);
-         fNumChunks = std::min<size_t>(256, std::max<size_t>(fInputLength, size_t(1)));
-         fChunkSize = (fInputLength + fNumChunks - 1) / fNumChunks;
       }
 
-      fShapeY = {Dim{fRank}, Dim{fCountName, size_t(-1)}};
-      model.AddDynamicTensor(fNY, ETensorType::INT64, fShapeY);
-      model.AddIntermediateTensor(fCountScratchName, ETensorType::INT64, {Dim{1}});
-      model.RegisterInternalDynamicParam(fCountName);
+
+      if (model.IsConstantTensor(fNX)) {
+         T * data = static_cast<T*>(model.GetInitializedTensorData(fNX).get());
+         auto shapeX = model.GetTensorShape(fNX);
+         std::vector<size_t> shapeY(2);
+         shapeY[0] = shapeX.size();
+         auto length = ConvertShapeToLength(shapeX);
+         auto strides = UTILITY::ComputeStrideFromShape(shapeX);
+         std::vector<std::vector<int64_t>> nonzero_indices;
+         for (size_t i = 0; i < length; i++) {
+            if (data[i] != 0) {
+               size_t flat_index = i;
+               std::vector<int64_t> indices(shapeX.size());
+               for (size_t j = 0; j < shapeX.size(); ++j) {
+                  indices[j] = flat_index / strides[j];
+                  flat_index %= strides[j];
+               }
+               nonzero_indices.emplace_back(indices);
+            }
+         }
+         shapeY[1] = nonzero_indices.size();
+         std::vector<int64_t> dataY(shapeY[0]* shapeY[1]);
+         size_t k = 0;
+         for (size_t i = 0; i < shapeY[0]; i++) {
+            for (size_t j = 0; j < shapeY[1]; j++) {
+               dataY[k] = nonzero_indices[j][i];
+               k++;
+            }
+         }
+         if (dataY.empty()) {
+            dataY.resize(1);
+            shapeY.clear();
+         }
+
+         model.AddConstantTensor(fNY, shapeY, dataY);
+         if (model.Verbose()) {
+            std::cout << "NonZero : " << fNX << " -> " << fNY << " " << ConvertShapeToString(shapeY)
+                     << " : " << ConvertValuesToString(dataY) << std::endl;
+         }
+         fIsOutputConstant = true;
+
+      } else {
+
+         fShapeX = model.GetDimTensorShape(fNX);
+
+         fShapeY.resize(2);
+         fShapeY[0] = fShapeX.size();
+
+         fNonZeroParam = "v_NonZero_" + fNX;
+         fShapeY[1] = Dim{fNonZeroParam, static_cast<size_t>(-1)};
+
+         if (!model.IsComputedShapeParam(fNonZeroParam)) {
+            fDeclaresParam = true;
+            auto inputLength = ConvertDimShapeToLength(fShapeX);
+            std::string codeDecl = SP + "size_t " + fNonZeroParam + " = " + inputLength + ";\n";
+            codeDecl += SP + "fV_NonZero_" + fNX + " = " + fNonZeroParam + ";\n";
+            model.AddExtraCodeForDimShapes(codeDecl);
+            model.AddComputedShapeParam(fNonZeroParam);
+         }
+
+         model.AddIntermediateTensor(fNY, ETensorType::INT64, fShapeY);
+         fRank = fShapeX.size();
+         fCountName = fNonZeroParam;
+         fCountScratchName = fNY + "_nonzero_count_scratch";
+         fIsInputDynamic = std::any_of(fShapeX.begin(), fShapeX.end(), [](const Dim &d) { return d.isParam; });
+         if (!fIsInputDynamic) {
+            fInputLength = ConvertShapeToLength(ConvertShapeToInt(fShapeX));
+            fNumChunks = std::min<size_t>(256, std::max<size_t>(fInputLength, size_t(1)));
+            fChunkSize = (fInputLength + fNumChunks - 1) / fNumChunks;
+         }
+         model.AddIntermediateTensor(fCountScratchName, ETensorType::INT64, {Dim{1}});
+         model.RegisterInternalDynamicParam(fCountName);
+         if (model.Verbose()) {
+            std::cout << "NonZero : " << fNX << " -> " << fNY << " " << ConvertDimShapeToString(fShapeY) << std::endl;
+         }
+      }
    }
 
-   std::string Generate(std::string /*opName*/) override {
+   std::string GenerateSessionMembersCode(std::string /*opName*/) override {
+      if (fIsOutputConstant || !fDeclaresParam)
+         return "";
       std::stringstream out;
-      out << "\n//------ NonZero\n";
-      std::string lengthExpr = fIsInputDynamic ? ConvertDimShapeToLength(fShapeX) : std::to_string(fInputLength);
-
-      out << SP << "size_t " << fCountName << " = 0;\n";
-      out << SP << "for (size_t i = 0; i < " << lengthExpr << "; i++) {\n";
-      out << SP << SP << "if (tensor_" << fNX << "[i] != static_cast<T>(0)) " << fCountName << "++;\n";
-      out << SP << "}\n";
-      out << SP << "if (" << fRank << " * " << fCountName << " > fTensor_" << fNY << ".size()) {\n";
-      out << SP << SP << "fTensor_" << fNY << ".resize(" << fRank << " * " << fCountName << ");\n";
-      out << SP << SP << "tensor_" << fNY << " = fTensor_" << fNY << ".data();\n";
-      out << SP << "}\n";
-      out << SP << "size_t nz = 0;\n";
-      out << SP << "for (size_t i = 0; i < " << lengthExpr << "; i++) {\n";
-      out << SP << SP << "if (tensor_" << fNX << "[i] == static_cast<T>(0)) continue;\n";
-
-      for (size_t d = 0; d < fRank; d++) {
-         std::string strideExpr = "1";
-         for (size_t k = d + 1; k < fRank; k++)
-            strideExpr = (strideExpr == "1") ? fShapeX[k].GetVal() : ("(" + strideExpr + " * " + fShapeX[k].GetVal() + ")");
-
-         out << SP << SP << "tensor_" << fNY << "[" << d << " * " << fCountName << " + nz] = (i / " << strideExpr << ") % " << fShapeX[d].GetVal() << ";\n";
-      }
-
-      out << SP << SP << "nz++;\n";
-      out << SP << "}\n";
+      out << SP << "size_t fV_NonZero_" << fNX << " = 0;\n";
       return out.str();
    }
 
+
+   std::string Generate(std::string opName) override {
+      if (fIsOutputConstant) {
+         return "";
+      }
+      opName = "op_" + opName;
+      if (fShapeX.empty()) {
+         throw std::runtime_error("SOFIE Operator NonZero called to Generate without being initialized first");
+      }
+      std::stringstream out;
+      auto intShapeX = ConvertShapeToInt(fShapeX);
+      size_t inputLength = 0;
+      std::string s_inputLength = ConvertDimShapeToLength(fShapeX);
+      if (!intShapeX.empty())
+         inputLength = ConvertShapeToLength(intShapeX);
+
+      size_t dims = fShapeX.size();
+      out << "\n//------ NonZero  -> " << ConvertDimShapeToString(fShapeY) << "\n";
+
+      std::string vnonzero = fDeclaresParam ? fNonZeroParam : ("nonzero_count_" + opName);
+
+      out << SP << "size_t offset_" << opName << " = 0;\n";
+      out << SP << "size_t " << vnonzero << " = 0;\n";
+      for (size_t j = 0; j < dims; j++) {
+         std::string index = "i_" + std::to_string(j);
+         for (size_t k = 0; k <= j; k++) out << SP;
+         out << "for (size_t " << index << " = 0; " << index << " < " << fShapeX[j] << "; " << index << "++) {\n";
+      }
+      for (size_t k = 0; k <= dims; k++) out << SP;
+      out << "if (tensor_" << fNX << "[offset_" << opName << "++]) {\n";
+      for (size_t j = 0; j < dims; j++) {
+         for (size_t k = 0; k <= dims+1; k++) out << SP;
+         out << "tensor_" << fNY << "[";
+         if (j > 0) {
+            if (inputLength > 0) {
+               out << inputLength * j;
+            } else {
+               out << s_inputLength;
+               if (j > 1) out << " * " << j;
+            }
+            out << " + ";
+         }
+         out << vnonzero << "] = i_" << j << ";\n";
+      }
+      for (size_t k = 0; k <= dims+1; k++) out << SP;
+      out << vnonzero << "++;\n";
+      for (size_t k = 0; k <= dims; k++) out << SP;
+      out << "}\n";
+      for (size_t j = dims; j > 0; j--) {
+         for (size_t k = 0; k <j; k++) out << SP;
+         out << "}\n";
+      }
+      out << SP << "if (" << vnonzero << " < " << s_inputLength << "){\n";
+      for (size_t j = 1; j < dims; j++) {
+         out << SP << SP << "std::copy(tensor_" << fNY;
+         if (j>0) out << " + " << s_inputLength;
+         if (j>1) out << " * " << j;
+         out << ", tensor_" << fNY;
+         if (j>0) out << " + " << s_inputLength;
+         if (j>1) out << " * " << j;
+         out << " + " << vnonzero << ", tensor_" <<  fNY;
+         if (j>0) out << " + " << vnonzero;
+         if (j>1) out << "* " << j;
+         out << ");\n";
+      }
+      out << SP << "}\n";
+
+      return out.str();
+   }
+
+
    std::string Generate_GPU_Kernel_ALPAKA(std::string /*opName*/, const std::vector<std::string> &dynParamNames_) override {
+      if (fIsOutputConstant) return "";
       // fCountName (this op's own nonzero-element count) is registered as an
       // internal dynamic param so DOWNSTREAM operators can receive it once
       // computed; strip it back out here since it would otherwise appear in
@@ -166,10 +264,12 @@ public:
    }
 
    std::string Generate_GPU_Kernel_Definitions_ALPAKA(std::string /*opName*/) override {
+      if (fIsOutputConstant) return "";
       return SP + "NonZeroKernel_" + fNY + " nonZeroKernel_" + fNY + ";\n";
    }
 
    std::string Generate_GPU_ALPAKA(std::string /*opName*/, const std::vector<std::string> &dynParamNames_) override {
+      if (fIsOutputConstant) return "";
       // See Generate_GPU_Kernel_ALPAKA: fCountName must not be passed back into
       // this operator's own kernel launch before it has been computed.
       std::vector<std::string> dynParamNames = dynParamNames_;
@@ -202,11 +302,12 @@ public:
       out << SP << "auto nonZeroCountHost_" << fNY << " = alpaka::allocBuf<int64_t, Idx>(hostAcc, Ext1D::all(Idx{1}));\n";
       out << SP << "alpaka::memcpy(queue, nonZeroCountHost_" << fNY << ", deviceBuf_" << fCountScratchName << ");\n";
       out << SP << "alpaka::wait(queue);\n";
-      out << SP << "size_t " << fCountName << " = static_cast<size_t>(*alpaka::getPtrNative(nonZeroCountHost_" << fNY << "));\n";
+      out << SP << (fDeclaresParam ? "size_t " : "") << fCountName << " = static_cast<size_t>(*alpaka::getPtrNative(nonZeroCountHost_" << fNY << "));\n";
       return out.str();
    }
 
    std::string GenerateInitCode_GPU_ALPAKA() override {
+      if (fIsOutputConstant) return "";
       std::string maxLen = fIsInputDynamic
          ? ("static_cast<Idx>(" + std::to_string(fRank) + "u * (" + ConvertDimShapeToLength(fShapeX) + "))")
          : (std::to_string(fRank * fInputLength) + "u");
@@ -214,7 +315,7 @@ public:
    }
 };
 
+}
 
-} // namespace SOFIE
 
-#endif // SOFIE_ROPERATOR_NONZERO
+#endif

@@ -1,6 +1,6 @@
 #include "SOFIE/RModelParser_ONNX.hxx"
 #include "SOFIE/ROperator_Logic.hxx"
-#include "onnx_proto3.pb.h"
+#include "onnx.hxx"
 
 namespace SOFIE {
 
@@ -22,13 +22,13 @@ static std::unique_ptr<ROperator> ParseLogicalBinary(RModelParser_ONNX &parser,
    for (const auto &name : { input_a, input_b }) {
       if (!parser.IsRegisteredTensorType(name))
          throw std::runtime_error(
-            "TMVA::SOFIE ONNX Parser " +
+            "SOFIE ONNX Parser " +
             LogicBinaryTrait<uint8_t, Op>::Name() +
             ": input tensor '" + name + "' type not yet registered");
       ETensorType t = parser.GetTensorType(name);
       if (t != ETensorType::BOOL && t != ETensorType::UINT8)
          throw std::runtime_error(
-            "TMVA::SOFIE ONNX Parser " +
+            "SOFIE ONNX Parser " +
             LogicBinaryTrait<uint8_t, Op>::Name() +
             ": input '" + name + "' must be bool, got " +
             ConvertTypeToString(t));
@@ -59,7 +59,7 @@ static std::unique_ptr<ROperator> ParseBitwiseBinary(RModelParser_ONNX &parser,
 
    if (!parser.IsRegisteredTensorType(input_a))
       throw std::runtime_error(
-         "TMVA::SOFIE ONNX Parser " +
+         "SOFIE ONNX Parser " +
          LogicBinaryTrait<int32_t, Op>::Name() +
          ": input tensor '" + input_a + "' type not yet registered");
 
@@ -85,7 +85,7 @@ static std::unique_ptr<ROperator> ParseBitwiseBinary(RModelParser_ONNX &parser,
          op.reset(new ROperator_LogicBinary<uint64_t, Op>(input_a, input_b, output)); break;
       default:
          throw std::runtime_error(
-            "TMVA::SOFIE ONNX Parser " +
+            "SOFIE ONNX Parser " +
             LogicBinaryTrait<int32_t, Op>::Name() +
             ": unsupported input type " + ConvertTypeToString(input_type));
    }
@@ -143,7 +143,7 @@ ParserFuncSignature ParseBitwiseNot = [](RModelParser_ONNX &parser,
 
    if (!parser.IsRegisteredTensorType(input_name))
       throw std::runtime_error(
-         "TMVA::SOFIE ONNX Parser BitwiseNot: input tensor '" +
+         "SOFIE ONNX Parser BitwiseNot: input tensor '" +
          input_name + "' type not yet registered");
 
    const ETensorType input_type = parser.GetTensorType(input_name);
@@ -168,7 +168,7 @@ ParserFuncSignature ParseBitwiseNot = [](RModelParser_ONNX &parser,
          op.reset(new ROperator_BitwiseNot<uint64_t>(input_name, output_name)); break;
       default:
          throw std::runtime_error(
-            "TMVA::SOFIE ONNX Parser BitwiseNot: unsupported input type " +
+            "SOFIE ONNX Parser BitwiseNot: unsupported input type " +
             ConvertTypeToString(input_type));
    }
 

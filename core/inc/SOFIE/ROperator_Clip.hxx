@@ -1,16 +1,15 @@
 #ifndef SOFIE_ROPERATOR_CLIP
 #define SOFIE_ROPERATOR_CLIP
 
-#include "SOFIE_common.hxx"
-#include "ROperator.hxx"
-#include "RModel.hxx"
+#include "SOFIE/SOFIE_common.hxx"
+#include "SOFIE/ROperator.hxx"
+#include "SOFIE/RModel.hxx"
 
 #include <iomanip>
 #include <limits>
 #include <sstream>
 #include <string>
 #include <vector>
-
 namespace SOFIE {
 
 // ---------------------------------------------------------------------------
@@ -392,12 +391,18 @@ private:
    std::string ToStringHighPrec(T val) const {
       std::ostringstream ss;
       ss << std::setprecision(std::numeric_limits<T>::max_digits10) << val;
-      // add dot if missing
-      if (ss.str().find(".") == std::string::npos) ss << ".";
-      // append 'f' suffix for float literals so generated code compiles
-      // cleanly without implicit double→float conversion warnings
-      if (std::is_same<T, float>::value) ss << "f";
-      return ss.str();
+      if constexpr (std::is_floating_point_v<T>) {
+         // add dot if missing
+         if (ss.str().find(".") == std::string::npos)
+            ss << ".";
+         // append 'f' suffix for float literals so generated code compiles
+         // cleanly without implicit double→float conversion warnings
+         if (std::is_same<T, float>::value)
+            ss << "f";
+         return ss.str();
+      } else {
+         return "static_cast<" + TensorType<T>::Name() + ">(" + ss.str() + ")";
+      }
    }
 };
 

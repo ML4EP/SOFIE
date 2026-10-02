@@ -40,15 +40,6 @@ public:
                    [](const std::string& s) -> std::string_view { return s; });
       }
 
-   std::vector<ETensorType> TypeInference(std::vector<ETensorType> input) override {
-      return input;
-   }
-
-   std::vector<std::vector<size_t>> ShapeInference(std::vector<std::vector<size_t>> input) override {
-      auto ret = input; //suggest copy to compiler
-      return ret;
-   }
-
    void Initialize(RModel& model) override {
       if (model.CheckIfTensorAlreadyExist(fNX) == false){   //input must be a graph input, or already initialized intermediate tensor
          throw std::runtime_error("SOFIE Split Op Input Tensor is not found in model");
@@ -92,7 +83,7 @@ public:
       int64_t tot_split = 0;
       for (size_t i = 0; i < fNYs.size(); i++) {
          std::vector<Dim> outputShape = fInputShape;
-         outputShape[fAxis] = Dim{static_cast<size_t>(fSplit[i])};
+         outputShape[fAxis] = Dim{ static_cast<size_t>(fSplit[i]) };
          tot_split += fSplit[i];
          model.AddIntermediateTensor(fNYs[i], model.GetTensorType(fNX), outputShape);
          fOutputShapes.push_back(outputShape);
@@ -188,7 +179,7 @@ public:
       out << SP << "size_t " << OpName << "_axis_offset = 0;\n";
       // unroll the loop on split outputs
       for (size_t i = 0; i < fNYs.size(); i++)  {
-         std::string length = ConvertDimShapeToLength(fOutputShapes[i]);
+         auto length = ConvertDimShapeToLength(fOutputShapes[i]);
          auto output_strides = UTILITY::ComputeStrideFromShape(fOutputShapes[i]);
 
          out << SP << "for (int id = 0; id < static_cast<int>(" << length << ") ; id++){\n";

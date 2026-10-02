@@ -1,6 +1,6 @@
 #include "SOFIE/RModelParser_ONNX.hxx"
 #include "SOFIE/ROperator_Gather.hxx"
-#include "onnx_proto3.pb.h"
+#include "onnx.hxx"
 #include <stdexcept>
 
 
@@ -12,7 +12,7 @@ ParserFuncSignature ParseGather = [](RModelParser_ONNX &parser, const onnx::Node
    if (parser.IsRegisteredTensorType(input_name)) {
       input_type = parser.GetTensorType(input_name);
    } else {
-      throw std::runtime_error("TMVA::SOFIE ONNX Parser Gather op has input tensor" + input_name +
+      throw std::runtime_error("SOFIE ONNX Parser Gather op has input tensor" + input_name +
                                " but its type is not yet registered");
    }
 
@@ -23,7 +23,7 @@ ParserFuncSignature ParseGather = [](RModelParser_ONNX &parser, const onnx::Node
       indices_type = parser.GetTensorType(indices_name);
       if (indices_type != ETensorType::INT64 && indices_type != ETensorType::INT32) {
          throw
-            std::runtime_error("TMVA::SOFIE ONNX Parser Gather op Indices tensor type not supported.");
+            std::runtime_error("SOFIE ONNX Parser Gather op Indices tensor type not supported.");
       }
    }
 

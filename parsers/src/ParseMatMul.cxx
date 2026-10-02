@@ -1,8 +1,6 @@
 #include "SOFIE/RModelParser_ONNX.hxx"
 #include "SOFIE/ROperator_Gemm.hxx"
-#include "onnx_proto3.pb.h"
-
-
+#include "onnx.hxx"
 namespace SOFIE {
 
 ParserFuncSignature ParseMatMul = [](RModelParser_ONNX &parser, const onnx::NodeProto &matmulnode) {
@@ -14,7 +12,7 @@ ParserFuncSignature ParseMatMul = [](RModelParser_ONNX &parser, const onnx::Node
    if (parser.IsRegisteredTensorType(inputA.tensorName)) {
       inputType = parser.GetTensorType(inputA.tensorName);
    } else {
-      throw std::runtime_error("TMVA::SOFIE ONNX Parser MatMul op has input tensor " + inputA.tensorName +
+      throw std::runtime_error("SOFIE ONNX Parser MatMul op has input tensor " + inputA.tensorName +
                                " but its type is not yet registered");
    }
 
@@ -29,7 +27,7 @@ ParserFuncSignature ParseMatMul = [](RModelParser_ONNX &parser, const onnx::Node
          break;
       default:
          throw std::runtime_error(
-            "TMVA::SOFIE - Unsupported - MatMul does not yet support input type " +
+            "SOFIE - Unsupported - MatMul does not yet support input type " +
             std::to_string(static_cast<int>(inputType)));
    }
 

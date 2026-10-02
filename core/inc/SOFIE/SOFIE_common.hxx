@@ -5,21 +5,23 @@
 
 #include <span>
 
-#include <stdexcept>
-#include <type_traits>
+#include <algorithm>
+#include <cassert>
+#include <complex>
 #include <cstdint>
 #include <cstring>
-#include <complex>
-#include <string>
-#include <vector>
+#include <iomanip>
+#include <iostream>
+#include <limits>
 #include <map>
 #include <memory>
 #include <regex>
+#include <set>
 #include <sstream>
-#include <iostream>
-#include <iomanip>
-#include <cassert>
-#include <limits>
+#include <stdexcept>
+#include <string>
+#include <type_traits>
+#include <vector>
 
 namespace SOFIE {
 
@@ -348,49 +350,12 @@ public:
       return static_cast<T const *>(fData.get());
    }
 
-   void CastSharedToPersistent()
-   {
-      // We only calculate fSize here, because it is only used for IO to know
-      // the size of the persistent data.
-      fSize = 1;
-      for (std::size_t item : fShape) {
-         fSize *= static_cast<int>(item);
-      }
-      // get size in bytes
-      fSize *= GetTypeSize(fType);
-      fPersistentData = static_cast<char *>(fData.get());
-   }
-   void CastPersistentToShared()
-   {
-      // If there is no persistent data, do nothing
-      if (fSize == 0 || fPersistentData == nullptr) {
-         return;
-      }
-
-      // Nothing to be done if the pointed-to data is the same
-      if (fPersistentData == static_cast<char *>(fData.get())) {
-         return;
-      }
-
-      // Initialize the shared_ptr
-      fData = std::shared_ptr<void>{malloc(fSize), free};
-      std::memcpy(fData.get(), fPersistentData, fSize);
-
-      // Make sure the data read from disk doesn't leak and delete the
-      // persistent data
-      delete[] fPersistentData;
-      fPersistentData = nullptr;
-      fSize = 0;
-   }
-
 private:
    bool  fConstant = false;      ///< Flag specifying if tensor is a Constant one (coming from a Constant operator)
    bool  fIsNotWritable = false; ///< Flag to indicate that tensor values do not need to be written as weight or generated code
    ETensorType fType;               ///< Encodes the type of the data
    std::vector<std::size_t> fShape; ///< The shape of the data in terms of elements in each dimension
    std::shared_ptr<void> fData;     ///<! Transient shared data
-   int fSize = 0;                   ///< The size of the persistent data in bytes (not number of elements!)
-   char *fPersistentData = nullptr; ///<[fSize] Persistent version of the data
 };
 
 template <typename T>
@@ -441,7 +406,7 @@ T* BroadcastConvBias(const T* data, const size_t channel, const std::vector<size
    size_t size = targetShape.size();
    if (targetShape[1] != channel) {
       std::stringstream ss;
-      ss << "TMVA::SOFIE - Error broadcasting Conv Bias of shape {";
+      ss << "SOFIE - Error broadcasting Conv Bias of shape {";
       ss << std::to_string(channel);
       ss << "} to ";
       ss << ConvertShapeToString(targetShape);
@@ -576,6 +541,7 @@ void UnidirectionalBroadcast(const T* data, const std::vector<size_t>& shape, co
       size_t offset = targetSize - shape.size();
       std::copy(shape.begin(), shape.end(), newShape.begin() + offset);
       BroadcastTensor(inData, newShape, targetShape, broadcastedData);
+      return;
    }
    BroadcastTensor(inData, shape, targetShape, broadcastedData);
 }
@@ -595,168 +561,6 @@ struct SliceInfo {
 };
 SliceInfo ComputeSliceInfo(const std::vector<Dim> & shape, size_t axis);
 
-/// function to check if a >> 0 and a < MAX using a single comparison
-//// use trick casting to unsigned values so it becomes a single comparison
-inline bool is_a_ge_zero_and_a_lt_b(int a, int b) {
-   return static_cast<unsigned>(a) < static_cast<unsigned>(b);
-}
-
-
-/// im2col : efficient function to re-arrange input data of convolution to a matrix
-/// that can be used by BLAS
-/// Use trick to loop on each element of filtered region first and follow input data layout
-/// By doing this reads and writes are of consecutive data in memory and one gains in efficiency
-/// The resulting matrix will be already transposed and can be used directly in BLAS
-/// since output will be a matrix : (channels*kernel_h*kernel_w , output_h*output_w)
-/// Example: with an input matrix
-///    a1 a2 a3
-///    b1 b2 b3    and a 2x2 kernel    (k1,k2,k3,k4) and padding 1 :
-///    c1 c2 c3
-///     outpout will be a matrix (4 x 16)
-///  the routine will follow output order :
-//     first all elements which will be operated by k1 then k2 then k3
-///  -> ( 0  0  0  0  0  a1 a2 a3 0  b1 b2 b3  0 c1 c2 c3  )    all elements for k1
-///     ( 0  0  0  0  a1 a2 a3  0 b1 b2 b3  0 c1 c2 c3  0  )     for k2
-///     ( 0  a1 a2 a3 0  b1 b2 b3 0  c1 c2 c3  0  0  0  0  )     for k3
-///     ( a1 a2 a3 0  b1 b2 b3  0 c1 c2 c3  0  0  0  0  0  )     for k4
-///
-
-template <typename T>
-void Im2col(const T *data_im, const int channels, const int height, const int width, const int kernel_h,
-                const int kernel_w, const int pad_h, const int pad_w, const int stride_h, const int stride_w,
-                const int dilation_h, const int dilation_w, T *data_col)
-{
-   const int output_h = (height + 2 * pad_h - (dilation_h * (kernel_h - 1) + 1)) / stride_h + 1;
-   const int output_w = (width + 2 * pad_w - (dilation_w * (kernel_w - 1) + 1)) / stride_w + 1;
-   const int channel_size = height * width;
-   for (int channel = channels; channel--; data_im += channel_size) {
-      for (int kernel_row = 0; kernel_row < kernel_h; kernel_row++) {
-         for (int kernel_col = 0; kernel_col < kernel_w; kernel_col++) {
-            int input_row = -pad_h + kernel_row * dilation_h;
-            for (int output_rows = output_h; output_rows; output_rows--) {
-               if (!is_a_ge_zero_and_a_lt_b(input_row, height)) {
-                  for (int output_cols = output_w; output_cols; output_cols--) {
-                     *(data_col++) = 0;
-                  }
-               } else {
-                  int input_col = -pad_w + kernel_col * dilation_w;
-                  for (int output_col = output_w; output_col; output_col--) {
-                     if (is_a_ge_zero_and_a_lt_b(input_col, width)) {
-                        *(data_col++) = data_im[input_row * width + input_col];
-                     } else {
-                        *(data_col++) = 0;
-                     }
-                     input_col += stride_w;
-                  }
-               }
-               input_row += stride_h;
-            }
-         }
-      }
-   }
-}
-
-/// 3d implementation
-template <typename T>
-void Im2col_3d(const T *data_im, const int channels,
-            const int depth, const int height, const int width,
-            const int kernel_d, const int kernel_h, const int kernel_w,
-            const int pad_d, const int pad_h, const int pad_w,
-            const int stride_d, const int stride_h, const int stride_w,
-            const int dilation_d, const int dilation_h,  const int dilation_w, T *data_col)
-{
-   const int output_h = (height + 2 * pad_h - (dilation_h * (kernel_h - 1) + 1)) / stride_h + 1;
-   const int output_w = (width + 2 * pad_w - (dilation_w * (kernel_w - 1) + 1)) / stride_w + 1;
-   const int output_d = (depth + 2 * pad_d - (dilation_d * (kernel_d - 1) + 1)) / stride_d + 1;
-   const int channel_size = height * width * depth;
-   // assume data are c x d x h x w
-   for (int channel = channels; channel--; data_im += channel_size) {
-      for (int kernel_depth = 0; kernel_depth < kernel_d; kernel_depth++) {
-         for (int kernel_row = 0; kernel_row < kernel_h; kernel_row++) {
-            for (int kernel_col = 0; kernel_col < kernel_w; kernel_col++) {
-               int input_dep = -pad_d + kernel_depth * dilation_d;
-               for (int output_dep = output_d; output_dep; output_dep--) {
-                  if (!is_a_ge_zero_and_a_lt_b(input_dep, depth)) {
-                     for (int output_rows = output_h; output_rows; output_rows--) {
-                        for (int output_cols = output_w; output_cols; output_cols--) {
-                           *(data_col++) = 0;
-                        }
-                     }
-                  } else {
-                     int input_row = -pad_h + kernel_row * dilation_h;
-                     for (int output_rows = output_h; output_rows; output_rows--) {
-                        if (!is_a_ge_zero_and_a_lt_b(input_row, height)) {
-                           for (int output_cols = output_w; output_cols; output_cols--) {
-                              *(data_col++) = 0;
-                           }
-                        } else {
-                           int input_col = -pad_w + kernel_col * dilation_w;
-                           for (int output_col = output_w; output_col; output_col--) {
-                              if (is_a_ge_zero_and_a_lt_b(input_col, width)) {
-                                 *(data_col++) = data_im[input_dep * width * height + input_row * width + input_col];
-                              } else {
-                                 *(data_col++) = 0;
-                              }
-                              input_col += stride_w;
-                           }
-                        }
-                        input_row += stride_h;
-                     }
-                  }
-                  input_dep += stride_d;
-               }
-            }
-         }
-      }
-   }
-}
-
-template <typename Dtype>
-void col2im(const Dtype* data_col, const int channels,
-    const int height, const int width, const int kernel_h, const int kernel_w,
-    const int pad_h, const int pad_w,
-    const int stride_h, const int stride_w,
-    const int dilation_h, const int dilation_w,
-    Dtype* data_im) {
-   // note that output data_im needs to be set to zero value!!!!
-   std::fill(data_im, data_im + height * width * channels, 0.);
-  //caffe_set(height * width * channels, Dtype(0), data_im);
-  // data_im must be a zero vector
-  //const Dtype * data_col_0 = data_col;
-  const int output_h = (height + 2 * pad_h -
-    (dilation_h * (kernel_h - 1) + 1)) / stride_h + 1;
-  const int output_w = (width + 2 * pad_w -
-    (dilation_w * (kernel_w - 1) + 1)) / stride_w + 1;
-  const int channel_size = height * width;
-  for (int channel = channels; channel--; data_im += channel_size) {
-    for (int kernel_row = 0; kernel_row < kernel_h; kernel_row++) {
-      for (int kernel_col = 0; kernel_col < kernel_w; kernel_col++) {
-        int input_row = -pad_h + kernel_row * dilation_h;
-        for (int output_rows = output_h; output_rows; output_rows--) {
-          if (!is_a_ge_zero_and_a_lt_b(input_row, height)) {
-            data_col += output_w;
-          } else {
-            int input_col = -pad_w + kernel_col * dilation_w;
-            for (int output_col = output_w; output_col; output_col--) {
-              if (is_a_ge_zero_and_a_lt_b(input_col, width)) {
-                //assert(input_row*width+input_col < height * width * channels);
-                //assert(data_col - data_col_0 < output_h*output_w*channels);
-               //  std::cout << "COL2IM: input_row" << "  " << input_row << "  " << input_col
-               //       << " <---- " << data_col - data_col_0 << " values:  "
-               //       << data_im[input_row * width + input_col] << " <--- " << *data_col << std::endl;
-                data_im[input_row * width + input_col] += *data_col;
-              }
-              data_col++;
-              input_col += stride_w;
-            }
-          }
-          input_row += stride_h;
-        }
-      }
-    }
-  }
-  //std::cout << "finishing col2imp" << std::endl;
-}
 
 }  // end namespace UTILITY
 
@@ -765,7 +569,6 @@ extern "C" void sgemm_(const char * transa, const char * transb, const int * m, 
                        const float * alpha, const float * A, const int * lda, const float * B, const int * ldb,
                        const float * beta, float * C, const int * ldc);
 }//BLAS
-
 
 struct GNN_Data {
       RTensor<float> node_data;      // the node feature data, tensor with shape (num_nodes, num_node_features)
@@ -975,7 +778,19 @@ inline std::string ConvertOutputTypeToString(ETensorType t) {
    return ConvertTypeToString(t);
 }
 
+struct HelperFunctionsCode {
+   std::string includes;
+   std::string definitions;
+   std::string cladDefinitions;
+};
+
+///
+///
+HelperFunctionsCode GenerateHelperFunctionsCode(const std::set<std::string> & neededHelpers,
+                                                const std::string & modelNamespace,
+                                                bool sgemmAlreadyDeclared = false);
+
 
 } // namespace SOFIE
 
-#endif //TMVA_SOFIE_COMMON
+#endif

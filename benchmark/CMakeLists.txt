@@ -650,7 +650,6 @@ target_include_directories(sofie_benchmark_emitter PRIVATE
 target_link_libraries(sofie_benchmark_emitter PRIVATE
     SOFIE_core
     SOFIE_parsers
-    protobuf::libprotobuf
 )
 
 target_compile_options(sofie_benchmark_emitter PRIVATE
@@ -960,7 +959,6 @@ if(SOFIE_BENCHMARK_LARGE)
         target_link_libraries(sofie_benchmark_large_emitter PRIVATE
             SOFIE_core
             SOFIE_parsers
-            protobuf::libprotobuf
         )
         target_compile_options(sofie_benchmark_large_emitter PRIVATE
             -Wno-unused-parameter

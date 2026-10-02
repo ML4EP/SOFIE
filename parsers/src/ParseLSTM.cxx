@@ -1,8 +1,6 @@
 #include "SOFIE/RModelParser_ONNX.hxx"
 #include "SOFIE/ROperator_LSTM.hxx"
-#include "onnx_proto3.pb.h"
-
-
+#include "onnx.hxx"
 namespace SOFIE {
 
 ParserFuncSignature ParseLSTM = [](RModelParser_ONNX &parser, const onnx::NodeProto &nodeproto) {
@@ -12,7 +10,7 @@ ParserFuncSignature ParseLSTM = [](RModelParser_ONNX &parser, const onnx::NodePr
    if (parser.IsRegisteredTensorType(input_name)) {
       input_type = parser.GetTensorType(input_name);
    } else {
-      throw std::runtime_error("TMVA::SOFIE ONNX Parser LSTM op has input tensor " + input_name +
+      throw std::runtime_error("SOFIE ONNX Parser LSTM op has input tensor " + input_name +
                                " but its type is not yet registered");
    }
 
@@ -93,7 +91,7 @@ ParserFuncSignature ParseLSTM = [](RModelParser_ONNX &parser, const onnx::NodePr
          name_sequence_lens, name_initial_h, name_initial_c, name_p, name_y, name_y_h, name_y_c));
       break;
    default:
-      throw std::runtime_error("TMVA::SOFIE - Unsupported - Operator LSTM does not yet support input type " +
+      throw std::runtime_error("SOFIE - Unsupported - Operator LSTM does not yet support input type " +
                                std::to_string(static_cast<int>(input_type)));
    }
 

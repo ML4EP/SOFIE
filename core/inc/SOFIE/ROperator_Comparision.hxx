@@ -1,3 +1,4 @@
+
 #ifndef SOFIE_ROperator_Comparision
 #define SOFIE_ROperator_Comparision
 
@@ -5,9 +6,8 @@
 #include "SOFIE/ROperator.hxx"
 #include "SOFIE/RModel.hxx"
 
+#include <algorithm>
 #include <sstream>
-
-
 namespace SOFIE{
 
 enum EComparisionOperator { Eq, Less, LessEq, Greater, GreaterEq };
@@ -74,19 +74,9 @@ public:
       fNX1(UTILITY::Clean_name(nameX1)), fNX2(UTILITY::Clean_name(nameX2)), fNY(UTILITY::Clean_name(nameY)){
          fKind = OperatorKind::COMPARISON;
          fInputTensorNames = { fNX1, fNX2 };
+
          fOutputTensorNames = { fNY };
       }
-
-   // type of output given input
-   std::vector<ETensorType> TypeInference(std::vector<ETensorType> input) override {
-      return input;
-   }
-
-   // shape of output tensors given input tensors
-   std::vector<std::vector<size_t>> ShapeInference(std::vector<std::vector<size_t>> input) override {
-      auto ret = input; // return vector size 1 with first input
-      return ret;
-   }
 
    void Initialize(RModel& model) override {
       // input must be a graph input, or already initialized intermediate tensor
@@ -119,21 +109,22 @@ public:
             fShapeY = fShapeX1;
          } else  {
             // Y is the common shape of A and B
-            fShapeY = UTILITY::MultidirectionalBroadcastShape(fShapeX1, fShapeX2).second;
+            auto ret = UTILITY::MultidirectionalBroadcastShape(fShapeX1, fShapeX2);
+            fBroadcastFlag = ret.first;
+            fShapeY = ret.second;
             broadcastX1 = !UTILITY::AreSameShape(fShapeX1, fShapeY);
             broadcastX2 = !UTILITY::AreSameShape(fShapeX2, fShapeY);
          }
-         // keep the Dim copies in sync with the (possibly rank-padded) static shapes,
-         // the GPU emitters read them directly
          fDimShapeX1 = ConvertShapeToDim(fShapeX1);
          fDimShapeX2 = ConvertShapeToDim(fShapeX2);
+
 
          // analyze case of constant tensors or shape tensors (which have known shapes but data as Dim values
          // normal case with non-dynamic tensor is also here
          T *data1 = nullptr;
          T *data2 = nullptr;
-         std::unique_ptr<T[]> broadcastedData1;
-         std::unique_ptr<T[]> broadcastedData2;
+         std::unique_ptr<T> broadcastedData1;
+         std::unique_ptr<T> broadcastedData2;
          // data for shape tensors
          std::vector<Dim> shapeData1;
          std::vector<Dim> shapeData2;
@@ -142,7 +133,7 @@ public:
          if (model.IsInitializedTensor(fNX1)) {
             data1 = static_cast<T *>(model.GetInitializedTensorData(fNX1).get());
             if (broadcastX1) {
-               broadcastedData1 = std::unique_ptr<T[]>(
+               broadcastedData1 = std::unique_ptr<T>(
                   UTILITY::UnidirectionalBroadcast(data1, fShapeX1, fShapeY));
                data1 = broadcastedData1.get();
             }
@@ -153,7 +144,7 @@ public:
          if (model.IsInitializedTensor(fNX2)) {
             data2 = static_cast<T *>(model.GetInitializedTensorData(fNX2).get());
             if (broadcastX2) {
-               broadcastedData2 = std::unique_ptr<T[]>(
+               broadcastedData2 = std::unique_ptr<T>(
                   UTILITY::UnidirectionalBroadcast(data2, fShapeX2, fShapeY));
                data2 = broadcastedData2.get();
             }

@@ -24,7 +24,7 @@ private:
    int fEnd = 0; // default is input length (all input tensor shape included)
    std::string fNX;
    std::string fNY;
-   std::vector<size_t> fShape;
+   std::vector<Dim> fShape;
    std::vector<size_t> fOutput_shape;
 
 public:
@@ -35,28 +35,12 @@ public:
          fOutputTensorNames = { fNY };
    }
 
-   std::vector<ETensorType> TypeInference(std::vector<ETensorType> input) override {
-      return input;
-   }
-
-   std::vector<std::vector<size_t>> ShapeInference(std::vector<std::vector<size_t>> input) override {
-      std::vector<std::vector<size_t>>  ret;
-      ret[0].push_back(input[0].size());
-      return ret;
-   }
-
    void Initialize(RModel& model) override {
       if (model.CheckIfTensorAlreadyExist(fNX) == false){   //input must be a graph input, or already initialized intermediate tensor
          throw std::runtime_error("SOFIE Shape Op Input Tensor " + fNX + " is not found in model");
       }
-      // Use Dim-aware shape query to handle dynamic (symbolic) tensors
-      auto dimShape = model.GetDimTensorShape(fNX);
-      size_t length = dimShape.size();  // rank of the input tensor
-      // Build fShape from dimShape (0 for symbolic/dynamic dims, concrete value otherwise)
-      fShape.resize(length);
-      for (size_t i = 0; i < length; i++)
-         fShape[i] = dimShape[i].isParam ? 0 : dimShape[i].dim;
-
+      fShape = model.GetDimTensorShape(fNX);
+      size_t length = fShape.size();
       fStart = std::max(fStart,(int) -length);
       fStart = std::min(fStart,(int) length);
       if (fStart < 0) fStart += length;
@@ -68,8 +52,9 @@ public:
       // in case the input tensor is not a dynamic tensor we should register the output as a Constant tensor since we know
       // its content
       if (!model.IsDynamicTensor(fNX) && !fOutput_shape.empty()) {
+         auto shape = model.GetTensorShape(fNX);
          std::shared_ptr<void> data(malloc(length * sizeof(int64_t)), free);
-         auto shape_values = std::vector<int64_t>(fShape.begin()+fStart, fShape.begin() + fEnd );
+         auto shape_values = std::vector<int64_t>(shape.begin()+fStart, shape.begin() + fEnd );
          std::memcpy(data.get(), (void*) shape_values.data(), length * sizeof(int64_t));
          model.AddConstantTensor(fNY, ETensorType::INT64, fOutput_shape, data);
          fOutputTensorNames.pop_back();
@@ -80,19 +65,10 @@ public:
             std::cout << std::endl;
          }
          fIsOutputConstant = true;
-      } else if (model.IsDynamicTensor(fNX) && !fOutput_shape.empty()) {
-         // For dynamic tensors, register the output as a shape tensor with symbolic dimension values
-         std::vector<Dim> dimVals(dimShape.begin() + fStart, dimShape.begin() + fEnd);
-         model.AddShapeTensor(fNY, dimVals, false);
-         fIsOutputConstant = true;  // no runtime code needed
-         if (model.Verbose()) {
-            std::cout << "Output of Shape (dynamic input) is shape tensor: " << ConvertDimShapeToString(dimVals) << std::endl;
-         }
       }
-      else
-         model.AddIntermediateTensor(fNY, ETensorType::INT64, fOutput_shape);
-
-
+      else {
+         model.AddShapeTensor(fNY, std::vector<Dim>(fShape.begin() + fStart, fShape.begin() + fEnd));
+      }
    }
 
    std::string Generate(std::string OpName) override {

@@ -1,14 +1,14 @@
 #include "SOFIE/RModelParser_ONNX.hxx"
 #include "SOFIE/ROperator_Shape.hxx"
-#include "onnx_proto3.pb.h"
+#include "onnx.hxx"
 
-
+#include <climits>
 namespace SOFIE {
 
 ParserFuncSignature ParseShape = [](RModelParser_ONNX &parser, const onnx::NodeProto &nodeproto) {
    auto input_name = nodeproto.input(0);
    if (!parser.IsRegisteredTensorType(input_name)) {
-      throw std::runtime_error("TMVA::SOFIE ONNX Parser Shape op has input tensor" + input_name +
+      throw std::runtime_error("SOFIE ONNX Parser Shape op has input tensor" + input_name +
                                " but its type is not yet registered");
    }
 

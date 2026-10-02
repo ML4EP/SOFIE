@@ -42,3 +42,12 @@
 #include "SOFIE/ROperator_RWKV_WKV6.hxx"
 #include "SOFIE/ROperator_GriffinRGLRU.hxx"
 
+#include "SOFIE/ROperator_Gelu.hxx"
+#include "SOFIE/ROperator_HardSigmoid.hxx"
+#include "SOFIE/ROperator_HardSwish.hxx"
+#include "SOFIE/ROperator_InstanceNormalization.hxx"
+#include "SOFIE/ROperator_Clip.hxx"
+#include "SOFIE/ROperator_NonZero.hxx"
+#include "SOFIE/ROperator_GatherND.hxx"
+#include "SOFIE/ROperator_Not.hxx"
+#include "SOFIE/ROperator_Basic_Is.hxx"

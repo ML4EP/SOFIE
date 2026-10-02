@@ -1,8 +1,6 @@
 #include "SOFIE/RModelParser_ONNX.hxx"
 #include "SOFIE/ROperator_LayerNormalization.hxx"
-#include "onnx_proto3.pb.h"
-
-
+#include "onnx.hxx"
 namespace SOFIE {
 
 ParserFuncSignature ParseLayerNormalization = [](RModelParser_ONNX &parser, const onnx::NodeProto &nodeproto)
@@ -12,7 +10,7 @@ ParserFuncSignature ParseLayerNormalization = [](RModelParser_ONNX &parser, cons
    if (parser.IsRegisteredTensorType(input_name)) {
       input_type = parser.GetTensorType(input_name);
    } else {
-      throw std::runtime_error("TMVA::SOFIE ONNX Parser LayerNormalizaion op has input tensor " + input_name +
+      throw std::runtime_error("SOFIE ONNX Parser LayerNormalizaion op has input tensor " + input_name +
                                " but its type is not yet registered");
    }
 
@@ -57,7 +55,7 @@ ParserFuncSignature ParseLayerNormalization = [](RModelParser_ONNX &parser, cons
                                                        output_name, name_mean, name_std));
       break;
    default:
-      throw std::runtime_error("TMVA::SOFIE ONNX parser Operator with input type " + ConvertTypeToString(input_type) +
+      throw std::runtime_error("SOFIE ONNX parser Operator with input type " + ConvertTypeToString(input_type) +
                                " not supported.");
       break;
    }

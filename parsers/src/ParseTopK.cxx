@@ -1,8 +1,6 @@
 #include "SOFIE/RModelParser_ONNX.hxx"
 #include "SOFIE/ROperator_TopK.hxx"
-#include "onnx_proto3.pb.h"
-
-
+#include "onnx.hxx"
 namespace SOFIE {
 
 ParserFuncSignature ParseTopK = [](RModelParser_ONNX &parser, const onnx::NodeProto &nodeproto) {
@@ -12,12 +10,12 @@ ParserFuncSignature ParseTopK = [](RModelParser_ONNX &parser, const onnx::NodePr
    if (parser.IsRegisteredTensorType(input_name)) {
       input_type = parser.GetTensorType(input_name);
    } else {
-      throw std::runtime_error("TMVA::SOFIE ONNX Parser TopK op has input tensor " + input_name +
+      throw std::runtime_error("SOFIE ONNX Parser TopK op has input tensor " + input_name +
                                " but its type is not yet registered");
    }
    std::string k_name = nodeproto.input(1);
    if (!parser.IsRegisteredTensorType(k_name)) {
-      throw std::runtime_error("TMVA::SOFIE ONNX Parser TopK op has input tensor " + k_name +
+      throw std::runtime_error("SOFIE ONNX Parser TopK op has input tensor " + k_name +
                                " but its type is not yet registered");
    }
 
