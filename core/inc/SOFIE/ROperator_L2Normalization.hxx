@@ -55,16 +55,6 @@ public:
       fOutputTensorNames = {fNY};
    }
 
-   std::vector<ETensorType> TypeInference(std::vector<ETensorType> inputTypes) override
-   {
-      return {inputTypes[0]};
-   }
-
-   std::vector<std::vector<size_t>> ShapeInference(std::vector<std::vector<size_t>> inputShapes) override
-   {
-      return {inputShapes[0]};
-   }
-
    std::vector<std::string> GetStdLibs() override
    {
       return {"cmath"};

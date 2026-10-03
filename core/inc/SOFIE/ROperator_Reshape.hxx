@@ -9,8 +9,6 @@
 #include <cctype>
 #include <sstream>
 #include <algorithm>
-
-
 namespace SOFIE{
 
 enum ReshapeOpMode { Reshape, Flatten, Squeeze, Unsqueeze };
@@ -23,8 +21,8 @@ private:
 
    bool fVerbose = false;
    bool fDimInput = false;
-   bool fInputIsAlias = false;
    bool fDynamicShape = false;
+   bool fIsAlias = false;
    ReshapeOpMode fOpMode = Reshape;   // type of Reshape operator
 
    int fAllowZero = 0; // (for Reshape) zero in tensor shape makes output shape equal to input tensor shape
@@ -94,10 +92,10 @@ public:
                      output_shape[i] = Dim{0};
                   else {
                      if (i > 0 && output_shape.size() != input_shape.size())
-                        std::cout << "WARNING: TMVA Reshape Op : output shape has zero value at index " << i <<
+                        std::cout << "WARNING: SOFIE Reshape Op : output shape has zero value at index " << i <<
                                   " but input shape has a different rank than output shape" << std::endl;
                      if (i >= input_shape.size())
-                        throw std::runtime_error("TMVA Reshape Op : output shape has zero value at index " + std::to_string(i) +
+                        throw std::runtime_error("SOFIE Reshape Op : output shape has zero value at index " + std::to_string(i) +
                               " but input shape does not have corresponding index");
                      }
                      output_shape[i] = input_shape[i];
@@ -107,7 +105,7 @@ public:
             }
          }
          if (hasZero && hasMinusOne) {
-            throw std::runtime_error("TMVA Reshape Op : zero value in shape is not allowed when there is also a -1 in shape");
+            throw std::runtime_error("SOFIE Reshape Op : zero value in shape is not allowed when there is also a -1 in shape");
          }
          // now case of -1 in shape - we can infer the value of -1 from all other values
          for (size_t i = 0; i < output_shape.size(); i++) {
@@ -176,14 +174,14 @@ public:
                break; // cannot have more than -1
             }
             //  throw std::runtime_error(
-            //                   "TMVA Reshape Op : output shape has multiple negative or zero values");
+            //                   "SOFIE Reshape Op : output shape has multiple negative or zero values");
          }
 
          if (fVerbose)
             std::cout << "Reshape: correct output shape  to " << ConvertDimShapeToString(output_shape) << std::endl;
 
          if (!fDimInput && ConvertDimShapeToLength(output_shape) != ConvertDimShapeToLength(input_shape)) {
-            throw std::runtime_error("TMVA Reshape Op : Invalid  shapes : " + ConvertDimShapeToString(input_shape) +
+            throw std::runtime_error("SOFIE Reshape Op : Invalid  shapes : " + ConvertDimShapeToString(input_shape) +
                                      ConvertDimShapeToString(output_shape));
          }
          return output_shape;
@@ -217,7 +215,7 @@ public:
                if (axes[i] < 0)
                   axes[i] += input_shape.size();
                if (!(output_shape[axes[i]] == Dim{1}))
-                  throw std::runtime_error("TMVA Squeeze Op : Invalid  axis value " + std::to_string(axes[i]) +
+                  throw std::runtime_error("SOFIE Squeeze Op : Invalid  axis value " + std::to_string(axes[i]) +
                                            " for " + ConvertDimShapeToString(output_shape));
             }
             // for calling vector::erase we must sort axes in decreasing order to avoid
@@ -241,7 +239,7 @@ public:
          for (auto &a : axes) {
             int64_t i = static_cast<int64_t>(a);
             if (i < -r || i > r - 1)
-               throw std::runtime_error("TMVA Unsqueeze Op - axes input is not in correct range");
+               throw std::runtime_error("SOFIE Unsqueeze Op - axes input is not in correct range");
             if (i >= 0)
                output_shape.insert(output_shape.begin() + i, Dim{1});
             else
@@ -250,7 +248,7 @@ public:
          }
          return output_shape;
       }
-      throw std::runtime_error("TMVA Reshape Op : Invalid ReshapeOpMode");
+      throw std::runtime_error("SOFIE Reshape Op : Invalid ReshapeOpMode");
       return {Dim{}};
    }
 
@@ -263,11 +261,10 @@ public:
 
       if (model.CheckIfTensorAlreadyExist(fNData) == false) {
           // input must be a graph input, or already initialized intermediate tensor
-         throw std::runtime_error("TMVA Reshape Op Input Tensor " + fNData + "  is not found in model");
+         throw std::runtime_error("SOFIE Reshape Op Input Tensor " + fNData + "  is not found in model");
       }
       fShapeInput = model.GetDimTensorShape(fNData);
       fDimInput = model.IsDynamicTensor(fNData);
-      fInputIsAlias = model.IsAliasTensor(fNData);
       bool inputIsScalar = model.IsScalarTensor(fNData);
       // check if optional tensor exists defining shape or axes
       if (!fNInput2.empty()) {
@@ -300,7 +297,7 @@ public:
                fDynamicShape = true;
                // size of shape output us given by size of shape input tensor
                if (model.IsDynamicTensor(fNInput2)) {
-                  throw std::runtime_error("TMVA Reshape Op 2nd input Tensor " + fNInput2 + " cannot have dynamic shape");
+                  throw std::runtime_error("SOFIE Reshape Op 2nd input Tensor " + fNInput2 + " cannot have dynamic shape");
                }
                auto shapeInput2 = model.GetTensorShape(fNInput2);
                fShapeOutput.resize(shapeInput2[0]);
@@ -309,7 +306,7 @@ public:
                }
             }
          } else {
-            throw std::runtime_error("TMVA Reshape Op 2nd input Tensor " + fNInput2 + " is not found in model");
+            throw std::runtime_error("SOFIE Reshape Op 2nd input Tensor " + fNInput2 + " is not found in model");
          }
       } else if (!fAttrAxes.empty()) {
          // case fNShape is empty and axes are provided as attributes (e.g. for Unsqueeze)
@@ -317,7 +314,7 @@ public:
       } else if (fOpMode == Flatten || fOpMode == Squeeze) {
          fShapeOutput = DoShapeInference(fShapeInput, std::vector<Dim>{}, inputIsScalar);
       } else {
-         throw std::runtime_error("TMVA Reshape Op : Invalid Input/Attribute data");
+         throw std::runtime_error("SOFIE Reshape Op : Invalid Input/Attribute data");
       }
       // check if output is constant or not
       if (model.IsInitializedTensor(fNData) && model.GetTensorType(fNData) == ETensorType::INT64) {
@@ -325,7 +322,7 @@ public:
          auto inputData = static_cast<int64_t*>(model.GetInitializedTensorData(fNData).get());
          auto o_shape = ConvertShapeToInt(fShapeOutput);
          if (ConvertShapeToLength(ConvertShapeToInt(fShapeInput)) != ConvertShapeToLength(o_shape) )
-            throw std::runtime_error("TMVA Reshape Op : Invalid Input/Output lengths");
+            throw std::runtime_error("SOFIE Reshape Op : Invalid Input/Output lengths");
          model.AddConstantTensor<int64_t>(fNOutput, o_shape, inputData);
          if (model.Verbose()) {
             std::cout << Name() << " : " << fNData << " " << ConvertDimShapeToString(fShapeInput) << " -->  " << fNOutput << " (constant) " << ConvertDimShapeToString(fShapeOutput)  << " : " <<
@@ -337,7 +334,7 @@ public:
          // not sure if we ever end-up here - maybe reshaping from scalar to vector or viceversa
          fIsOutputParamShape = true;
          fOutputShapeData = model.GetShapeTensorValues(fNData);
-         model.AddShapeTensor(fNOutput, fOutputShapeData);
+         model.AddShapeTensor(fNOutput, fOutputShapeData, fShapeOutput.empty());
          if (model.Verbose()) {
             std::cout << Name() << " : " << fNData << " " << ConvertDimShapeToString(fShapeInput) << " -->  " << fNOutput << " (shape) " << ConvertDimShapeToString(fShapeOutput)  << " : " <<
             ConvertDimShapeToString(fOutputShapeData) << std::endl;
@@ -346,9 +343,11 @@ public:
       else {
          // non-constant case
          model.AddIntermediateTensor(fNOutput, model.GetTensorType(fNData), fShapeOutput);
-         model.AddAliasTensor(fNOutput, fNData);
+         fIsAlias = model.AddAliasTensor(fNOutput, fNData);
          if (model.Verbose())
-            std::cout << Name() << " : " << fNData << " " << ConvertDimShapeToString(fShapeInput) << " -->  "<< fNOutput << "  " << ConvertDimShapeToString(fShapeOutput)  << std::endl;
+            std::cout << Name() << " : " << fNData << " " << ConvertDimShapeToString(fShapeInput) << " -->  "
+                      << fNOutput << "  " << ConvertDimShapeToString(fShapeOutput) << (fIsAlias ? " (alias)" : "")
+                      << std::endl;
       }
    }
 
@@ -399,9 +398,12 @@ public:
              << lengthOut << " is different than input one " << lengthIn << "\");\n";
       }
 
-
-      out << SP << "std::copy( tensor_" << fNData << ", tensor_" << fNData << " + " << lengthIn << ", " << "tensor_" << fNOutput
-          << ");\n";
+      if (fIsAlias) {
+         out << SP << "auto * tensor_" << fNOutput << " = tensor_" << fNData << ";\n";
+      } else {
+         out << SP << "std::copy( tensor_" << fNData << ", tensor_" << fNData << " + " << lengthIn << ", " << "tensor_"
+             << fNOutput << ");\n";
+      }
       return out.str();
    }
 

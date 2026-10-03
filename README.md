@@ -15,9 +15,6 @@ This standalone is especially developed for implementing and evaluating inferenc
 
 - CMake ≥ 3.16
 - C++20-capable compiler (GCC ≥ 11, Clang ≥ 14)
-- [Protocol Buffers](https://protobuf.dev/) ≥ 3.0 (for ONNX model parsing)
-- *(Optional)* ROOT ≥ 6.28 — only needed if using `.root` weight files or ROOT-based
-  serialization (`-DSOFIE_WITH_ROOT=ON`)
 - *(Optional for GPU testing/benchmarking)* CUDA Toolkit ≥ 11.8
 
 ### 1. Clone and build
@@ -30,24 +27,11 @@ cmake -DCMAKE_INSTALL_PREFIX=../install -DCMAKE_BUILD_TYPE=RelWithDebInfo ..
 cmake --build . --target install -j$(nproc)
 ```
 
-To disable ROOT (build without ROOT dependency):
+### 2. Environment
 
 ```bash
-cmake -DSOFIE_WITH_ROOT=OFF -DCMAKE_INSTALL_PREFIX=../install ..
-```
-
-### 2. Source the environment (ROOT-integrated workflow only)
-
-If you need the SOFIE libraries to be accessible from within a ROOT session:
-
-```bash
-# Example — adjust the ROOT tarball name to match your download
-source root_v6.36.02.Linux-ubuntu24.04-x86_64-gcc13.3/root/bin/thisroot.sh
 source setup.sh   # adds SOFIE_core and SOFIE_parsers to LD_LIBRARY_PATH
 ```
-
-This step is **not required** when building without ROOT
-(`-DSOFIE_WITH_ROOT=OFF`).
 
 ---
 

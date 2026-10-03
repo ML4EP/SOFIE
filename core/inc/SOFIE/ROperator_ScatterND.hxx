@@ -1,5 +1,5 @@
-#ifndef SOFIE_ROPERATOR_SCATTERND
-#define SOFIE_ROPERATOR_SCATTERND
+#ifndef SOFIE_ROPERATOR_ScatterND
+#define SOFIE_ROPERATOR_ScatterND
 
 #include "SOFIE/SOFIE_common.hxx"
 #include "SOFIE/ROperator.hxx"
@@ -8,156 +8,170 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
-#include <numeric>
+namespace SOFIE{
 
-namespace SOFIE {
-
-class ROperator_ScatterND final : public ROperator {
+class ROperator_ScatterND final : public ROperator
+{
 private:
-   std::string fNData;
-   std::string fNIndices;
-   std::string fNUpdates;
+
+
+   std::string fNX;
+   std::string fNI;
+   std::string fNU;
    std::string fNY;
    std::string fReduction;
 
-   std::vector<Dim> fShapeData;
-   std::vector<Dim> fShapeIndices;
+   std::vector<Dim> fShapeX;
+   std::vector<Dim> fShapeI;
    std::vector<Dim> fShapeY;
 
-   size_t fK          = 0;
-   std::string fSliceSize;   // host size expression
-   std::string fNumOuter;    // host size expression
+
+   std::vector<int64_t> fIndices;
 
    std::string fType;
 
+   size_t fK = 0;
+   std::string fSliceSizeExpr;
+   std::string fNumOuterExpr;
+
    static std::string sz(const std::string &e) { return "static_cast<std::size_t>(" + e + ")"; }
 
-public:
-   ROperator_ScatterND() {}
 
-   ROperator_ScatterND(const std::string& nameData,
-                       const std::string& nameIndices,
-                       const std::string& nameUpdates,
-                       const std::string& nameY,
-                       const std::string& reduction)
-      : fNData(UTILITY::Clean_name(nameData)),
-        fNIndices(UTILITY::Clean_name(nameIndices)),
-        fNUpdates(UTILITY::Clean_name(nameUpdates)),
-        fNY(UTILITY::Clean_name(nameY)),
-        fReduction(reduction)
+public:
+   ROperator_ScatterND(){}
+   ROperator_ScatterND(const std::string & nameX, const std::string & nameI, const std::string & nameU, const std::string & nameY,
+                        std::string reduction):
+      fNX(UTILITY::Clean_name(nameX)), fNI(UTILITY::Clean_name(nameI)), fNU(UTILITY::Clean_name(nameU)),
+      fNY(UTILITY::Clean_name(nameY)), fReduction(reduction)
    {
-      fInputTensorNames  = { fNData, fNIndices, fNUpdates };
+      fInputTensorNames = { fNX, fNI, fNU };
       fOutputTensorNames = { fNY };
    }
 
-   std::vector<ETensorType> TypeInference(std::vector<ETensorType> input) override {
-      return { input[0] };
-   }
-
-   std::vector<std::vector<size_t>> ShapeInference(std::vector<std::vector<size_t>> input) override {
-      return { input[0] };
-   }
-
    void Initialize(RModel& model) override {
-      if (!model.CheckIfTensorAlreadyExist(fNData))
-         throw std::runtime_error("SOFIE ScatterND: data tensor " + fNData + " not found");
-      if (!model.CheckIfTensorAlreadyExist(fNIndices))
-         throw std::runtime_error("SOFIE ScatterND: indices tensor " + fNIndices + " not found");
-      if (!model.CheckIfTensorAlreadyExist(fNUpdates))
-         throw std::runtime_error("SOFIE ScatterND: updates tensor " + fNUpdates + " not found");
 
-      fShapeData    = model.GetDimTensorShape(fNData);
-      fShapeIndices = model.GetDimTensorShape(fNIndices);
+      if (!model.CheckIfTensorAlreadyExist(fNX)){
+         throw std::runtime_error(std::string("SOFIE ScatterND Op Input Tensor ") + fNX + "is not found in model");
+      }
+      if (!model.CheckIfTensorAlreadyExist(fNI)) {
+         throw std::runtime_error(std::string("SOFIE ScatterND Op Input Tensor ") + fNI + "is not found in model");
+      }
+      if (!model.CheckIfTensorAlreadyExist(fNU)) {
+         throw std::runtime_error(std::string("SOFIE ScatterND Op Input Tensor ") + fNU + "is not found in model");
+      }
 
-      size_t r = fShapeData.size();
-      size_t q = fShapeIndices.size();
+      fShapeX = model.GetDimTensorShape(fNX);
+      fShapeI = model.GetDimTensorShape(fNI);
+      auto shapeU = model.GetDimTensorShape(fNU);
 
-      if (r < 1)
-         throw std::runtime_error("SOFIE ScatterND: data rank must be >= 1");
-      if (q < 1)
-         throw std::runtime_error("SOFIE ScatterND: indices rank must be >= 1");
 
-      if (fShapeIndices.back().isParam)
-         throw std::runtime_error("SOFIE ScatterND: the last indices dimension (index tuple length) "
-            "must be static - a dynamic index-tuple length is not supported");
-      fK = fShapeIndices.back().dim;
-      if (fK > r)
-         throw std::runtime_error("SOFIE ScatterND: indices.shape[-1] must be <= data rank");
+      const size_t r = fShapeX.size();
+      const size_t q = fShapeI.size();
+      if (!(fShapeI.back().isParam) ) {
+         const size_t k = fShapeI.back().dim;
 
-      std::vector<Dim> outerShape(fShapeIndices.begin(), fShapeIndices.end() - 1);
-      fNumOuter = ConvertDimShapeToLength(outerShape);
+         if (k > r)
+            throw std::invalid_argument(
+               "ScatterND: last dim of indices (" + std::to_string(k) +
+               ") must be <= rank of data (" + std::to_string(r) + ")");
 
-      std::vector<Dim> sliceShape(fShapeData.begin() + fK, fShapeData.end());
-      fSliceSize = ConvertDimShapeToLength(sliceShape);
+         int64_t expected_updates_rank = q - 1 + r - k;
+         if ((int64_t) shapeU.size() != expected_updates_rank)
+            throw std::invalid_argument("ScatterND: updates rank mismatch");
+         fK = k;
+         std::vector<Dim> outerShape(fShapeI.begin(), fShapeI.end() - 1);
+         fNumOuterExpr = ConvertDimShapeToLength(outerShape);
+         std::vector<Dim> sliceShape(fShapeX.begin() + k, fShapeX.end());
+         fSliceSizeExpr = ConvertDimShapeToLength(sliceShape);
+      } else {
+         throw std::runtime_error("SOFIE ScatterND : Index_shape(-1) is not known. This case is not supported");
+      }
 
-      fShapeY = fShapeData;
-      model.AddIntermediateTensor(fNY, model.GetTensorType(fNData), fShapeY);
-      fType = ConvertTypeToString(model.GetTensorType(fNData));
+      fShapeY = fShapeX;
 
-      if (model.Verbose())
-         std::cout << "ScatterND: data " << ConvertDimShapeToString(fShapeData)
-                   << " indices " << ConvertDimShapeToString(fShapeIndices)
-                   << " k=" << fK << " numOuter=" << fNumOuter
-                   << " sliceSize=" << fSliceSize
-                   << " reduction=" << (fReduction.empty() ? "none" : fReduction)
-                   << " -> " << fNY << " " << ConvertDimShapeToString(fShapeY) << "\n";
+      model.AddIntermediateTensor(fNY, model.GetTensorType(fNX), fShapeY);
+      if (model.Verbose()) {
+         std::cout << "ScatterElements: input: " << ConvertDimShapeToString(fShapeX)
+                                                << " indices " << ConvertDimShapeToString(fShapeI)
+                                                << " update " <<  ConvertDimShapeToString(shapeU);
+         std::cout << "\t----> " << ConvertDimShapeToString(fShapeY) << std::endl;
+      }
    }
-
-   std::string GenerateInitCode() override { return ""; }
 
    std::string Generate(std::string opName) override {
-      if (fIsOutputConstant) return "";
-      if (fShapeY.empty())
-         throw std::runtime_error("SOFIE ScatterND: Generate called before Initialize");
-
-      std::string dataSize = ConvertDimShapeToLength(fShapeY);
-      auto stridesData = UTILITY::ComputeStrideFromShape(fShapeData);
-
+      if (fIsOutputConstant) {
+         return "//---------------------------------------\n";
+      }
+      opName = "op_" + opName;
       std::stringstream out;
-      out << SP << "//------- ScatterND " << opName << "\n";
+      out << "//--------- ScatterND " << opName << " --> " << ConvertDimShapeToString(fShapeY) << "\n";
 
-      out << SP << "std::copy(tensor_" << fNData
-          << ", tensor_" << fNData << " + static_cast<size_t>(" << dataSize << ")"
-          << ", tensor_" << fNY << ");\n";
+      size_t r = fShapeX.size();
 
-      out << SP << "for (std::size_t _i = 0; _i < static_cast<std::size_t>(" << fNumOuter << "); ++_i) {\n";
-      out << SP << SP << "std::size_t _out_base = 0;\n";
+      auto stridesX = UTILITY::ComputeStrideFromShape(fShapeX);
+      auto stridesY = UTILITY::ComputeStrideFromShape(fShapeY);
+      auto stridesI = UTILITY::ComputeStrideFromShape(fShapeI);
 
-      for (size_t j = 0; j < fK; ++j) {
+      size_t k = fShapeI.back().dim;
+
+      std::vector<Dim> shapeIndFirst(fShapeI.begin(), fShapeI.begin()+ fShapeI.size()-1);
+      auto num_index_tuples = ConvertDimShapeToLength(shapeIndFirst);
+
+      std::vector<Dim> shapeSlice(fShapeX.begin()+k, fShapeX.end());
+      auto slice_size = ConvertDimShapeToLength(shapeSlice);
+
+      auto data_length = ConvertDimShapeToLength(fShapeX);
+
+      out << SP << "// Step 1: copy input data to output\n";
+      out << SP << "std::copy(tensor_" << fNX << ", tensor_" << fNX << " + " << data_length << ", tensor_" << fNY << ");\n";
+
+      out << SP << "// Step 2: data strides (row-major)\n";
+      out << SP << "size_t " << opName << "_data_strides[" << r << "] = {";
+      for (size_t i = 0; i < r; ++i)
+         out << stridesX[i] << (i + 1 < r ? ", " : "");
+      out << "};\n\n";
+
+      out << SP << "// Step 3: scatter updates into output\n";
+      out << SP << "for (int64_t idx = 0; idx < " << num_index_tuples << "; idx++) {\n";
+
+      out << SP << SP << "int64_t data_offset = 0;\n";
+      for (size_t dim = 0; dim < k; ++dim) {
          out << SP << SP << "{\n";
-         out << SP << SP << SP << "int64_t _idx = tensor_" << fNIndices
-             << "[_i * " << fK << " + " << j << "];\n";
-         out << SP << SP << SP << "if (_idx < 0) _idx += "
-             << "static_cast<int64_t>(" << fShapeData[j].GetVal() << ");\n";
-         out << SP << SP << SP << "_out_base += static_cast<std::size_t>(_idx) * "
-             << stridesData[j].GetVal() << ";\n";
+         out << SP << SP << SP << "int64_t coord = tensor_" << fNI
+             << "[idx * " << k << " + " << dim << "];\n";
+         out << SP << SP << SP << "if (coord < 0) coord += " << fShapeX[dim] << ";\n";
+         out << SP << SP << SP << "data_offset += coord * "
+               << opName << "_data_strides[" << dim << "];\n";
          out << SP << SP << "}\n";
       }
 
-      out << SP << SP << "for (std::size_t _s = 0; _s < static_cast<std::size_t>(" << fSliceSize << "); ++_s) {\n";
-      out << SP << SP << SP << "std::size_t const _out_idx = _out_base + _s;\n";
-      out << SP << SP << SP << "std::size_t const _upd_idx = _i * static_cast<std::size_t>(" << fSliceSize << ") + _s;\n";
+      out << SP << SP << "for (int64_t s = 0; s < " << slice_size << "; s++) {\n";
+      out << SP << SP << SP << "auto upd = tensor_" << fNU
+         << "[idx * " << slice_size << " + s];\n";
 
       if (fReduction.empty() || fReduction == "none") {
-         out << SP << SP << SP << "tensor_" << fNY << "[_out_idx] = tensor_" << fNUpdates << "[_upd_idx];\n";
+         out << SP << SP << SP << "tensor_" << fNY << "[data_offset + s] = upd;\n";
       } else if (fReduction == "add") {
-         out << SP << SP << SP << "tensor_" << fNY << "[_out_idx] += tensor_" << fNUpdates << "[_upd_idx];\n";
+         out << SP << SP << SP << "tensor_" << fNY<< "[data_offset + s] += upd;\n";
       } else if (fReduction == "mul") {
-         out << SP << SP << SP << "tensor_" << fNY << "[_out_idx] *= tensor_" << fNUpdates << "[_upd_idx];\n";
-      } else if (fReduction == "max") {
-         out << SP << SP << SP << "tensor_" << fNY << "[_out_idx] = std::max(tensor_" << fNY
-             << "[_out_idx], tensor_" << fNUpdates << "[_upd_idx]);\n";
+         out << SP << SP << SP << "tensor_" << fNY << "[data_offset + s] *= upd;\n";
       } else if (fReduction == "min") {
-         out << SP << SP << SP << "tensor_" << fNY << "[_out_idx] = std::min(tensor_" << fNY
-             << "[_out_idx], tensor_" << fNUpdates << "[_upd_idx]);\n";
+         out << SP << SP << SP << "tensor_" << fNY<< "[data_offset + s] = "
+               << "std::min(tensor_" << fNY << "[data_offset + s], upd);\n";
+      } else if (fReduction == "max") {
+         out << SP << SP << SP << "tensor_" << fNY << "[data_offset + s] = "
+            << "std::max(tensor_" << fNY << "[data_offset + s], upd);\n";
       } else {
-         throw std::runtime_error("SOFIE ScatterND: invalid reduction '" + fReduction + "'");
+         throw std::runtime_error(
+            "SOFIE ScatterND: unsupported reduction '" + fReduction + "'");
       }
 
-      out << SP << SP << "}\n"; // slice loop
-      out << SP << "}\n";       // outer loop
+      out << SP << SP << "}\n";
+      out << SP << "}\n";
+
       return out.str();
    }
+
 
    std::string Generate_GPU_Kernel_ALPAKA(std::string opName, const std::vector<std::string> &dynParamNames) override {
       opName = "op_" + opName;
@@ -165,7 +179,7 @@ public:
          throw std::runtime_error("SOFIE ScatterND: Generate_GPU_Kernel_ALPAKA called before Initialize");
 
       std::string kname = "ScatterNDKernel_" + opName;
-      auto stridesData = UTILITY::ComputeStrideFromShape(fShapeData);
+      auto stridesData = UTILITY::ComputeStrideFromShape(fShapeX);
 
       std::string op;
       op  = "\n//------ SCATTERND_KERNEL_ALPAKA\n";
@@ -193,7 +207,7 @@ public:
          op += SP + SP + SP + SP + SP
              + "int64_t idx = indices[i * " + std::to_string(fK) + "u + " + std::to_string(j) + "u];\n";
          op += SP + SP + SP + SP + SP
-             + "if (idx < 0) idx += " + fShapeData[j].GetVal() + ";\n";
+             + "if (idx < 0) idx += " + fShapeX[j].GetVal() + ";\n";
          op += SP + SP + SP + SP + SP
              + "out_base += static_cast<std::size_t>(idx) * " + sz(stridesData[j].GetVal()) + ";\n";
          op += SP + SP + SP + SP + "}\n";
@@ -237,26 +251,27 @@ public:
       std::stringstream out;
       out << "\n//------ SCATTERND_GPU_ALPAKA\n";
 
-      out << SP << "alpaka::memcpy(queue, deviceBuf_" << fNY << ", deviceBuf_" << fNData << ");\n";
+      out << SP << "alpaka::memcpy(queue, deviceBuf_" << fNY << ", deviceBuf_" << fNX << ");\n";
 
       out << SP << "auto const elementsPerThread_" << opName << " = Vec::all(static_cast<Idx>(1));\n";
-      out << SP << "auto const elementsPerGrid_"   << opName << " = Vec::all(static_cast<Idx>(" << fNumOuter << "));\n";
+      out << SP << "auto const elementsPerGrid_"   << opName << " = Vec::all(static_cast<Idx>(" << fNumOuterExpr << "));\n";
       out << SP << "auto const workDiv_" << opName << " = sofie_workdiv(elementsPerGrid_" << opName << ");\n";
       out << SP << "auto task_" << opName << " = alpaka::createTaskKernel<Acc>(workDiv_" << opName
           << ", scatterNDKernel_" << opName
           << ", alpaka::getPtrNative(deviceBuf_" << fNY << ")"
-          << ", alpaka::getPtrNative(deviceBuf_" << fNIndices << ")"
-          << ", alpaka::getPtrNative(deviceBuf_" << fNUpdates << ")";
+          << ", alpaka::getPtrNative(deviceBuf_" << fNI << ")"
+          << ", alpaka::getPtrNative(deviceBuf_" << fNU << ")";
       for (auto &p : dynParamNames)
          out << ", static_cast<std::size_t>(" << p << ")";
-      out << ", static_cast<Idx>(" << fNumOuter << ")"
-          << ", static_cast<Idx>(" << fSliceSize << "));\n";
+      out << ", static_cast<Idx>(" << fNumOuterExpr << ")"
+          << ", static_cast<Idx>(" << fSliceSizeExpr << "));\n";
       out << SP << "alpaka::enqueue(queue, task_" << opName << ");\n";
 
       return out.str();
    }
 };
 
-} // namespace SOFIE
+}
 
-#endif // SOFIE_ROPERATOR_SCATTERND
+
+#endif

@@ -32,21 +32,13 @@ private:
 
    std::string fType;
 
+
 public:
    ROperator_Gather(){}
    ROperator_Gather(int64_t attrAxis, std::string nameX, std::string nameIndices, std::string nameY):
       fAttrAxis(attrAxis), fNX(UTILITY::Clean_name(nameX)), fNIndices(UTILITY::Clean_name(nameIndices)), fNY(UTILITY::Clean_name(nameY)) {
          fInputTensorNames = { fNX, fNIndices };
          fOutputTensorNames = { fNY };
-   }
-
-   std::vector<ETensorType> TypeInference(std::vector<ETensorType> input) override {
-      return input;
-   }
-
-   std::vector<std::vector<size_t>> ShapeInference(std::vector<std::vector<size_t>> input) override {
-      auto ret = input;
-      return ret;
    }
 
    void Initialize(RModel& model) override {
@@ -75,7 +67,7 @@ public:
          size_t indicesLength = ConvertShapeToLength(model.GetTensorShape(fNIndices));
          int64_t* data = static_cast<int64_t*>(model.GetInitializedTensorData(fNIndices).get());
          // copy in a vector since we may need to update the values in case of negative indices
-         fIndices = std::vector<int64_t>(data, data + indicesLength);
+         fIndices =std::vector<int64_t>(data, data + indicesLength);
          // update indices data in case of negative dim values
          for (size_t i = 0; i < indicesLength; i++) {
             // move this at generation time?
@@ -184,16 +176,6 @@ public:
       auto stridesY = UTILITY::ComputeStrideFromShape(fShapeY);
       auto stridesIndices = UTILITY::ComputeStrideFromShape(fShapeIndices);
 
-      // case fIndices is not known we need to correct for negative axis indices at run-time
-      if (fIndices.empty()) {
-         auto indicesLength = ConvertDimShapeToLength(fShapeIndices);
-         out << SP << "// correct in case of negative gather indices\n";
-         out << SP << "for (size_t i = 0; i < " << indicesLength << "; i++){\n";
-         out << SP << SP << "if (tensor_" << fNIndices << "[i] < 0)\n";
-         out << SP << SP << SP <<  "tensor_" << fNIndices << "[i] += " << fShapeX[fAttrAxis] << ";\n";
-         out << SP << "}\n";
-      }
-
       // Fill the output Y[j_0, j_1, ..., j_{axis - 1}, i_0, i_1, ..., i_{q - 1}, j_{axis + 1}, ..., j_{r - 1}]
       // [0 ... axis) [axis ... axis + q) [axis + q ... q + r - 1)
       // iterate in [0 ... axis) [0 ... q) [axis ... r - 1)
@@ -259,7 +241,13 @@ public:
 
       // K
       for (size_t k = 0; k < q + r; k++) out << SP;
-      out << "size_t k = static_cast<size_t>(" << "tensor_" << fNIndices << "[i_index]" << ");\n";
+      if (fIndices.empty()) {
+         out << "int64_t k_i = static_cast<int64_t>(tensor_" << fNIndices << "[i_index]);\n";
+         for (size_t k = 0; k < q + r; k++) out << SP;
+         out << "size_t k = static_cast<size_t>(k_i < 0 ? k_i + " << fShapeX[fAttrAxis] << " : k_i);\n";
+      } else {
+         out << "size_t k = static_cast<size_t>(" << "tensor_" << fNIndices << "[i_index]" << ");\n";
+      }
       // Input
       for (size_t k = 0; k < q + r; k++) out << SP;
       out << "size_t x_index = k";

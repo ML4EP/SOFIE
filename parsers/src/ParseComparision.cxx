@@ -1,8 +1,6 @@
 #include "SOFIE/RModelParser_ONNX.hxx"
 #include "SOFIE/ROperator_Comparision.hxx"
-#include "onnx_proto3.pb.h"
-
-
+#include "onnx.hxx"
 namespace SOFIE {
 
 template <EComparisionOperator Op>
@@ -19,10 +17,10 @@ std::unique_ptr<ROperator> ParseComparision(RModelParser_ONNX &parser, const onn
          else
             if (input_type != parser.GetTensorType(input_name)) {
                throw
-                  std::runtime_error("TMVA::SOFIE ONNX parser Comparision op has input tensors of different types");
+                  std::runtime_error("SOFIE ONNX parser Comparision op has input tensors of different types");
             }
       } else {
-         throw std::runtime_error("TMVA::SOFIE ONNX Parser Comparision op has input tensor " + input_name +
+         throw std::runtime_error("SOFIE ONNX Parser Comparision op has input tensor " + input_name +
                                   " but its type is not yet registered");
       }
    }
@@ -42,7 +40,7 @@ std::unique_ptr<ROperator> ParseComparision(RModelParser_ONNX &parser, const onn
       op.reset(new ROperator_Comparision<int32_t, Op>(nodeproto.input(0), nodeproto.input(1), output_name));
       break;
    default:
-      throw std::runtime_error("TMVA::SOFIE - Unsupported - Comparision Operator does not yet support input type " +
+      throw std::runtime_error("SOFIE - Unsupported - Comparision Operator does not yet support input type " +
                                ConvertTypeToString(input_type));
    }
 
@@ -54,29 +52,13 @@ std::unique_ptr<ROperator> ParseComparision(RModelParser_ONNX &parser, const onn
    return op;
 };
 
-// Parse Equal
-ParserFuncSignature ParseEq = [](RModelParser_ONNX &parser, const onnx::NodeProto &nodeproto) {
-   return ParseComparision<EComparisionOperator::Eq>(parser, nodeproto);
-};
-
-// Parse Less
-ParserFuncSignature ParseLess = [](RModelParser_ONNX &parser, const onnx::NodeProto &nodeproto) {
-   return ParseComparision<EComparisionOperator::Less>(parser, nodeproto);
-};
-
-// Parse Mul
-ParserFuncSignature ParseLessEq = [](RModelParser_ONNX &parser, const onnx::NodeProto &nodeproto) {
-   return ParseComparision<EComparisionOperator::LessEq>(parser, nodeproto);
-};
-
-// Parse Div
-ParserFuncSignature ParseGreater = [](RModelParser_ONNX &parser, const onnx::NodeProto &nodeproto) {
-   return ParseComparision<EComparisionOperator::Greater>(parser, nodeproto);
-};
-
-// Parse Pow
-ParserFuncSignature ParseGreaterEq = [](RModelParser_ONNX &parser, const onnx::NodeProto &nodeproto) {
-   return ParseComparision<EComparisionOperator::GreaterEq>(parser, nodeproto);
-};
+void RegisterComparisionParsers(RModelParser_ONNX &parser)
+{
+   parser.RegisterOperator("Equal", ParseComparision<EComparisionOperator::Eq>);
+   parser.RegisterOperator("Less", ParseComparision<EComparisionOperator::Less>);
+   parser.RegisterOperator("LessOrEqual", ParseComparision<EComparisionOperator::LessEq>);
+   parser.RegisterOperator("Greater", ParseComparision<EComparisionOperator::Greater>);
+   parser.RegisterOperator("GreaterOrEqual", ParseComparision<EComparisionOperator::GreaterEq>);
+}
 
 } // namespace SOFIE

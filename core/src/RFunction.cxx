@@ -63,7 +63,7 @@ std::string RFunction_Update::GenerateModel(const std::string& filename, long re
     // use batch size as block size in RModel::generate
     function_block->PrintRequiredInputTensors();
     function_block->PrintDynamicTensors();
-    function_block->Generate(Options::kGNNComponent,block_size,read_pos);
+    function_block->Generate(Options::kGNNComponent,block_size,read_pos,false);
     std::string modelGenerationString;
     modelGenerationString = "\n//--------- GNN_Update_Function---"+fFuncName+"\n"+function_block->ReturnGenerated();
     return modelGenerationString;

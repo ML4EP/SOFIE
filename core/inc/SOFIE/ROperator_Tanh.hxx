@@ -29,15 +29,6 @@ public:
          fOutputTensorNames = { fNY };
       }
 
-   std::vector<ETensorType> TypeInference(std::vector<ETensorType> input) override {
-      return input;
-   }
-
-   std::vector<std::vector<size_t>> ShapeInference(std::vector<std::vector<size_t>> input) override {
-      auto ret = input; //suggest copy to compiler
-      return ret;
-   }
-
    void Initialize(RModel& model) override {
        //input must be a graph input, or already initialized intermediate tensor
       if (model.CheckIfTensorAlreadyExist(fNX) == false){
@@ -55,9 +46,9 @@ public:
          throw std::runtime_error("SOFIE Tanh operator called to Generate without being initialized first");
       }
       std::stringstream out;
-      std::string length = ConvertDimShapeToLength(fShape);
+      auto length = ConvertDimShapeToLength(fShape);
       out << "\n//------ TANH\n";
-      out << SP << "for (int id = 0; id < " << length << " ; id++){\n";
+      out << SP << "for (size_t id = 0; id < " << length << " ; id++){\n";
       out << SP << SP << "tensor_" << fNY << "[id] = std::tanh(tensor_" << fNX << "[id]);\n";
       out << SP << "}\n";
       return out.str();

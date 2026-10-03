@@ -1,8 +1,6 @@
 #include "SOFIE/RModelParser_ONNX.hxx"
 #include "SOFIE/ROperator_Gemm.hxx"
-#include "onnx_proto3.pb.h"
-
-
+#include "onnx.hxx"
 namespace SOFIE {
 
 ParserFuseFuncSignature ParseFuseMatMulAdd = [](RModelParser_ONNX &parser, const onnx::NodeProto &matmulnode,
@@ -15,12 +13,12 @@ ParserFuseFuncSignature ParseFuseMatMulAdd = [](RModelParser_ONNX &parser, const
    if (parser.IsRegisteredTensorType(inputA.tensorName)) {
       inputType = parser.GetTensorType(inputA.tensorName);
    } else {
-      throw std::runtime_error("TMVA::SOFIE ONNX Parser MatMul op has input tensor " + inputA.tensorName +
+      throw std::runtime_error("SOFIE ONNX Parser MatMul op has input tensor " + inputA.tensorName +
                                " but its type is not yet registered");
    }
 
    if (addnode.input_size() != 2)
-      throw std::runtime_error("TMVA::SOFIE ONNX Parser cannot fuse MatMul if Add does not have two inputs");
+      throw std::runtime_error("SOFIE ONNX Parser cannot fuse MatMul if Add does not have two inputs");
 
    std::string biasName;
 
@@ -29,7 +27,7 @@ ParserFuseFuncSignature ParseFuseMatMulAdd = [](RModelParser_ONNX &parser, const
    else if (matmulnode.output(0) == addnode.input(1))
       biasName = addnode.input(0);
    else
-      throw std::runtime_error("TMVA::SOFIE ONNX Parser cannot fuse MatMul and Add because their tensors do not match");
+      throw std::runtime_error("SOFIE ONNX Parser cannot fuse MatMul and Add because their tensors do not match");
 
    std::unique_ptr<ROperator> op;
    const float attrAlpha = 1.0;
@@ -42,7 +40,7 @@ ParserFuseFuncSignature ParseFuseMatMulAdd = [](RModelParser_ONNX &parser, const
          break;
       default:
          throw std::runtime_error(
-            "TMVA::SOFIE - Unsupported - MatMul and Add fusion does not yet support input type " +
+            "SOFIE - Unsupported - MatMul and Add fusion does not yet support input type " +
             std::to_string(static_cast<int>(inputType)));
    }
 

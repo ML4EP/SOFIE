@@ -1,8 +1,6 @@
 #include "SOFIE/RModelParser_ONNX.hxx"
 #include "SOFIE/ROperator_Reshape.hxx"
-#include "onnx_proto3.pb.h"
-
-
+#include "onnx.hxx"
 namespace SOFIE {
 
 ParserFuncSignature ParseReshape = [](RModelParser_ONNX &parser, const onnx::NodeProto &nodeproto) {
@@ -20,13 +18,12 @@ ParserFuncSignature ParseReshape = [](RModelParser_ONNX &parser, const onnx::Nod
    // reshape has as extra input shape tensor (int64) but
    // it is not present for Flatten, Squeeze and Unsquueze
    auto input_name = nodeproto.input(0);
-   // for squeeze is optional ?
-   auto shape_name = ((nodeproto.input_size() > 1) && ( opMode == Reshape || opMode == Unsqueeze || opMode == Squeeze) )
+   auto input2_name = ((nodeproto.input_size() > 1) && ( opMode == Reshape || opMode == Unsqueeze || opMode == Squeeze) )
       ? nodeproto.input(1) : "";
    if (parser.IsRegisteredTensorType(input_name)) {
       input_type = parser.GetTensorType(input_name);
    } else {
-      throw std::runtime_error("TMVA::SOFIE ONNX Parser Reshape op has input tensor" + input_name +
+      throw std::runtime_error("SOFIE ONNX Parser Reshape op has input tensor" + input_name +
                                " but its type is not yet registered");
    }
 
@@ -35,7 +32,7 @@ ParserFuncSignature ParseReshape = [](RModelParser_ONNX &parser, const onnx::Nod
    // old version of reshape and squeeze have axes as attributes
    std::unique_ptr<ROperator> op;
    int attr_value = (opMode == Reshape) ? 0 : 1;
-   if (opMode == Reshape && nodeproto.attribute_size() > 0)
+   if ((opMode == Reshape || opMode == Flatten) && nodeproto.attribute_size() > 0)
       attr_value = nodeproto.attribute(0).i();
 
    std::vector<int64_t> attr_axes = {};
@@ -49,7 +46,7 @@ ParserFuncSignature ParseReshape = [](RModelParser_ONNX &parser, const onnx::Nod
    std::string output_name = nodeproto.output(0);
 
    if (attr_axes.empty())
-      op.reset(new ROperator_Reshape(opMode, attr_value, input_name, shape_name, output_name));
+      op.reset(new ROperator_Reshape(opMode, attr_value, input_name, input2_name, output_name));
    else // for old Squeeze and Unsqueeze
       op.reset(new ROperator_Reshape(opMode, attr_axes, input_name, output_name));
 

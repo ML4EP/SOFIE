@@ -1,8 +1,5 @@
-# Fallback test macros used when ROOT is not available.
-# These provide the same interface as ROOTTEST_GENERATE_EXECUTABLE and
-# ROOTTEST_ADD_TEST from RoottestMacros.cmake but without requiring ROOT.
 
-macro(ROOTTEST_GENERATE_EXECUTABLE executable)
+macro(SOFIE_GENERATE_EXECUTABLE executable)
   cmake_parse_arguments(ARG "" "RESOURCE_LOCK"
     "LIBRARIES;COMPILE_FLAGS;DEPENDS;FIXTURES_SETUP;FIXTURES_CLEANUP;FIXTURES_REQUIRED"
     ${ARGN})
@@ -38,7 +35,7 @@ macro(ROOTTEST_GENERATE_EXECUTABLE executable)
   endif()
 endmacro()
 
-function(ROOTTEST_ADD_TEST testname)
+function(SOFIE_ADD_TEST testname)
   cmake_parse_arguments(ARG ""
     "WORKING_DIR;TIMEOUT;RESOURCE_LOCK"
     "EXEC;COMMAND;DEPENDS;FIXTURES_SETUP;FIXTURES_CLEANUP;FIXTURES_REQUIRED;ENVIRONMENT;PROPERTIES"
@@ -49,7 +46,7 @@ function(ROOTTEST_ADD_TEST testname)
   elseif(ARG_COMMAND)
     set(_cmd ${ARG_COMMAND})
   else()
-    message(FATAL_ERROR "ROOTTEST_ADD_TEST: must specify EXEC or COMMAND")
+    message(FATAL_ERROR "SOFIE_ADD_TEST: must specify EXEC or COMMAND")
   endif()
 
   add_test(NAME ${testname} COMMAND ${_cmd}

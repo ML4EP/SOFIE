@@ -32,6 +32,7 @@ namespace SOFIE{
       std::size_t fLowRankRank = 0;
       std::string fLowRankInName;
       std::string fLowRankOutName;
+      bool fBiasBroadcastAssumed = false;
 
       float fAttrAlpha = 1.0;
       float fAttrBeta = 1.0;
@@ -62,7 +63,7 @@ namespace SOFIE{
          fActivation = activation;
          fType = "float";
          static_assert(std::is_same_v<T, float>,
-                  "TMVA::SOFIE - Unsupported type parsing a Gemm operator");
+                  "SOFIE - Unsupported type parsing a Gemm operator");
          fInputTensorNames = { fNA, fNB };
          fOutputTensorNames = { fNY };
          fKind = OperatorKind::GEMM;
@@ -78,11 +79,6 @@ namespace SOFIE{
          fInputTensorNames = {fNA, fNB, fNC};
          fOutputTensorNames = { fNY };
          fKind = OperatorKind::GEMM;
-      }
-
-      std::vector<ETensorType> TypeInference(std::vector<ETensorType> input) override {
-         ETensorType out = input[0];
-         return {out};
       }
 
       template <typename U>
@@ -156,11 +152,6 @@ namespace SOFIE{
          return s_y;
       }
 
-      std::vector<std::vector<size_t>> ShapeInference(std::vector<std::vector<size_t>> input) override {
-         std::vector<std::vector<size_t>> ret;
-         ret.push_back(DoShapeInference<size_t>(input));
-         return ret;
-      }
       std::vector<Dim> DynamicShapeInference(const std::vector<std::vector<Dim>> & input){
          return DoShapeInference<Dim>(input);
       }
@@ -254,8 +245,8 @@ namespace SOFIE{
                   fLowRankRank = rank;
                   fLowRankInName = fNB + "_lrin";
                   fLowRankOutName = fNB + "_lrout";
-                  model.AddInitializedTensor<float>(fLowRankInName, {rows, rank}, Ain.data());
-                  model.AddInitializedTensor<float>(fLowRankOutName, {rank, cols}, Bout.data());
+                  model.AddInitializedTensor(fLowRankInName, ETensorType::FLOAT, std::vector<std::size_t>{rows, rank}, Ain.data());
+                  model.AddInitializedTensor(fLowRankOutName, ETensorType::FLOAT, std::vector<std::size_t>{rank, cols}, Bout.data());
                   model.RemoveInitializedTensor(fNB);
                   fLowRank = true;
                   // update the operator's bookkeeping of input tensors: replace fNB with the two factors
@@ -283,9 +274,10 @@ namespace SOFIE{
             }
             // for dynamic outputs broadcasting is always needed
             bool broadcast_needed = false;
-            if (fIsDynamic && shapeY.empty())
+            if (fIsDynamic && shapeY.empty()) {
                broadcast_needed = true;
-            else
+               fBiasBroadcastAssumed = true;
+            } else
                // consider broadcasting also if they have different length
                broadcast_needed = (fShapeC != shapeY);
 
@@ -320,6 +312,64 @@ namespace SOFIE{
                shapeY.erase(shapeY.end()-1);
          }
 
+         bool canFold = !fIsDynamic
+            && model.IsInitializedTensor(fNA)
+            && model.IsInitializedTensor(fNB)
+            && (fNC.empty() || model.IsInitializedTensor(fNC))
+            && fShapeA.size() <= 2
+            && !fBroadcastBias
+            && !fCheckBiasShapeAtRuntime;
+
+         if (canFold) {
+            auto shapeA_i = ConvertShapeToInt(fShapeA);
+            auto shapeB_i = ConvertShapeToInt(fShapeB);
+            size_t dimA = shapeA_i.size();
+            size_t dimB = shapeB_i.size();
+            size_t m = fAttrTransA ? shapeA_i[dimA - 1] : shapeA_i[dimA - 2];
+            size_t k = fAttrTransA ? shapeA_i[dimA - 2] : shapeA_i[dimA - 1];
+            size_t n = fAttrTransB ? shapeB_i[dimB - 2] : shapeB_i[dimB - 1];
+
+            auto dataA = static_cast<T *>(model.GetInitializedTensorData(fNA).get());
+            auto dataB = static_cast<T *>(model.GetInitializedTensorData(fNB).get());
+
+            std::vector<T> dataY(m * n, T(0));
+            for (size_t i = 0; i < m; i++) {
+               for (size_t j = 0; j < n; j++) {
+                  T sum{};
+                  for (size_t p = 0; p < k; p++) {
+                     T aVal = fAttrTransA ? dataA[p * m + i] : dataA[i * k + p];
+                     T bVal = fAttrTransB ? dataB[j * k + p] : dataB[p * n + j];
+                     sum += aVal * bVal;
+                  }
+                  dataY[i * n + j] = static_cast<T>(fAttrAlpha) * sum;
+               }
+            }
+            if (!fNC.empty()) {
+               auto dataC = static_cast<T *>(model.GetInitializedTensorData(fNC).get());
+               for (size_t idx = 0; idx < dataY.size(); idx++)
+                  dataY[idx] += static_cast<T>(fAttrBeta) * dataC[idx];
+            }
+            if (fActivation == EActivationType::RELU) {
+               for (auto &v : dataY)
+                  v = std::max(v, T(0));
+            }
+
+            model.AddConstantTensor<T>(fNY, shapeY, dataY.data());
+            model.SetNotWritableInitializedTensor(fNA);
+            model.SetNotWritableInitializedTensor(fNB);
+            if (!fNC.empty())
+               model.SetNotWritableInitializedTensor(fNC);
+            fIsOutputConstant = true;
+
+            if (model.Verbose()) {
+               std::cout << "Gemm (or MatMul) " << fNA << " , " << fNB;
+               if (!fNC.empty())
+                  std::cout << " , " << fNC;
+               std::cout << " ---> " << fNY << " (constant) " << ConvertShapeToString(shapeY) << std::endl;
+            }
+            return;
+         }
+
          if (!fIsDynamic)
             model.AddIntermediateTensor(fNY, model.GetTensorType(fNA), shapeY);
          else
@@ -334,9 +384,22 @@ namespace SOFIE{
          }
 
          model.AddNeededStdLib("algorithm");
+
+
+         if (fType == "float")
+            model.AddNeededHelperFunction("Gemm_Call");
+         if (fNC != "") {
+            model.AddNeededHelperFunction("Copy");
+            model.AddNeededHelperFunction("Fill");
+         }
+         if (fActivation == EActivationType::RELU)
+            model.AddNeededHelperFunction("Relu");
       }
 
       std::string Generate(std::string opName) override {
+         if (fIsOutputConstant)
+            return "";
+
          opName = "op_" + opName;
 
          std::stringstream out;
@@ -387,7 +450,10 @@ namespace SOFIE{
          // case bias is present
          if (!fNC.empty()){
              // when the 2 last dims of bias and Y are not compatible we need to perform a run time broadcast
-            if (sC != sY) fBroadcastBias = true;
+            if (sC != sY)
+               fBroadcastBias = true;
+            else if (fBiasBroadcastAssumed && sExtraC == sExtraY)
+               fBroadcastBias = false;
             if (!fBroadcastBias) {
                // add a check in case broadcasting was not needed or done outside of session
                // C should have smaller dimension of Y
@@ -505,7 +571,7 @@ namespace SOFIE{
             else
                out << "j;\n";
 
-            std::string prefix = SP2 + SP + "SOFIE::";
+            std::string prefix = SP2 + SP;
             std::string target = "tensor_" + fNY;
             if (sC.size() != 2) {
                throw std::runtime_error("SOFIE Gemm Op - invalid rank for bias tensor " + ConvertDimShapeToString(fDimShapeC) + ConvertDimShapeToString(sC));
@@ -540,13 +606,13 @@ namespace SOFIE{
             //   Y   (m x n)    = 1 * tmp * Bout + beta * bias
             std::string tmpName = opName + "_lr_tmp";
             out << SP2 << "std::vector<float> " << tmpName << "(" << m << " * " << fLowRankRank << ");\n";
-            out << SP2 << "SOFIE::Gemm_Call(" << tmpName << ".data(), false, "
+            out << SP2 << "Gemm_Call(" << tmpName << ".data(), false, "
                 << (fAttrTransA ? "true, " : "false, ")
                 << fLowRankRank << ", " << m << ", " << k << ", "
                 << std::setprecision(std::numeric_limits<float>::max_digits10) << fAttrAlpha
                 << ", tensor_" << fLowRankInName << ", tensor_" << fNA << ", 0.f, nullptr);\n";
 
-            out << SP2 << "SOFIE::Gemm_Call(" << "tensor_" << fNY << ", false, false, "
+            out << SP2 << "Gemm_Call(" << "tensor_" << fNY << ", false, false, "
                 << n << ", " << m << ", " << fLowRankRank << ", "
                 << std::setprecision(std::numeric_limits<float>::max_digits10) << 1.f
                 << ", tensor_" << fLowRankOutName << ", " << tmpName << ".data(), "
@@ -560,7 +626,7 @@ namespace SOFIE{
 
          } else if (fType == "float"){
 
-            out << SP2 << "SOFIE::Gemm_Call(" << "tensor_" << fNY;
+            out << SP2 << "Gemm_Call(" << "tensor_" << fNY;
              if (doStackMul) out << " + " << opName << "_y_offset";
             out <<   ", "
              << (fAttrTransB ? "true, " : "false, ")
@@ -601,7 +667,7 @@ namespace SOFIE{
                out << SP << "//--- applying RELU to output\n";
                std::string tnsr = "tensor_" + fNY;
                std::string reluSize = ConvertDimShapeToLength(fShapeY);
-               out << SP << "SOFIE::Relu(" << tnsr << ", " << tnsr << ", " << reluSize << ");\n";
+               out << SP << "Relu(" << tnsr << ", " << tnsr << ", " << reluSize << ");\n";
          } else if (fActivation == EActivationType::LEAKYRELU) {
                out << SP << "//--- applying LEAKYRELU to output (in-place)\n";
                std::string tnsr = "tensor_" + fNY;

@@ -1,5 +1,5 @@
 #ifndef SOFIE_ROPERATOR_Concat
-#define SOFIE_ROPERATOR_Concat
+ #define SOFIE_ROPERATOR_Concat
 
 
  #include "SOFIE/SOFIE_common.hxx"
@@ -11,7 +11,6 @@
  #include <iterator>
  #include <iomanip>
  #include <limits>
-
  namespace SOFIE{
 
      class ROperator_Concat final : public ROperator
@@ -41,12 +40,8 @@
          fOutputTensorNames = { fOutput };
          }
 
-         std::vector<ETensorType> TypeInference(std::vector<ETensorType> input) override {
-             return input;
-         }
-
          // get shape of output given inputs. It is going to be called after initialized
-         std::vector<std::vector<size_t>> ShapeInference(std::vector<std::vector<size_t>> inputs) override {
+         std::vector<std::vector<size_t>> ShapeInference(std::vector<std::vector<size_t>> inputs) {
              std::vector<std::vector<size_t>> ret(1);
             // treat negative axis case
             if (fAxis<0) {
@@ -60,8 +55,8 @@
             if(fnewAxis == 0){
                for (size_t i = 0; i < inputs.size(); i++) {
                   if (i > 0 && inputs[i].size() != inputs[i - 1].size())
-                     throw std::runtime_error("SOFIE Concat Op - input tensors have different shapes " + fInputs[i] + " : " +
-                                              ConvertShapeToString(inputs[i]) + " and " + fInputs[i-1] + " : " + ConvertShapeToString(inputs[i - 1]));
+                     throw std::runtime_error("SOFIE Concat Op - input tensors have different shapes " +
+                                              ConvertShapeToString(inputs[i]) + " and " + ConvertShapeToString(inputs[i - 1]));
                   for (size_t iaxis = 0; iaxis < inputs[i].size(); iaxis++) {
                      if ((int)iaxis == fAxis)
                         concat_dim += inputs[i][iaxis];
@@ -170,6 +165,7 @@
          }
 
          void Initialize(RModel& model) override {
+            model.AddNeededHelperFunction("Copy");
             std::vector<std::vector<size_t>> inputIntShapes;
             for (auto &it : fInputs) {
                if (model.CheckIfTensorAlreadyExist(it) == false) {
@@ -325,7 +321,7 @@
                std::string offset;
                for(size_t i=0; i<fInputs.size(); ++i) {
                   auto length = ConvertDimShapeToLength(fInputShapes[i]);
-                  out << SP << "SOFIE::Copy(tensor_" << fOutput;
+                  out << SP << "Copy(tensor_" << fOutput;
                   if (i > 0)
                      out << offset;
                   offset += " + " + length;

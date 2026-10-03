@@ -5,10 +5,7 @@
 #include "SOFIE/ROperator.hxx"
 #include "SOFIE/RModel.hxx"
 
-#include <algorithm>
 #include <sstream>
-
-
 namespace SOFIE {
 
 template <typename T>
@@ -19,10 +16,10 @@ private:
    int fAttrLargest;
    int fAttrSorted;
 
-   Dim fTopKCount;      // k clamped to the axis dimension: a number for a static axis, a
-                        // std::min(k, axis) expression for a dynamic one
-   size_t fRequestedK;  // the model's requested k, unclamped; sizes the GPU register buffers
-   bool fAxisIsDynamic = false;  // true if the axis dim (hence fTopKCount) is only known at runtime
+   Dim fK;
+   size_t fRequestedK = 0;
+   bool fKIsParam = false;
+   bool fAxisIsDynamic = false;
    std::string fNK;
    std::string fNX;
    std::string fNVal;
@@ -31,9 +28,6 @@ private:
    std::vector<Dim> fShapeY;
    std::string fType;
 
-   // GPU tuning knobs for the hierarchical kernel below. fStagingB is the size of each
-   // thread's private register buffer. fBlockSize is the number of threads cooperating on
-   // one slice.
    static constexpr size_t fStagingBCap = 64;
    size_t fStagingB = fStagingBCap;
    size_t fBlockSize = 256;
@@ -52,11 +46,6 @@ public:
             fOutputTensorNames = { fNVal, fNInd };
         }
 
-   std::vector<ETensorType> TypeInference(std::vector<ETensorType> input) override {
-      ETensorType ret = input[0];
-      return {ret, ret};
-   }
-
    void Initialize(RModel& model) override {
       if (model.CheckIfTensorAlreadyExist(fNX) == false) {
          // input must be a graph input, or already initialized intermediate tensor
@@ -68,43 +57,55 @@ public:
       }
 
       fShapeX = model.GetDimTensorShape(fNX);
-      auto kptr = static_cast<int64_t *>(model.GetInitializedTensorData(fNK).get());
-      size_t kval = *kptr;
-      fRequestedK = kval;
-      model.SetNotWritableInitializedTensor(fNK);
-      fAttrAxis = fAttrAxis < 0 ? fShapeX.size() + fAttrAxis : fAttrAxis;
-      if (static_cast<size_t>(fAttrAxis) >= fShapeX.size()) {
-         throw std::runtime_error("SOFIE TopK op axis = " + std::to_string(fAttrAxis) +
-            " value exceeds size of tensor " + fNX + " of size " + std::to_string(fShapeX.size()) + " .");
-      }
-      // fTopKCount cannot be larger than the axis dimension
-      fAxisIsDynamic = fShapeX[fAttrAxis].isParam;
-      if (fAxisIsDynamic) {
-         fTopKCount = Dim{std::string("std::min(size_t(" + std::to_string(kval) + "), " + fShapeX[fAttrAxis].GetVal() + ")" ), static_cast<size_t>(-1) };
-         // axis size unknown at codegen time - rsV/rsI must be a fixed-size array, so
-         // fall back to the empirically-safe cap of 64.
-         fStagingB = fStagingBCap;
+      Dim kdim;
+      if (model.IsShapeTensor(fNK)) {
+         auto &kvalues = model.GetShapeTensorValues(fNK);
+         if (kvalues.size() != 1)
+            throw std::runtime_error("SOFIE TopK Op input tensor K = " + fNK + " must be a single value");
+         kdim = kvalues[0];
+      } else if (model.IsInitializedTensor(fNK)) {
+         auto kptr = static_cast<int64_t *>(model.GetInitializedTensorData(fNK).get());
+         kdim = Dim{static_cast<size_t>(*kptr)};
+         model.SetNotWritableInitializedTensor(fNK);
       } else {
-         fTopKCount = Dim { std::min(kval, fShapeX[fAttrAxis].dim) };
-         // a thread never buffers more than its strided share of the axis, so B need
-         // never exceed that share.
+         throw std::runtime_error("SOFIE TopK Op input tensor K = " + fNK +
+                                  " must be known at initialization time");
+      }
+      fKIsParam = kdim.isParam;
+      fRequestedK = kdim.isParam ? 0 : kdim.dim;
+      fAttrAxis = fAttrAxis < 0 ? fShapeX.size() + fAttrAxis : fAttrAxis;
+      if(static_cast<size_t>(fAttrAxis) >=  fShapeX.size()){
+         throw
+            std::runtime_error("SOFIE ONNX TopK op axis = "+ std::to_string(fAttrAxis) +" value exeeds size of tensor " +fNX+" of size "+ std::to_string(fShapeX.size()) +" .");
+      }
+      if (kdim.isParam || fShapeX[fAttrAxis].isParam)
+         fK = Dim{std::string("std::min(size_t(" + kdim.GetVal() + "), size_t(" + fShapeX[fAttrAxis].GetVal() + "))"),
+                  static_cast<size_t>(-1)};
+      else
+         fK = Dim{std::min(kdim.dim, fShapeX[fAttrAxis].dim)};
+
+      fAxisIsDynamic = fShapeX[fAttrAxis].isParam;
+      if (!fAxisIsDynamic) {
          size_t itemsPerThread = (fShapeX[fAttrAxis].dim + fBlockSize - 1) / fBlockSize;
          fStagingB = std::min(std::max<size_t>(itemsPerThread, 1), fStagingBCap);
       }
 
       // output shape is equal to input shape apart for value in fAttrAxis
       fShapeY = fShapeX;
-      fShapeY[fAttrAxis] = Dim{fTopKCount};
+      fShapeY[fAttrAxis] = Dim{fK};
 
       model.AddIntermediateTensor(fNVal, model.GetTensorType(fNX), fShapeY);
 
       // output indices should be an int64 tensor
       model.AddIntermediateTensor(fNInd, ETensorType::INT64, fShapeY);
       fType = ConvertTypeToString(model.GetTensorType(fNX));
+      model.AddNeededStdLib("algorithm");
+      model.AddNeededStdLib("cstdint");
+      model.AddNeededStdLib("cstring");
 
       if (model.Verbose()) {
          std::cout << "TopK " << fNX << "  " << ConvertDimShapeToString(fShapeX)
-                   << "---> " << fNVal << " " << ConvertDimShapeToString(fShapeY) << std::endl;
+                      << "---> " << fNVal << " " <<  ConvertDimShapeToString(fShapeY) << std::endl;
       }
    }
 
@@ -114,52 +115,97 @@ public:
          throw std::runtime_error("SOFIE Operator TopK called to Generate without being initialized first");
       }
       std::stringstream out;
+      size_t size = fShapeX.size();
+      size_t axis = fAttrAxis < 0 ? size + fAttrAxis : fAttrAxis;
       out << "\n" << SP << "//------ TopK\n";
 
+      auto length=ConvertDimShapeToLength(fShapeX);
+      auto strideX = UTILITY::ComputeStrideFromShape(fShapeX);
+      auto strideY = UTILITY::ComputeStrideFromShape(fShapeY);
       // we perform loop on dimension before sorted axis and after sorted axis
-      size_t axis = fAttrAxis < 0 ? fShapeX.size() + fAttrAxis : fAttrAxis;
-      auto sx = UTILITY::ComputeSliceInfo(fShapeX, axis), sy = UTILITY::ComputeSliceInfo(fShapeY, axis);   //X has n elements along the axis, Y has k: two layouts
+      std::vector<Dim> shape_before(fShapeX.begin(), fShapeX.begin() + axis);
+      std::string n_before = (axis>0) ? ConvertDimShapeToLength(shape_before) : "1";
+      std::string n_after = strideX[axis].GetVal();
+      std::string n_elements = fShapeX[axis].GetVal();
 
       out << SP << "{\n"; // to define a separate scope for the operator code
-      out << SP << "std::vector<std::pair<float,int64_t>> elements(" << sx.nElements << ");\n";
+
+      //
+      bool packed = (fType == "float");
+      if (packed && !fShapeX[fAttrAxis].isParam && fShapeX[fAttrAxis].dim > 0xFFFFFFFFULL)
+         packed = false;
+
+      std::string pairType = "std::pair<" + fType + ",int64_t>";
+      if (packed) {
+         out << SP << "std::vector<uint64_t> elements(" << n_elements << ");\n";
+         if (fShapeX[fAttrAxis].isParam) {
+            out << SP << "if (static_cast<unsigned long long>(" << n_elements << ") > 0xFFFFFFFFULL)\n";
+            out << SP << SP << "throw std::runtime_error(\"SOFIE TopK - reduced axis is longer "
+                << "than the 2^32 limit of the packed index\");\n";
+         }
+      } else {
+         out << SP << "std::vector<" << pairType << "> elements(" << n_elements << ");\n";
+         out << SP << "auto " << OpName << "_cmp = [](const " << pairType << " &a, const " << pairType << " &b) {\n";
+         out << SP << SP << "return (a.first != b.first) ? (a.first " << (fAttrLargest ? ">" : "<")
+             << " b.first) : a.second < b.second;\n";
+         out << SP << "};\n";
+      }
       // loop on elements before
-      if (sx.nBefore != "1") {
-         out << SP << "for (size_t i = 0; i < " << sx.nBefore << "; i++) {\n";
-         out << SP << SP << "size_t xoffset = i*" << sx.strideBefore << ";\n";
-         out << SP << SP << "size_t yoffset = i*" << sy.strideBefore << ";\n";
+      if (n_before != "1") {
+         out << SP << "for (size_t i = 0; i < " << n_before << "; i++) {\n";
+         out << SP << SP << "size_t xoffset = i*" << strideX[axis-1] << ";\n";
+         out << SP << SP << "size_t yoffset = i*" << strideY[axis-1] << ";\n";
          out << SP;
       } else {
          out << SP << "size_t xoffset = 0;\n";
          out << SP << "size_t yoffset = 0;\n";
       }
-      if (sx.nAfter != "1")
-         out << SP << "for (size_t j = 0; j < " << sx.nAfter << "; j++) {\n";
+      if (n_after !=  "1")
+         out << SP << "for (size_t j = 0; j < " << n_after << "; j++) {\n";
       else
          out << SP << "const size_t j = 0;\n";
 
-      // copy elements to be sorted in vector of pair
-      out << SP << SP << "for (size_t l = 0; l < " << sx.nElements << "; l++) {\n";
-      out << SP << SP << SP << "elements[l] = std::make_pair(tensor_" << fNX << "[xoffset + " << sx.strideAxis << "*l + j], l);\n";
+      out << SP << SP << "for (size_t l = 0; l < " << n_elements << "; l++) {\n";
+      if (packed) {
+         out << SP << SP << SP << "uint32_t b_ = 0;\n";
+         out << SP << SP << SP << "std::memcpy(&b_, &tensor_" << fNX << "[xoffset + " << strideX[axis]
+             << "*l + j], sizeof(b_));\n";
+         out << SP << SP << SP << "b_ ^= (b_ & 0x80000000u) ? 0xFFFFFFFFu : 0x80000000u;\n";
+         if (fAttrLargest)
+            out << SP << SP << SP << "b_ = ~b_;\n";
+         out << SP << SP << SP << "elements[l] = (static_cast<uint64_t>(b_) << 32) | static_cast<uint32_t>(l);\n";
+      } else {
+         out << SP << SP << SP << "elements[l] = std::make_pair(tensor_" << fNX << "[xoffset + " << strideX[axis]
+             << "*l + j], l);\n";
+      }
       out << SP << SP << "}\n";
 
-      if (fAttrSorted) {
-         if (fAttrLargest)
-            out << SP << SP << "std::partial_sort(elements.begin(),elements.begin()+" << fTopKCount << ",elements.end(),"
-                << "[](std::pair<float,int64_t>a,std::pair<float,int64_t>b){return (a.first!=b.first) ? (a.first>b.first) : a.second < b.second;});\n";
-         else
-            out << SP << SP << "std::partial_sort(elements.begin(),elements.begin()+" << fTopKCount << ",elements.end(),"
-                << "[](std::pair<float,int64_t>a,std::pair<float,int64_t>b){return (a.first!=b.first) ? (a.first<b.first) : a.second < b.second;});\n";
-      } else
-         // in this case we don't need to return sorted elements, so we keep same order as before
-         out << SP << SP << "std::partial_sort(elements.begin(),elements.begin()+" << fTopKCount << ",elements.end());\n";
+      std::string cmp = packed ? "" : (", " + OpName + "_cmp");
+      out << SP << SP << "std::nth_element(elements.begin(), elements.begin() + (" << fK << "), elements.end()" << cmp
+          << ");\n";
+      out << SP << SP << "std::sort(elements.begin(), elements.begin() + (" << fK << ")" << cmp << ");\n";
 
       // copy the selected elements in the output
-      out << SP << SP << "for (size_t l = 0; l < " << fTopKCount << "; l++) {\n";
-      out << SP << SP << SP << "tensor_" << fNVal << "[yoffset + " << sy.strideAxis << "*l + j] = elements[l].first;\n";
-      out << SP << SP << SP << "tensor_" << fNInd << "[yoffset + " << sy.strideAxis << "*l + j] = elements[l].second;\n";
+      out << SP << SP << "for (size_t l = 0; l < " << fK << "; l++) {\n";
+      if (packed) {
+         out << SP << SP << SP << "uint32_t b_ = static_cast<uint32_t>(elements[l] >> 32);\n";
+         if (fAttrLargest)
+            out << SP << SP << SP << "b_ = ~b_;\n";
+         out << SP << SP << SP << "b_ ^= (b_ & 0x80000000u) ? 0x80000000u : 0xFFFFFFFFu;\n";
+         out << SP << SP << SP << fType << " v_;\n";
+         out << SP << SP << SP << "std::memcpy(&v_, &b_, sizeof(v_));\n";
+         out << SP << SP << SP << "tensor_" << fNVal << "[yoffset + " << strideY[axis] << "*l + j] = v_;\n";
+         out << SP << SP << SP << "tensor_" << fNInd << "[yoffset + " << strideY[axis]
+             << "*l + j] = static_cast<int64_t>(static_cast<uint32_t>(elements[l]));\n";
+      } else {
+         out << SP << SP << SP << "tensor_" << fNVal << "[yoffset + " << strideY[axis]
+             << "*l + j] = elements[l].first;\n";
+         out << SP << SP << SP << "tensor_" << fNInd << "[yoffset + " << strideY[axis]
+             << "*l + j] = elements[l].second;\n";
+      }
       out << SP << SP << "}\n";
-      if (sx.nAfter != "1") out << SP << SP << "}\n";
-      if (sx.nBefore != "1") out << SP << "}\n";
+      if (n_after != "1") out << SP << SP << "}\n";
+      if (n_before != "1") out << SP << "}\n";
       out << SP << "}\n"; // end operator scope
       return out.str();
    }
@@ -193,6 +239,8 @@ public:
    std::string Generate_GPU_Kernel_ALPAKA(std::string /*opName*/) override {
       if (fShapeX.empty())
          throw std::runtime_error("SOFIE Operator TopK called to Generate without being initialized first");
+      if (fKIsParam)
+         throw std::runtime_error("SOFIE Operator TopK GPU code generation requires K to be known at initialization");
 
       std::string CMP = fAttrLargest ? ">" : "<";
       std::string K = std::to_string(fRequestedK);
@@ -367,7 +415,7 @@ public:
       out << SP << "{\n";
       out << SP << SP << "std::size_t const topkNumSlices_" << n << " = static_cast<std::size_t>(" << numSlices << ");\n";
       out << SP << SP << "std::size_t const topkNElAxis_"   << n << " = static_cast<std::size_t>(" << sx.nElements << ");\n";
-      out << SP << SP << "std::size_t const topkTopKCount_" << n << " = static_cast<std::size_t>(" << fTopKCount.GetVal() << ");\n\n";
+      out << SP << SP << "std::size_t const topkTopKCount_" << n << " = static_cast<std::size_t>(" << fK.GetVal() << ");\n\n";
 
       out << SP << SP << "alpaka::WorkDivMembers<Dim, Idx> workDiv_" << n << "(\n";
       out << SP << SP << SP << "Vec::all(Idx{topkNumSlices_" << n << "}),\n";
@@ -388,10 +436,8 @@ public:
       out << SP << "}\n";
       return out.str();
    }
-
 };
 
 } // namespace SOFIE
-
 
 #endif // SOFIE_ROPERATOR_TOPK

@@ -51,21 +51,6 @@ public:
       fOutputTensorNames = { fNY };
    }
 
-   std::vector<std::vector<size_t>> ShapeInference(std::vector<std::vector<size_t>> input) override {
-      auto outShape = input[0];
-      if (outShape.size() == 4) {
-         // [B, H, S, Dv]
-         outShape[3] = input[2][3];
-      } else if (outShape.size() == 3) {
-         // folded [B, S, H*Dv]
-         outShape[2] = input[2][2];
-      }
-      return { outShape };
-   }
-
-   std::vector<ETensorType> TypeInference(std::vector<ETensorType> input) override
-   { return { input[0] }; }
-
    void Initialize(RModel &model) override {
       if (!model.CheckIfTensorAlreadyExist(fNQ))
          throw std::runtime_error("SOFIE SDPA: query tensor " + fNQ + " not found");

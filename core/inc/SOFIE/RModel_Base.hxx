@@ -13,10 +13,6 @@
 #include <sstream>
 #include "SOFIE/SOFIE_common.hxx"
 
-#ifdef SOFIE_SUPPORT_ROOT_BINARY
-#include "TBuffer.h"
-#endif
-
 
 namespace SOFIE {
 
@@ -24,12 +20,12 @@ enum class Options {
    kDefault = 0x0,
    kNoSession = 0x1,
    kNoWeightFile = 0x2,
-   kRootBinaryWeightFile = 0x4,
    kGNN = 0x8,
    kGNNComponent = 0x10,
    kProfile = 0x20,
    kLowRankFactorize = 0x40,
    kKernelOnly = 0x80,
+   kSafetensorsWeightFile = 0x100,
 };
 
 // Optimization levels inspired by ONNXRuntime.
@@ -41,7 +37,7 @@ enum class OptimizationLevel {
    kExtended = 0x1,
 };
 
-enum class WeightFileType { None, RootBinary, Text };
+enum class WeightFileType { None, Safetensors, Text };
 
 
 inline std::underlying_type_t<Options> operator|(Options opA, Options opB) {
@@ -62,10 +58,13 @@ protected:
    WeightFileType fWeightFile = WeightFileType::Text;
 
    std::unordered_set<std::string> fNeededBlasRoutines;
+   bool fBlasSgemmDeclared = false;
 
    const std::unordered_set<std::string> fAllowedStdLib = {"vector", "algorithm", "cmath", "memory", "span"};
    std::unordered_set<std::string> fNeededStdLib = {"vector"};
    std::unordered_set<std::string> fCustomOpHeaders;
+
+   std::set<std::string> fNeededHelperFunctions;
 
    std::string fName = "UnnamedModel";
    std::string fGC; // generated code
@@ -141,9 +140,23 @@ public:
    {
        fCustomOpHeaders.insert(filename);
    }
+   void AddNeededHelperFunction(std::string name)
+   {
+      fNeededHelperFunctions.insert(std::move(name));
+   }
+   const std::set<std::string> &GetNeededHelperFunctions() const { return fNeededHelperFunctions; }
+   void AddNeededHelperFunctions(const std::set<std::string> &names)
+   {
+      fNeededHelperFunctions.insert(names.begin(), names.end());
+   }
+
+   static constexpr const char *kHelperIncludesMarker = "//@SOFIE_HELPER_INCLUDES@\n";
+   static constexpr const char *kHelperFunctionsMarker = "//@SOFIE_HELPER_FUNCTIONS@\n";
+
    void GenerateHeaderInfo(std::string &hgname);
+   void EmitHelperFunctionsCode();
    void GenerateHeaderInfo_GPU_ALPAKA(std::string& hgname);
-   void PrintGenerated() { std::cout << fGC; }
+   void PrintGenerated(std::ostream &os = std::cout) { os << fGC; }
 
    std::string ReturnGenerated() { return fGC; }
    void OutputGenerated(std::string filename = "", bool append = false);

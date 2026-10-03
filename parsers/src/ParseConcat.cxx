@@ -1,8 +1,6 @@
 #include "SOFIE/RModelParser_ONNX.hxx"
 #include "SOFIE/ROperator_Concat.hxx"
-#include "onnx_proto3.pb.h"
-
-
+#include "onnx.hxx"
 namespace SOFIE {
 
 ParserFuncSignature ParseConcat = [](RModelParser_ONNX &parser, const onnx::NodeProto &nodeproto) {
@@ -18,7 +16,7 @@ ParserFuncSignature ParseConcat = [](RModelParser_ONNX &parser, const onnx::Node
          else
             assert(parser.GetTensorType(input_name) == input_type);
       } else {
-         throw std::runtime_error("TMVA::SOFIE ONNX Parser Concat op has input tensor" + input_name +
+         throw std::runtime_error("SOFIE ONNX Parser Concat op has input tensor" + input_name +
                                   " but its type is not yet registered");
       }
       inputs.emplace_back(input_name);
@@ -41,7 +39,7 @@ ParserFuncSignature ParseConcat = [](RModelParser_ONNX &parser, const onnx::Node
    op.reset(new ROperator_Concat(inputs, attr_axis, attr_new_axis, output_name));
    //break;
    //default:
-   //   throw std::runtime_error("TMVA::SOFIE - Unsupported - Operator Concat does not yet support input type " +
+   //   throw std::runtime_error("SOFIE - Unsupported - Operator Concat does not yet support input type " +
    //                            std::to_string(static_cast<int>(input_type)));
   // }
 

@@ -1,5 +1,5 @@
-#ifndef SOFIE_ROPERATOR_GATHERND
-#define SOFIE_ROPERATOR_GATHERND
+#ifndef SOFIE_ROPERATOR_GatherND
+#define SOFIE_ROPERATOR_GatherND
 
 #include "SOFIE/SOFIE_common.hxx"
 #include "SOFIE/ROperator.hxx"
@@ -8,177 +8,204 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
-#include <numeric>
-
-namespace SOFIE {
+namespace SOFIE{
 
 class ROperator_GatherND final : public ROperator
 {
 private:
 
-   int64_t fBatchDims = 0;
-
-   std::string fNData;
+   size_t fBatchDims = 0;
+   std::string fNX;
    std::string fNIndices;
    std::string fNY;
 
-   std::vector<Dim> fShapeData;
+   std::vector<Dim> fShapeX;
    std::vector<Dim> fShapeIndices;
    std::vector<Dim> fShapeY;
 
+   std::vector<int64_t> fIndices;
+
    std::string fType;
 
-   // A size expression (a literal, or a symbolic dim name/expression from
-   // Dim::GetVal()) wrapped as an explicit std::size_t cast.
    static std::string sz(const std::string &e) { return "static_cast<std::size_t>(" + e + ")"; }
 
 public:
-   ROperator_GatherND() {}
-   ROperator_GatherND(int64_t batchDims,
-                      std::string nameData,
-                      std::string nameIndices,
-                      std::string nameY)
-      : fBatchDims(batchDims),
-        fNData(UTILITY::Clean_name(nameData)),
-        fNIndices(UTILITY::Clean_name(nameIndices)),
-        fNY(UTILITY::Clean_name(nameY))
-   {
-      fInputTensorNames  = { fNData, fNIndices };
-      fOutputTensorNames = { fNY };
-   }
-
-   std::vector<ETensorType> TypeInference(std::vector<ETensorType> input) override {
-      return { input[0] };
-   }
-
-   std::vector<std::vector<size_t>> ShapeInference(std::vector<std::vector<size_t>> input) override {
-      return { input[0] };
+   ROperator_GatherND(){}
+   ROperator_GatherND(int batch_dims, std::string nameX, std::string nameIndices, std::string nameY):
+      fBatchDims(batch_dims), fNX(UTILITY::Clean_name(nameX)), fNIndices(UTILITY::Clean_name(nameIndices)), fNY(UTILITY::Clean_name(nameY)) {
+         fInputTensorNames = { fNX, fNIndices };
+         fOutputTensorNames = { fNY };
    }
 
    void Initialize(RModel& model) override {
-      if (!model.CheckIfTensorAlreadyExist(fNData))
-         throw std::runtime_error("SOFIE GatherND: data tensor " + fNData + " not found in model");
-      if (!model.CheckIfTensorAlreadyExist(fNIndices))
-         throw std::runtime_error("SOFIE GatherND: indices tensor " + fNIndices + " not found in model");
-
-      fShapeData    = model.GetDimTensorShape(fNData);
+      if (!model.CheckIfTensorAlreadyExist(fNX)) {
+         throw std::runtime_error("SOFIE GatherND Op Input Tensor " + fNX + " is not found in model");
+      }
+      fShapeX = model.GetDimTensorShape(fNX);
+      if (model.Verbose())
+         std::cout << "GatherND - initial shape " << ConvertDimShapeToString(fShapeX) << " shape of indices "
+               << ConvertDimShapeToString(model.GetDimTensorShape(fNIndices)) << std::endl;
       fShapeIndices = model.GetDimTensorShape(fNIndices);
-
-      size_t r = fShapeData.size();
       size_t q = fShapeIndices.size();
-      size_t b = static_cast<size_t>(fBatchDims);
+      size_t r = fShapeX.size();
 
-      if (r < 1)
-         throw std::runtime_error("SOFIE GatherND: data rank must be >= 1");
-      if (q < 1)
-         throw std::runtime_error("SOFIE GatherND: indices rank must be >= 1");
-      if (b >= std::min(q, r))
-         throw std::runtime_error("SOFIE GatherND: batch_dims must be < min(q, r)");
-
-      if (fShapeIndices.back().isParam)
-         throw std::runtime_error("SOFIE GatherND: the last indices dimension (index tuple length) "
-            "must be static - a dynamic index-tuple length is not supported");
-      size_t last_idx_dim = fShapeIndices.back().dim;
-      if (last_idx_dim > r - b)
-         throw std::runtime_error("SOFIE GatherND: indices_shape[-1] must be <= r - batch_dims");
-
-      for (size_t i = 0; i < b; ++i) {
-         if (fShapeData[i] != fShapeIndices[i])
-            throw std::runtime_error("SOFIE GatherND: first batch_dims dimensions of data and indices must match");
+      if (q < 1) {
+         throw std::runtime_error("SOFIE GatherND : rank of Indices is < 1");
+      }
+      if (r < 1) {
+         throw std::runtime_error("SOFIE GatherND : rank of input tensor is < 1");
+      }
+      if (fBatchDims >= std::min(q,r)) {
+         throw std::runtime_error("SOFIE GatherND : invalid batch dim value");
+      }
+      if (fBatchDims > 0) {
+         for (size_t i = 0; i < fBatchDims; i++) {
+            if (fShapeX[i] != fShapeIndices[i]) {
+               std::cout << " input shape " << ConvertDimShapeToString(fShapeX) << " "
+                         << " index shape " << ConvertDimShapeToString(fShapeIndices) << std::endl;
+               throw std::runtime_error("SOFIE GatherND : invalid input or index shape for " + std::to_string(i));
+            }
+         }
       }
 
-      // Output shape: batch_dims + indices[0..q-2] + data[b + last_idx_dim .. r-1]
-      // rank = b + (q - b - 1) + (r - b - last_idx_dim)
-      //      = q + r - last_idx_dim - 1 - b
-      fShapeY.clear();
-      for (size_t i = 0; i < b; ++i)
-         fShapeY.push_back(fShapeData[i]);
-      for (size_t i = b; i + 1 < q; ++i)
-         fShapeY.push_back(fShapeIndices[i]);
-      for (size_t i = b + last_idx_dim; i < r; ++i)
-         fShapeY.push_back(fShapeData[i]);
+      if (fShapeIndices.back().isParam)
+         throw std::runtime_error("SOFIE GatherND : Index_shape(-1) is not known");
 
-      model.AddIntermediateTensor(fNY, model.GetTensorType(fNData), fShapeY);
-      fType = ConvertTypeToString(model.GetTensorType(fNData));
+      size_t last_index_shape = fShapeIndices.back().dim;
+      if (last_index_shape < 1 || last_index_shape > r - fBatchDims) {
+         throw std::runtime_error("SOFIE GatherND : Index_shape(-1) has wrong value " +
+            std::to_string(last_index_shape));
+      }
 
-      if (model.Verbose())
-         std::cout << "GatherND: data " << ConvertDimShapeToString(fShapeData)
-                   << " indices " << ConvertDimShapeToString(fShapeIndices)
-                   << " batch_dims=" << fBatchDims
-                   << " -> " << fNY << " " << ConvertDimShapeToString(fShapeY) << std::endl;
+      size_t output_rank = r + q -1 - last_index_shape - fBatchDims;
+      fShapeY = std::vector<Dim>(fShapeIndices.begin(), fShapeIndices.end() - 1);
+      fShapeY.insert(fShapeY.end(), fShapeX.begin() + fBatchDims + last_index_shape, fShapeX.end());
+      if (fShapeY.size() != output_rank) {
+         std::cout << " input shape " << ConvertDimShapeToString(fShapeX) << " "
+                         << " index shape " << ConvertDimShapeToString(fShapeIndices)
+                         << " output shape " << ConvertDimShapeToString(fShapeY)
+                         << " and output rank should be " << output_rank << std::endl;
+         throw std::runtime_error("SOFIE GatherND : Something is wrong in initialization ");
+      }
+
+      if (!fIsOutputConstant) {
+         model.AddIntermediateTensor(fNY, model.GetTensorType(fNX), fShapeY);
+         fType = ConvertTypeToString(model.GetTensorType(fNX));
+         if (model.Verbose())
+               std::cout <<  "GatherND: input " << fNX << " " << ConvertDimShapeToString(fShapeX) << " indices " << fNIndices << ConvertDimShapeToString(fShapeIndices)
+                         << " -> " << fNY << " with shape " << ConvertDimShapeToString(fShapeY) << std::endl;
+      }
+
+
+
+
+
    }
 
    std::string Generate(std::string opName) override {
+      if (fIsOutputConstant) {
+         return "//---------------------------------------\n";
+      }
       opName = "op_" + opName;
-      if (fShapeY.empty())
-         throw std::runtime_error("SOFIE GatherND called to Generate without being initialized first");
-
-      size_t r = fShapeData.size();
-      size_t q = fShapeIndices.size();
-      size_t b = static_cast<size_t>(fBatchDims);
-      size_t last_idx_dim = fShapeIndices.back().dim;
-
-      auto stridesData    = UTILITY::ComputeStrideFromShape(fShapeData);
-      auto stridesIndices = UTILITY::ComputeStrideFromShape(fShapeIndices);
-      auto stridesY       = UTILITY::ComputeStrideFromShape(fShapeY);
-
-      std::string totalOutput = ConvertDimShapeToLength(fShapeY);
-
       std::stringstream out;
-      out << SP << "//--------- GatherND operator " << opName << "\n";
+      out << "//--------- GatherND " << opName << " --> " << ConvertDimShapeToString(fShapeY) << "\n";
+      size_t r = fShapeX.size();
+      size_t q = fShapeIndices.size();
+      auto stridesX = UTILITY::ComputeStrideFromShape(fShapeX);
+      auto stridesY = UTILITY::ComputeStrideFromShape(fShapeY);
+      auto stridesIndices = UTILITY::ComputeStrideFromShape(fShapeIndices);
 
-      out << SP << "for (size_t out_idx = 0; out_idx < static_cast<size_t>(" << totalOutput << "); out_idx++) {\n";
+      size_t ss = fShapeIndices.back().dim;
 
-      out << SP << SP << "size_t rem = out_idx;\n";
-      size_t Dy = fShapeY.size();
-      for (size_t d = 0; d < Dy; ++d) {
-         out << SP << SP << "size_t oy_" << d << " = rem / " << stridesY[d].GetVal() << ";\n";
-         out << SP << SP << "rem %= " << stridesY[d].GetVal() << ";\n";
+      out << SP << "{\n";
+      std::string outIndex;
+      std::string inIndex;
+      std::string idIndex;
+      for (size_t j = 0; j < fBatchDims; j++) {
+         std::string index = "i_" + std::to_string(j);
+         for (size_t k = 0; k <= j; k++) out << SP;
+         out << "for (size_t " << index << " = 0; " << index << " < " << fShapeY[j] << "; " << index << "++) {\n";
+         if (j > 0) {
+            outIndex += " + ";
+            inIndex += " + ";
+            idIndex += " + ";
+         }
+         outIndex += index;
+         if (stridesY[j].GetVal() != "1")
+            outIndex += " * " + stridesY[j].GetVal();
+         inIndex += index;
+         if (stridesX[j].GetVal() != "1")
+            inIndex += " * " + stridesX[j].GetVal();
+         idIndex += index;
+         if (stridesIndices[j].GetVal() != "1")
+            idIndex += " * " + stridesIndices[j].GetVal();
+      }
+      for (size_t j = fBatchDims; j < q - 1; j++) {
+         std::string index = "i_" + std::to_string(j);
+         for (size_t k = 0; k <= j; k++) out << SP;
+         out << "for (size_t " << index << " = 0; " << index << " < " << fShapeY[j] << "; " << index << "++) {\n";
+         if (j > 0) {
+            outIndex += " + ";
+            idIndex += " + ";
+         }
+         outIndex += index;
+         if (stridesY[j].GetVal() != "1")
+            outIndex += " * " + stridesY[j].GetVal();
+         idIndex += index;
+         if (stridesIndices[j].GetVal() != "1")
+            idIndex += " * " + stridesIndices[j].GetVal();
+      }
+      for (size_t l = 0; l < ss; l++) {
+         std::string indexIndex =
+            idIndex.empty() ? std::to_string(l) : (l > 0 ? idIndex + " + " + std::to_string(l) : idIndex);
+         for (size_t k = 0; k <= q - 1; k++)
+            out << SP;
+         out << "int64_t index_" << l << " = tensor_" << fNIndices << "[" << indexIndex << "];\n";
+         for (size_t k = 0; k <= q - 1; k++)
+            out << SP;
+         out << "if (index_" << l << " < 0) index_" << l << " += " << fShapeX[fBatchDims + l] << ";\n";
+      }
+      for (size_t k = 0; k <= q - 1; k++) out << SP;
+      out << "size_t inputIndex = " << inIndex;
+      for (size_t l = 0; l < ss; l++) {
+         if (!inIndex.empty() || l > 0)
+            out << " + ";
+         out << "index_" << l;
+         if (stridesX[fBatchDims + l].GetVal() != "1") out
+             << " * " << stridesX[fBatchDims + l];
+      }
+      out << ";\n";
+      for (size_t k = 0; k <= q - 1; k++) out << SP;
+      if (ss == r - fBatchDims) {
+         out << "tensor_" << fNY << "[" << outIndex << "] = "
+             << "tensor_" << fNX << "[inputIndex];\n";
+      } else {
+         out << "std::copy(tensor_" << fNX << " + inputIndex, tensor_" << fNX << " + inputIndex + "
+             << stridesX[fBatchDims + ss - 1] << ","
+             << "tensor_" << fNY << "+" << outIndex << ");\n";
       }
 
-      out << SP << SP << "size_t idx_base = 0;\n";
-      for (size_t i = 0; i < b; ++i)
-         out << SP << SP << "idx_base += oy_" << i << " * " << stridesIndices[i].GetVal() << ";\n";
-      for (size_t i = b; i + 1 < q; ++i)
-         out << SP << SP << "idx_base += oy_" << i << " * " << stridesIndices[i].GetVal() << ";\n";
-
-      out << SP << SP << "size_t data_idx = 0;\n";
-      for (size_t i = 0; i < b; ++i)
-         out << SP << SP << "data_idx += oy_" << i << " * " << stridesData[i].GetVal() << ";\n";
-
-      out << SP << SP << "for (size_t k = 0; k < " << last_idx_dim << "; k++) {\n";
-      out << SP << SP << SP << "int64_t idx_val = tensor_" << fNIndices
-          << "[idx_base + k * " << stridesIndices[q - 1].GetVal() << "];\n";
-      out << SP << SP << SP << "if (idx_val < 0) idx_val += " << "static_cast<int64_t>(tensor_"
-          << fNData << "_shape[" << b << " + k]);\n";
-      out << SP << SP << SP << "data_idx += static_cast<size_t>(idx_val) * " << "data_stride_b_plus_k_" << opName << "[k];\n";
-      out << SP << SP << "}\n";
-
-      // Accumulate trailing data dims from output coords
-      // Y dims [b + (q-b-1) .. ] correspond to data dims [b + last_idx_dim .. r-1]
-      size_t y_trailing_start = b + (q - b - 1);
-      for (size_t i = b + last_idx_dim; i < r; ++i) {
-         size_t oy_dim = y_trailing_start + (i - (b + last_idx_dim));
-         out << SP << SP << "data_idx += oy_" << oy_dim << " * " << stridesData[i].GetVal() << ";\n";
+      for (size_t j = q-1; j > 0; j--) {
+         for (size_t k = 0; k <j; k++) out << SP;
+         out << "}\n";
       }
-
-      out << SP << SP << "tensor_" << fNY << "[out_idx] = tensor_" << fNData << "[data_idx];\n";
       out << SP << "}\n";
 
       return out.str();
    }
+
 
    std::string Generate_GPU_Kernel_ALPAKA(std::string opName, const std::vector<std::string> &dynParamNames) override {
       opName = "op_" + opName;
       if (fShapeY.empty())
          throw std::runtime_error("SOFIE GatherND called to Generate without being initialized first");
 
-      size_t r = fShapeData.size();
+      size_t r = fShapeX.size();
       size_t q = fShapeIndices.size();
       size_t b = static_cast<size_t>(fBatchDims);
       size_t last_idx_dim = fShapeIndices.back().dim;
 
-      auto stridesData    = UTILITY::ComputeStrideFromShape(fShapeData);
+      auto stridesData    = UTILITY::ComputeStrideFromShape(fShapeX);
       auto stridesIndices = UTILITY::ComputeStrideFromShape(fShapeIndices);
       auto stridesY       = UTILITY::ComputeStrideFromShape(fShapeY);
 
@@ -246,7 +273,7 @@ public:
              + std::to_string(idx_offset) + "u];\n";
          op += SP + SP + SP + SP + SP
              + "if (idx_val < 0) idx_val += "
-             + fShapeData[data_axis].GetVal() + ";\n";
+             + fShapeX[data_axis].GetVal() + ";\n";
          op += SP + SP + SP + SP + SP
              + "data_idx += static_cast<std::size_t>(idx_val) * "
              + sz(stridesData[data_axis].GetVal()) + ";\n";
@@ -292,7 +319,7 @@ public:
       out << SP << "auto const workDiv_" << opName << " = sofie_workdiv(elementsPerGrid_" << opName << ");\n";
       out << SP << "alpaka::exec<Acc>(queue, workDiv_" << opName
           << ", " << kname
-          << ", alpaka::getPtrNative(deviceBuf_" << fNData << ")"
+          << ", alpaka::getPtrNative(deviceBuf_" << fNX << ")"
           << ", alpaka::getPtrNative(deviceBuf_" << fNIndices << ")"
           << ", alpaka::getPtrNative(deviceBuf_" << fNY << ")";
       for (auto &p : dynParamNames)
@@ -303,6 +330,7 @@ public:
    }
 };
 
-} // SOFIE
+}
 
-#endif // SOFIE_ROPERATOR_GATHERND
+
+#endif
