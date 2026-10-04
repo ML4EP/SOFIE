@@ -1,0 +1,74 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/install"
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "Release (library only)",
+      "inherits": "base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "debug",
+      "displayName": "Debug (library only)",
+      "inherits": "base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "cpu-tests",
+      "displayName": "CPU unit tests",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "SOFIE_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "cuda-tests",
+      "displayName": "CPU + Alpaka/CUDA unit tests",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "SOFIE_BUILD_TESTS": "ON",
+        "ENABLE_ALPAKA_TESTS": "ON",
+        "ALPAKA_BACKEND": "cuda"
+      }
+    },
+    {
+      "name": "benchmark",
+      "displayName": "CUDA benchmark toolkit",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "SOFIE_BENCHMARK": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "release", "configurePreset": "release" },
+    { "name": "debug", "configurePreset": "debug" },
+    { "name": "cpu-tests", "configurePreset": "cpu-tests" },
+    { "name": "cuda-tests", "configurePreset": "cuda-tests" },
+    { "name": "benchmark", "configurePreset": "benchmark" }
+  ],
+  "testPresets": [
+    {
+      "name": "cpu-tests",
+      "configurePreset": "cpu-tests",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "cuda-tests",
+      "configurePreset": "cuda-tests",
+      "output": { "outputOnFailure": true }
+    }
+  ]
+}
