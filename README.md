@@ -27,23 +27,29 @@ cmake -DCMAKE_INSTALL_PREFIX=../install -DCMAKE_BUILD_TYPE=RelWithDebInfo ..
 cmake --build . --target install -j$(nproc)
 ```
 
+Alternatively, use the provided CMake presets (`cmake --list-presets`):
+
+```bash
+cmake --preset cpu-tests && cmake --build --preset cpu-tests -j$(nproc) && ctest --preset cpu-tests
+```
+
 ### 2. Environment
 
 ```bash
-source setup.sh   # adds SOFIE_core and SOFIE_parsers to LD_LIBRARY_PATH
+source scripts/setup.sh   # adds SOFIE_core and SOFIE_parsers to LD_LIBRARY_PATH
 ```
 
 ---
 
 ## Testing
 
-Unit and integration tests are enabled with `-Dtesting=ON` and require
+Unit and integration tests are enabled with `-DSOFIE_BUILD_TESTS=ON` and require
 [GoogleTest](https://github.com/google/googletest).
 
 ### CPU / default tests
 
 ```bash
-cmake -Dtesting=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo ..
+cmake -DSOFIE_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo ..
 cmake --build . -j$(nproc)
 ctest --output-on-failure
 ```
@@ -55,7 +61,7 @@ correctness against reference outputs.  They require the CUDA Toolkit and a
 compatible NVIDIA GPU.
 
 ```bash
-cmake -Dtesting=ON \
+cmake -DSOFIE_BUILD_TESTS=ON \
       -DENABLE_ALPAKA_TESTS=ON \
       -DALPAKA_BACKEND=cuda \
       -DCMAKE_BUILD_TYPE=RelWithDebInfo ..
@@ -65,12 +71,13 @@ ctest --output-on-failure
 
 | CMake flag | Default | Description |
 |---|---|---|
-| `-Dtesting=ON` | `OFF` | Enable the test suite |
+| `-DSOFIE_BUILD_TESTS=ON` | `OFF` | Enable the test suite |
+| `-DSOFIE_USE_CCACHE=ON` | `OFF` | Use ccache as compiler launcher |
 | `-DENABLE_ALPAKA_TESTS=ON` | `OFF` | Enable Alpaka GPU tests |
 | `-DALPAKA_BACKEND=<val>` | `cuda` | Alpaka backend: `cuda`, `hip`, `cpu`, `sycl` |
 
 The test executable is `TestCustomModelsFromONNXForAlpakaCuda`.  ONNX model files
-used as test inputs are located in `core/test/input_models/`.  Models with symbolic
+used as test inputs are located in `tests/models/onnx/`.  Models with symbolic
 (dynamic) input dimensions are specialised by the emitter before testing.
 
 ---
@@ -149,13 +156,19 @@ architectures:
 
 ```
 SOFIE/
-├── core/           # Core SOFIE library (RModel, operators, code generators)
-│   └── test/       # Unit/integration tests
+├── core/           # Core SOFIE library (RModel, operators, RTensor, code generators)
 ├── parsers/        # ONNX → RModel parser
+├── tests/
+│   ├── cpu/        # CPU unit/integration tests (GoogleTest)
+│   ├── alpaka/     # Alpaka/CUDA GPU tests
+│   ├── common/     # Shared test helpers
+│   ├── models/     # Test models: generators/, onnx/ (+ references/)
+│   ├── templates/  # Emitter sources configured by CMake
+│   └── gnn/        # GNN emitter examples
 ├── benchmark/      # Latency / throughput benchmark toolkit
 │   ├── models/     # Place .onnx benchmark models here
 │   └── src/        # CMake-configured source templates
-├── utils/          # Utility targets
+├── scripts/        # setup.sh (runtime env), check_style.sh (clang-format/tidy)
 └── cmake/          # CMake modules and config templates
 ```
 

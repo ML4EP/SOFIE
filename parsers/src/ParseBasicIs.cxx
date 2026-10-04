@@ -1,5 +1,5 @@
 #include "SOFIE/RModelParser_ONNX.hxx"
-#include "SOFIE/ROperator_Basic_Is.hxx"
+#include "SOFIE/ROperator_BasicIs.hxx"
 #include "onnx.hxx"
 namespace SOFIE {
 
@@ -31,13 +31,13 @@ std::unique_ptr<ROperator> ParseBasicIs(RModelParser_ONNX &parser, const onnx::N
    std::string output_name = nodeproto.output(0);
 
    if (nodeproto.attribute_size() == 0 || (detect_negative == 1 && detect_positive == 1))
-      op.reset(new ROperator_Basic_Is<Op>(input_name, output_name));
+      op.reset(new ROperator_BasicIs<Op>(input_name, output_name));
    else if (nodeproto.attribute_size() > 0) {
 
       if (detect_negative == 0)
-         op.reset(new ROperator_Basic_Is<EBasicIsOperator::kIsInfPos>(input_name, output_name));
+         op.reset(new ROperator_BasicIs<EBasicIsOperator::kIsInfPos>(input_name, output_name));
       else if (detect_positive == 0)
-         op.reset(new ROperator_Basic_Is<EBasicIsOperator::kIsInfNeg>(input_name, output_name));
+         op.reset(new ROperator_BasicIs<EBasicIsOperator::kIsInfNeg>(input_name, output_name));
    } else
       throw std::runtime_error("SOFIE ONNX Parser " + IsOpTraits<Op>::Name() + " operator - invalid attributes");
 

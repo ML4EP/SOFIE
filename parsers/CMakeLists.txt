@@ -29,7 +29,7 @@ set(sources_cxx
     src/ParseBatchNormalization.cxx
     src/ParseCast.cxx
     src/ParseClip.cxx
-    src/ParseComparision.cxx
+    src/ParseComparison.cxx
     src/ParseConcat.cxx
     src/ParseConstant.cxx
     src/ParseConv.cxx

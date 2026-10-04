@@ -50,7 +50,7 @@ set(sources_headers
    SOFIE/ROperator_Erf.hxx
    SOFIE/ROperator_Swish.hxx
    SOFIE/ROperator_Elu.hxx
-   SOFIE/ROperator_Comparision.hxx
+   SOFIE/ROperator_Comparison.hxx
    SOFIE/ROperator_EyeLike.hxx
    SOFIE/ROperator_Range.hxx
    SOFIE/ROperator_TopK.hxx
@@ -61,6 +61,7 @@ set(sources_headers
    SOFIE/ROperator_Where.hxx
    SOFIE/ROperator_Einsum.hxx
    SOFIE/ROperator_ScatterElements.hxx
+   SOFIE/RTensor.hxx
    SOFIE/SOFIE_common.hxx
    SOFIE/SOFIEHelpers.hxx
 
@@ -97,7 +98,6 @@ target_include_directories(SOFIE_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/inc>
   $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
-target_link_libraries(SOFIE_core PUBLIC utils)
 
 install(TARGETS SOFIE_core
   EXPORT SOFIETargets

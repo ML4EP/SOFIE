@@ -814,7 +814,7 @@ else()
                    "re-configure with -DSOFIE_BENCHMARK_ORT=ON for ORT comparison)")
 endif()
 
-if(testing)
+if(SOFIE_BUILD_TESTS)
     add_test(
         NAME    SofieBenchmark
         COMMAND sofie_benchmark --warmup 5 --iterations 20

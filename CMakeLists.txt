@@ -18,13 +18,25 @@ endif()
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
+option(SOFIE_USE_CCACHE "Use ccache as compiler launcher" OFF)
+option(SOFIE_BUILD_TESTS "Build and run tests" OFF)
+
+# Deprecated option names, kept as aliases for SOFIE_USE_CCACHE / SOFIE_BUILD_TESTS.
 if(ccache)
+  message(DEPRECATION "Option 'ccache' is deprecated: use -DSOFIE_USE_CCACHE=ON")
+  set(SOFIE_USE_CCACHE ON)
+endif()
+if(testing)
+  message(DEPRECATION "Option 'testing' is deprecated: use -DSOFIE_BUILD_TESTS=ON")
+  set(SOFIE_BUILD_TESTS ON)
+endif()
+
+if(SOFIE_USE_CCACHE)
   set(CMAKE_C_COMPILER_LAUNCHER ccache)
   set(CMAKE_CXX_COMPILER_LAUNCHER ccache)
 endif()
 
-option(testing "Build and run tests" OFF)
-if(testing)
+if(SOFIE_BUILD_TESTS)
   find_package(GTest REQUIRED)
   enable_testing()
 endif()
@@ -35,12 +47,11 @@ option(SOFIE_ALPAKA_CUDA_DEBUG "Build Alpaka CUDA tests with device debug info (
 
 include(cmake/modules/SofieTestMacros.cmake)
 
-add_subdirectory(utils)
 add_subdirectory(core)
 add_subdirectory(parsers)
 
-if(testing)
-  add_subdirectory(test)
+if(SOFIE_BUILD_TESTS)
+  add_subdirectory(tests)
 endif()
 
 if(SOFIE_BENCHMARK)

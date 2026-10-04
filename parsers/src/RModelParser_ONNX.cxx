@@ -28,8 +28,8 @@ void RegisterBasicUnaryParsers(RModelParser_ONNX &parser);
 void RegisterBasicBinaryParsers(RModelParser_ONNX &parser);
 // Nary operators
 void RegisterBasicNaryParsers(RModelParser_ONNX &parser);
-//Comparision Operators
-void RegisterComparisionParsers(RModelParser_ONNX &parser);
+//Comparison Operators
+void RegisterComparisonParsers(RModelParser_ONNX &parser);
 //Is Operators
 void RegisterBasicIsParsers(RModelParser_ONNX &parser);
 extern ParserFuncSignature ParseNot;
@@ -284,8 +284,8 @@ RModelParser_ONNX::RModelParser_ONNX() noexcept : fOperatorsMapImpl(std::make_un
    RegisterBasicBinaryParsers(*this);
    // Nary operators
    RegisterBasicNaryParsers(*this);
-   //Comparision Operators
-   RegisterComparisionParsers(*this);
+   //Comparison Operators
+   RegisterComparisonParsers(*this);
    RegisterBasicIsParsers(*this);
    RegisterOperator("Not", ParseNot);
    // Reduce operators
