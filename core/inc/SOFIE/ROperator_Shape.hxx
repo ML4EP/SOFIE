@@ -106,8 +106,10 @@ public:
       out << SP << "(void) deviceBuf_" << fNX << ";\n";
       size_t length = ConvertShapeToLength(fOutput_shape);
       for (size_t id = 0; id < length; id++) {
-         out << SP << "deviceBuf_" << fNY << "["<< id << "] = " << fShape[fStart+id] << ";\n";
+         out << SP << "tensor_" << fNY << "["<< id << "] = " << fShape[fStart+id] << ";\n";
       }
+      out << SP << "auto hostBuf_" << fNY << " = alpaka::createView(hostAcc, tensor_" << fNY << ", " << length << ");\n";
+      out << SP << "alpaka::memcpy(queue, deviceBuf_" << fNY << ", hostBuf_" << fNY << ");\n";
       return out.str();
    }
 
