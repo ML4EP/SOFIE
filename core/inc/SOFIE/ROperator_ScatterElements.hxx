@@ -66,16 +66,6 @@ public:
          fOutputTensorNames = { fNY };
       }
 
-   // type of output given input
-   std::vector<ETensorType> TypeInference(std::vector<ETensorType> input) override {
-      return input;
-   }
-
-   // shape of output tensors given input tensors
-   std::vector<std::vector<size_t>> ShapeInference(std::vector<std::vector<size_t>> input) override {
-      auto ret = std::vector<std::vector<size_t>>(1, input[0]); // return vector size 1 with first input
-      return ret;
-   }
 
    void Initialize(RModel& model) override {
       // input must be a graph input, or already initialized intermediate tensor
@@ -92,9 +82,16 @@ public:
 
       fShapeX = model.GetDimTensorShape(fNX);
       fShapeI = model.GetDimTensorShape(fNI);
-      auto fShapeU = model.GetDimTensorShape(fNU);
-      if (fShapeU.size() != fShapeI.size())
-         throw std::runtime_error(std::string("SOFIE ScatterElements - update tensor has invalid rank")) ;
+      auto shapeU = model.GetDimTensorShape(fNU);
+      if (model.Verbose()) {
+         std::cout << "ScatterElements: input: " << ConvertDimShapeToString(fShapeX)
+                                                << " indices " << ConvertDimShapeToString(fShapeI)
+                                                << " update " <<  ConvertDimShapeToString(shapeU) << std::endl;
+      }
+      if (!model.IsDynamicTensor(fNI) && !model.IsDynamicTensor(fNU)) {
+         if (shapeU != fShapeI)
+           throw std::runtime_error(std::string("SOFIE ScatterElements - update tensor has invalid shape ")) ;
+      }
       if (fShapeX.size() == 0)
          throw std::runtime_error(std::string("SOFIE ScatterElements - input tensor has zero rank  ")) ;
       if (fShapeX.size() != fShapeI.size())
@@ -123,6 +120,8 @@ public:
          model.AddNeededStdLib("numeric");
          model.AddNeededStdLib("algorithm");
       }
+      if (model.Verbose())
+         std::cout << "\t----> " << ConvertDimShapeToString(fShapeY) << std::endl;
    }
 
    std::string GenerateInitCode() override {
@@ -212,22 +211,31 @@ public:
       auto strideY = UTILITY::ComputeStrideFromShape(fShapeY);
       auto strideI = UTILITY::ComputeStrideFromShape(fShapeI);
 
-      std::string length = ConvertDimShapeToLength(fShapeY);
+      auto length = ConvertDimShapeToLength(fShapeY);
 
-      // function to write compute expression for global index from Dim-based strides
       auto tensorIndex = [](const std::vector<Dim> & stride, const std::vector<std::string> & idx) {
          std::stringstream strst;
          int dims = idx.size();
          assert (dims == (int) stride.size());
          for (int i = 0; i < dims; i++) {
-            std::string sv = stride[i].GetVal();
-            if (sv != "1")
-               strst << sv << "*" << idx[i];
+            if (stride[i].GetVal() != "1")
+               strst << stride[i] << "*" << idx[i];
             else
                strst << idx[i];
             if (i < dims-1)
                strst << " + ";
          }
+         return strst.str();
+      };
+
+      auto tensorIndexOpt = [](const std::vector<std::string> & sdx, const std::vector<std::string> & idx) {
+         std::stringstream strst;
+         int dims = idx.size();
+         for (int i = 0; i < dims-1; i++) {
+            strst << sdx[i];
+            strst << " + ";
+         }
+         strst << idx[dims-1];
          return strst.str();
       };
 
@@ -238,14 +246,23 @@ public:
       // loop on tensor rank
       int dims = fShapeY.size();
       std::vector<std::string> idx(dims);
+      std::vector<std::string> sdx(dims);
       for (int i = 0; i < dims; i++) {
          idx[i] = std::string("i") + std::to_string(i);
+         sdx[i] = std::string("s") + std::to_string(i);
          for (int j = 0; j <= i; j++) out << SP;
-         out << "for (int " << idx[i] << " = 0; " << idx[i] << " < " << fShapeI[i].GetVal() << "; " << idx[i] << "++) {\n";
+         out << "for (int " << idx[i] << " = 0; " << idx[i] << " < " << fShapeI[i] << "; " << idx[i] << "++) {\n";
+         if (i < dims-1) {
+            for (int j = 0; j <= i+1 ; j++) out << SP;
+            if (strideI[i].GetVal() != "1")
+               out << "int "<< sdx[i] << " = " << strideI[i] << " * " << idx[i] << ";\n";
+            else
+               out << "int "<< sdx[i] << " = " << idx[i] << ";\n";
+         }
       }
       // correct index for specific axis
       for (int j = 0; j <= dims; j++) out << SP;
-      out << "int updateIndex = " << tensorIndex(strideI,idx) << ";\n";
+      out << "int updateIndex = " << tensorIndexOpt(sdx,idx) << ";\n";
       for (int j = 0; j <= dims; j++) out << SP;
       out << "int iAxis = tensor_" << fNI << "[updateIndex];\n";
       for (int j = 0; j <= dims; j++) out << SP;

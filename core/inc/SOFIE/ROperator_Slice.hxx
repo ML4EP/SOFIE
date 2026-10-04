@@ -8,8 +8,6 @@
 #include <cassert>
 #include <sstream>
 #include <numeric>
-
-
 namespace SOFIE{
 
 // slice operator
@@ -25,6 +23,7 @@ private:
    bool fIsEndUndef = false;
    bool fIsStepUndef = false;
    bool fIdentitySlice = false;
+   bool fIsAlias = false;
    std::string fNData;        // input data tensor name
    std::string fNOutput;      // output data name
    std::vector<std::string> fNames;       // tensor names for meta(axis) information
@@ -79,7 +78,7 @@ public:
 
    void Initialize(RModel& model) override {
       if (model.CheckIfTensorAlreadyExist(fNData) == false){   //input must be a graph input, or already initialized intermediate tensor
-         throw std::runtime_error("TMVA Slice Op Input Tensor is not found in model");
+         throw std::runtime_error("SOFIE Slice Op Input Tensor is not found in model");
       }
 
       std::vector<std::vector<Dim>> shapes;
@@ -154,7 +153,7 @@ public:
             // negative axes - they count from the back
             if (fAxes[i] < 0) fAxes[i] = dim + fAxes[i];
             if (fAxes[i] < 0 || fAxes[i] >= static_cast<IType>(dim))
-               throw std::runtime_error("TMVA Slice Op : invalid axis value " + std::to_string(fAxes[i]) +
+               throw std::runtime_error("SOFIE Slice Op : invalid axis value " + std::to_string(fAxes[i]) +
                   " for  " + std::to_string(i));
          }
       }
@@ -163,12 +162,12 @@ public:
          if (!itensors[0].empty() )
             fStartDims.push_back(Dim{ static_cast<size_t>(itensors[0][i])});
          if (fStartDims.empty())
-            throw std::runtime_error("TMVA Slice Op : Missing start input tensor");
+            throw std::runtime_error("SOFIE Slice Op : Missing start input tensor");
 
          if (!itensors[1].empty())
             fEndDims.push_back(Dim{ static_cast<size_t>(itensors[1][i])});
          else if (fEndDims.empty())
-            throw std::runtime_error("TMVA Slice Op : Missing end input tensor");
+            throw std::runtime_error("SOFIE Slice Op : Missing end input tensor");
 
          if (!itensors[3].empty()) {
             fStepDims.push_back(Dim{ static_cast<size_t>(itensors[3][i])});
@@ -194,7 +193,7 @@ public:
             if (!fStepDims[i].isParam) {
                istep = static_cast<IType>(fStepDims[i].dim);
             } else {
-               throw std::runtime_error("TMVA Slice Op : parametric step inputs are not supported");
+               throw std::runtime_error("SOFIE Slice Op : parametric step inputs are not supported");
             }
             // clamp start end values depending on steps
             // start must be [0,N] for positive steps or [0,N-1] for negative
@@ -209,7 +208,7 @@ public:
                if (iend < -1) iend = -1;
                if (iend > static_cast<IType>(iAxisDim)-1) iend = static_cast<IType>(iAxisDim) -1;
             } else {
-               throw std::runtime_error("TMVA Slice Op : invalid step value " + std::to_string(istep) +
+               throw std::runtime_error("SOFIE Slice Op : invalid step value " + std::to_string(istep) +
                   " for  " + std::to_string(i));
             }
             // for parametric values clamping we will done at run time
@@ -307,7 +306,7 @@ public:
          auto sliceRecursive = [&](size_t iaxis, size_t & outIdx, size_t & inOffset) {
             auto slice_impl = [&](size_t iax, size_t & outputIdx, size_t & inputOffset, auto & sliceRecImpl) {
                if (fStart[iax].isParam || fEnd[iax].isParam || fSteps[iax].isParam)
-                  throw std::runtime_error("TMVA Slice Op : cannot have parametric values when input is constant");
+                  throw std::runtime_error("SOFIE Slice Op : cannot have parametric values when input is constant");
                // compute indices
                std::vector<IType> indices;
                for (IType i = (IType) fStart[iax].dim; (IType(fSteps[iax].dim) > 0) ? i < IType(fEnd[iax].dim) : i > IType(fEnd[iax].dim); i += IType(fSteps[iax].dim) )
@@ -378,12 +377,14 @@ public:
 
          model.AddIntermediateTensor(fNOutput, model.GetTensorType(fNData), fShapeOutput);
          fOutputIsDynamic = model.IsDynamicTensor(fNOutput);
-         //if (fIdentitySlice)  model.AddAliasTensor(fNOutput, fNData);
+         if (fIdentitySlice)
+            fIsAlias = model.AddAliasTensor(fNOutput, fNData);
 
          if (model.Verbose()) {
             std::cout << "Slice " << fNData << "  " << ConvertDimShapeToString(fShapeInput)
                       << "---> " << fNOutput << " " <<  ConvertDimShapeToString(fShapeOutput);
-            if (fIdentitySlice) std::cout << " (using alias tensor since slice is an identity) ";
+            if (fIsAlias)
+               std::cout << " (using alias tensor since slice is an identity) ";
             std::cout << std::endl;
 
          }
@@ -413,9 +414,14 @@ public:
       size_t ndim = fShapeInput.size();
 
       if (fIdentitySlice) {
-         out << "/// Slice is just an identity (copy) \n";
-         //out << SP << "tensor_" << fNOutput << " = const_cast<" << ConvertTypeToString(fOutputType) << " *>(tensor_" << fNData << ");\n";
-         out << SP << "std::copy(tensor_" << fNData << ", tensor_" << fNData << " + " << ConvertDimShapeToLength(fShapeInput) << ", tensor_" << fNOutput << ");\n";
+         if (fIsAlias) {
+            out << "/// Slice is just an identity: the output points to the memory of the input\n";
+            out << SP << "auto * tensor_" << fNOutput << " = tensor_" << fNData << ";\n";
+         } else {
+            out << "/// Slice is just an identity (copy) \n";
+            out << SP << "std::copy(tensor_" << fNData << ", tensor_" << fNData << " + "
+                << ConvertDimShapeToLength(fShapeInput) << ", tensor_" << fNOutput << ");\n";
+         }
          return out.str();
       }
 
@@ -504,6 +510,7 @@ public:
 
       return out.str();
    }
+
 
    std::string Generate_GPU_Kernel_ALPAKA(std::string opName, const std::vector<std::string> &dynParamNames) override {
       if (fIsOutputConstant) return "";
@@ -682,6 +689,7 @@ public:
       return "(" + expression + ")";
    }
 };
+
 }//SOFIE
 
 

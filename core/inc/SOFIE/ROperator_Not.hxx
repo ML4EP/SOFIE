@@ -1,11 +1,9 @@
-#ifndef TMVA_EXPERIMENTAL_SOFIE_ROPERATOR_NOT
-#define TMVA_EXPERIMENTAL_SOFIE_ROPERATOR_NOT
+#ifndef SOFIE_ROPERATOR_NOT
+#define SOFIE_ROPERATOR_NOT
 
 #include <SOFIE/ROperator.hxx>
 #include <SOFIE/RModel.hxx>
 #include <SOFIE/SOFIE_common.hxx>
-
-
 namespace SOFIE {
 
 
@@ -31,7 +29,7 @@ public:
 
    void Initialize(RModel& model) override {
       if (!model.CheckIfTensorAlreadyExist(fNX)) {
-         throw std::runtime_error("TMVA::SOFIE - Tensor " + fNX + " not found.");
+         throw std::runtime_error("SOFIE - Tensor " + fNX + " not found.");
       }
       fShapeX = model.GetDimTensorShape(fNX);
       fShapeY = fShapeX;

@@ -5,9 +5,11 @@
 #include "SOFIE/ROperator.hxx"
 #include "SOFIE/RModel.hxx"
 
+#include <algorithm>
 #include <sstream>
-
 namespace SOFIE{
+
+
 
 template<typename T>
 class ROperator_Where final : public ROperator{
@@ -38,7 +40,6 @@ private:
    std::vector<Dim> fDimShapeY;
    std::vector<Dim> fDimShapeZ;
 
-   // Broadcast flag:
    //   bit 0: broadcast Y->X (Y needs expanding)
    //   bit 1: broadcast X->Y (X needs expanding)
    //   bit 2: broadcast C->Z (C needs expanding)
@@ -52,18 +53,6 @@ public:
          fInputTensorNames = { fNX, fNY, fNC };
          fOutputTensorNames = { fNZ };
       }
-
-   // type of output given input
-   std::vector<ETensorType> TypeInference(std::vector<ETensorType> input) override {
-      return input;
-   }
-
-   // shape of output tensors given input tensors
-   std::vector<std::vector<size_t>> ShapeInference(std::vector<std::vector<size_t>> input) override {
-      // assume now inputs have same shape (no broadcasting)
-      auto ret = std::vector<std::vector<size_t>>(1, input[0]); // return vector size 1 with first input
-      return ret;
-   }
 
    void Initialize(RModel& model) override {
       // input must be a graph input, or already initialized intermediate tensor
@@ -124,27 +113,21 @@ public:
 
          bool broadcast = !UTILITY::AreSameShape(fShapeX, fShapeY) || !UTILITY::AreSameShape(fShapeX, fShapeC);
          if (broadcast) {
-            // find shape to broadcast between X,Y,C looking for max length
-            size_t lengthX = ConvertShapeToLength(fShapeX);
-            size_t lengthY = ConvertShapeToLength(fShapeY);
-            size_t lengthC = ConvertShapeToLength(fShapeC);
-            bool broadcastX = false, broadcastY = false, broadcastC = false;
-            if (lengthX >= lengthY && lengthX >= lengthC) {
-               fShapeZ = fShapeX;
-               // broadcast Y and C if different than X
-               broadcastY = (lengthY != lengthX);
-               broadcastC = (lengthC != lengthX);
-            } else if (lengthY >= lengthX && lengthY >= lengthC) {
-               fShapeZ = fShapeY;
-               // broadcast X and C if different than Y
-               broadcastX = (lengthX != lengthY);
-               broadcastC = (lengthC != lengthY);
-            } else if (lengthC >= lengthX && lengthC >= lengthY) {
-               fShapeZ = fShapeC;
-               // broadcast X and Y if different than C
-               broadcastX = (lengthX != lengthC);
-               broadcastY = (lengthY != lengthC);
-            }
+            fShapeZ = UTILITY::MultidirectionalBroadcastShape({fShapeC, fShapeX, fShapeY});
+
+            auto padToRank = [&](std::vector<size_t> &shape) {
+               if (shape.size() < fShapeZ.size()) {
+                  size_t nPrepend = fShapeZ.size() - shape.size();
+                  shape.insert(shape.begin(), nPrepend, 1);
+               }
+            };
+            padToRank(fShapeX);
+            padToRank(fShapeY);
+            padToRank(fShapeC);
+
+            bool broadcastX = !UTILITY::AreSameShape(fShapeX, fShapeZ);
+            bool broadcastY = !UTILITY::AreSameShape(fShapeY, fShapeZ);
+            bool broadcastC = !UTILITY::AreSameShape(fShapeC, fShapeZ);
 
             // Broadcast X to Z
             if (broadcastX) {
@@ -157,12 +140,6 @@ public:
                   // Update the data and the shape of X
                   model.AddConstantTensor(fNBroadcastedX, model.GetTensorType(fNX), fShapeZ, broadcastedData);
                   fShapeX = fShapeZ;
-               } else {
-                  // I need to prepend to shape of X the extra dimensions added for broadcasting to Z
-                  if (fShapeX.size() < fShapeZ.size()) {
-                     size_t nPrepend = fShapeZ.size() - fShapeX.size();
-                     fShapeX.insert(fShapeX.begin(), nPrepend, 1);
-                  }
                }
             }
             // Broadcast Y to Z
@@ -176,13 +153,6 @@ public:
                   // do not update tensor B but add broadcasted one (since it can be input to some other operators)
                   model.AddConstantTensor(fNBroadcastedY, model.GetTensorType(fNY), fShapeZ, broadcastedData);
                   fShapeY = fShapeZ;
-               } else {
-                  // I need to prepend to shape of Y the extra dimensions added for broadcasting to Z
-                  if (fShapeY.size() < fShapeZ.size()) {
-                     size_t nPrepend = fShapeZ.size() - fShapeY.size();
-                     fShapeY.insert(fShapeY.begin(), nPrepend, 1);
-                  }
-
                }
             }
             // Broadcast C to Z
@@ -196,12 +166,6 @@ public:
                   // do not update tensor C but add broadcasted one (since it can be input to some other operators)
                   model.AddConstantTensor(fNBroadcastedC, model.GetTensorType(fNC), fShapeZ, broadcastedData);
                   fShapeC = fShapeZ;
-               } else {
-                  // I need to prepend to shape of C the extra dimensions added for broadcasting to Z
-                  if (fShapeC.size() < fShapeZ.size()) {
-                     size_t nPrepend = fShapeZ.size() - fShapeC.size();
-                     fShapeC.insert(fShapeC.begin(), nPrepend, 1);
-                  }
                }
             }
          } else {
@@ -647,4 +611,4 @@ public:
 
 }//SOFIE
 
-#endif //TMVA_SOFIE_ROperator_Where
+#endif

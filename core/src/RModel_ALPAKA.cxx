@@ -11,10 +11,6 @@
 
 #include "../inc/SOFIE/SOFIE_common.hxx"
 
-#ifdef SOFIE_SUPPORT_ROOT_BINARY
-#include "TFile.h"
-#endif
-
 #include "SOFIE/RModel.hxx"
 #include "SOFIE/RModelFusion_ALPAKA.hxx"
 #include "SOFIE/RModelProfilerGPU.hxx"
@@ -405,11 +401,11 @@ std::vector<std::string> RModel::GetOperatorKernelParams(size_t opIdx, const std
       return false;
    };
 
-   auto scan = [&](std::span<const std::string> names) {
+   auto scan = [&](std::span<const std::string_view> names) {
       for (const auto &name : names) {
          std::vector<Dim> shape;
          try {
-            shape = GetDimTensorShape(name);
+            shape = GetDimTensorShape(std::string(name));
          } catch (...) {
             continue; // not a tensor with a trackable shape (e.g. an attribute-only input)
          }
@@ -982,8 +978,6 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
          fileName = fName;
          if (fWeightFile == WeightFileType::Text)
             fileName += ".dat";
-         if (fWeightFile == WeightFileType::RootBinary)
-            fileName += ".root";
       }
 
       // ---- build constructor body into a temporary string ----
@@ -994,7 +988,8 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
          GenerateTemporaryInitializedTensorContainers_GPU_ALPAKA();
          if (fUseWeightFile) {
             fGC += "\n//--- reading weights from file\n";
-            ReadInitializedTensorsFromFile(0);
+            fGC += "using SOFIE::ReadTensorFromStream;\n";
+            ReadInitializedTensorsFromFile();
             fGC += "\n";
          }
          MoveInitializedTensorsToBuffers_ALPAKA();
@@ -1185,10 +1180,6 @@ void RModel::GenerateGPU_ALPAKA(std::underlying_type_t<Options> options, int bat
    if (static_cast<std::underlying_type_t<Options>>(Options::kNoWeightFile) & options) {
       fUseWeightFile = false;
       fWeightFile = WeightFileType::None;
-   }
-   if (static_cast<std::underlying_type_t<Options>>(Options::kRootBinaryWeightFile) & options) {
-      fUseWeightFile = true;
-      fWeightFile = WeightFileType::RootBinary;
    }
    if (fUseWeightFile && !fUseSession) {
       throw std::runtime_error(

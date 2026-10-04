@@ -33,13 +33,6 @@ public:
          fOutputTensorNames = { fNY };
    }
 
-   std::vector<ETensorType> TypeInference(std::vector<ETensorType> input) override { return input; }
-
-   std::vector<std::vector<size_t>> ShapeInference(std::vector<std::vector<size_t>> input) override {
-      auto ret = input; // suggest copy to compiler
-      return ret;
-   }
-
    void Initialize(RModel& model) override {
       if (model.CheckIfTensorAlreadyExist(fNX) ==
           false) { // input must be a graph input, or already initialized intermediate tensor
@@ -101,12 +94,17 @@ public:
          out << SP << SP << SP << "sum += y_ptr[j];\n";
          out << SP << SP << "}\n";
 
-         out << SP << SP << fType << " inv_sum = 1.0f / sum;\n";
-         out << SP << SP << "for (int j = 0; j < " << axis_size << "; ++j) {\n";
-         out << SP << SP << SP << "y_ptr[j] *= inv_sum;\n";
-         if (fLogSoftmax)
-            out << SP << SP << SP << "y_ptr[j] = " << logFunction << "(y_ptr[j]);\n";
-         out << SP << SP << "}\n";
+         if (fLogSoftmax) {
+            out << SP << SP << fType << " log_sum = " << logFunction << "(sum);\n";
+            out << SP << SP << "for (int j = 0; j < " << axis_size << "; ++j) {\n";
+            out << SP << SP << SP << "y_ptr[j] = x_ptr[j] - vmax - log_sum;\n";
+            out << SP << SP << "}\n";
+         } else {
+            out << SP << SP << fType << " inv_sum = 1.0f / sum;\n";
+            out << SP << SP << "for (int j = 0; j < " << axis_size << "; ++j) {\n";
+            out << SP << SP << SP << "y_ptr[j] *= inv_sum;\n";
+            out << SP << SP << "}\n";
+         }
          out << SP << "}\n";
 
       } else {
@@ -162,6 +160,11 @@ public:
          out << "sum += tensor_" << fNY << "[id];\n";
          for (size_t j = 0; j < size-1; j++) out << SP;
          out << "}\n";
+         if (fLogSoftmax) {
+            for (size_t j = 0; j < size - 1; j++)
+               out << SP;
+            out << fType << " log_sum = " << logFunction << "(sum);\n";
+         }
          // normalize
          for (size_t j = 0; j < size-1; j++) out << SP;
          out << "for (int i = 0; i < " << fShape[axis] << "; i++) {\n";
@@ -170,11 +173,10 @@ public:
          if (stride[axis].GetVal() != "1") out << "*(" << stride[axis] << ")";
          out << ";\n";
          for (size_t j = 0; j < size; j++) out << SP;
-         out << "tensor_" << fNY << "[id] /= sum;\n";
-         if (fLogSoftmax) {
-            for (size_t j = 0; j < size; j++) out << SP;
-            out << "tensor_" << fNY << "[id] = " << logFunction << "(tensor_" << fNY << "[id]);\n";
-         }
+         if (fLogSoftmax)
+            out << "tensor_" << fNY << "[id] = tensor_" << fNX << "[id] - vmax - log_sum;\n";
+         else
+            out << "tensor_" << fNY << "[id] /= sum;\n";
          for (size_t j = 0; j < size-1; j++) out << SP;
          out << "}\n";
          //end loops
@@ -270,10 +272,12 @@ public:
       op += SP + SP + SP + "T const inv = static_cast<T>(1) / sum;\n";
       op += SP + SP + SP + "for (std::size_t l = tid; l < axis_size; l += " + bs + "u) {\n";
       op += SP + SP + SP + SP + "std::size_t const idx = row_base + l * inner_stride;\n";
-      op += SP + SP + SP + SP + "T e = exp(acc, X[idx] - vmax) * inv;\n";
-      op += SP + SP + SP + SP + "Y[idx] = e;\n";
-      if (fLogSoftmax)
-         op += SP + SP + SP + SP + "Y[idx] = log(acc, e);\n";
+      if (fLogSoftmax) {
+         op += SP + SP + SP + SP + "Y[idx] = X[idx] - vmax - log(acc, sum);\n";
+      } else {
+         op += SP + SP + SP + SP + "T e = exp(acc, X[idx] - vmax) * inv;\n";
+         op += SP + SP + SP + SP + "Y[idx] = e;\n";
+      }
       op += SP + SP + SP + "}\n";
 
       op += SP + SP + "}\n";

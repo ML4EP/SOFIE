@@ -56,18 +56,10 @@ public:
       fValues(values),
       fAttrType(type)
       {
-         fInputTensorNames = fNX.empty() ? std::vector<std::string>{} : std::vector<std::string>{fNX};
+         if (!fNX.empty())
+            fInputTensorNames = {fNX};
          fOutputTensorNames = {fNY};
       }
-
-   std::vector<ETensorType> TypeInference(std::vector<ETensorType> input) override {
-      return input;
-   }
-
-   std::vector<std::vector<size_t>> ShapeInference(std::vector<std::vector<size_t>> input) override {
-      auto ret = input; //suggest copy to compiler
-      return ret;
-   }
 
    void Initialize(RModel& model) override {
        //input must be a graph input, or already initialized intermediate tensor
@@ -125,6 +117,7 @@ public:
 
          // get output shape from input values:
          // can work only if input is a constant or initialized tensor
+         fIsOutputConstant = true;
          auto dptr = model.GetInitializedTensorData(fNX);
          auto input_tensor = static_cast<int64_t *>(dptr.get());
          auto input_shape = model.GetTensorShape(fNX);
@@ -147,6 +140,7 @@ public:
       } else {
          // case of constant operator
          // in case of standard constant the shape is provided as input
+         fIsOutputConstant = true;
          length = ConvertShapeToLength(fShape);
          if (length != fValues.size())
             throw std::runtime_error("SOFIE Constant Op has invalid shape : " + ConvertShapeToString(fShape) +
@@ -157,12 +151,17 @@ public:
       // but keep its initialization in the generated code. The values might also be needed in initializing the
       // following operators using as input Constant or ConstantOfShape
        // resize fValues to shape length
-      model.AddConstantTensor(fNY, fShape, fValues);
-      if (model.Verbose()) {
-         std::cout << "adding constant tensor " << fNY << " with shape " << ConvertShapeToString(fShape)
-         << " and values [";
-         for (auto v : fValues) std::cout << " " << v;
-         std::cout << "]" << std::endl;
+      if (fIsOutputConstant) {
+         model.AddConstantTensor(fNY, fShape, fValues);
+         if (model.Verbose()) {
+            std::cout << "adding constant tensor " << fNY << " with shape " << ConvertShapeToString(fShape)
+            << " and values [";
+            if (!fIsConstantOfShape) {
+               std::cout << ConvertValuesToString(fValues, 10) << "]" << std::endl;
+            } else {
+               std::cout << "... " << fValues[0] << " ....]" << std::endl;
+            }
+         }
       }
    }
 

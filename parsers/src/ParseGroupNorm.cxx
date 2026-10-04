@@ -1,6 +1,6 @@
 #include "SOFIE/RModelParser_ONNX.hxx"
 #include "SOFIE/ROperator_GroupNorm.hxx"
-#include "onnx_proto3.pb.h"
+#include "onnx.hxx"
 
 namespace SOFIE {
 

@@ -37,15 +37,6 @@ public:
          fOutputTensorNames.assign(fNYs.begin(), fNYs.end());
       }
 
-   std::vector<ETensorType> TypeInference(std::vector<ETensorType> input) override {
-      return input;
-   }
-
-   std::vector<std::vector<size_t>> ShapeInference(std::vector<std::vector<size_t>> input) override {
-      auto ret = input; //suggest copy to compiler
-      return ret;
-   }
-
    void Initialize(RModel& model) override {
        //input must be a graph input, or already initialized intermediate tensor
       if (model.CheckIfTensorAlreadyExist(fNX) == false){
@@ -86,7 +77,7 @@ public:
    std::string Generate(std::string opName) override {
       opName = "op_" + opName;
       if (fType == ETensorType::UNDEFINED) {
-         throw std::runtime_error("TMVA If operator called to Generate without being initialized first");
+         throw std::runtime_error("SOFIE If operator called to Generate without being initialized first");
       }
       std::stringstream out;
       //size_t length = ConvertShapeToLength(fShape);

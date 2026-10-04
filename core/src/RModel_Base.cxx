@@ -12,7 +12,7 @@ RModel_Base::RModel_Base(std::string name, std::string parsedtime):fFileName(nam
 }
 
 void RModel_Base::GenerateHeaderInfo(std::string& hgname) {
-    fGC += ("//Code generated automatically by TMVA for Inference of Model file [" + fFileName + "] at [" + fParseTime.substr(0, fParseTime.length()-1) +"] \n");
+    fGC += ("//Code generated automatically by SOFIE for Inference of Model file [" + fFileName + "] at [" + fParseTime.substr(0, fParseTime.length()-1) +"] \n");
     // add header guards
     hgname = fName;
     std::transform(hgname.begin(), hgname.end(), hgname.begin(), [](unsigned char c) {
@@ -21,27 +21,22 @@ void RModel_Base::GenerateHeaderInfo(std::string& hgname) {
     hgname = "SOFIE_" + hgname + "_HXX";
     fGC += "\n#ifndef " + hgname + "\n";
     fGC += "#define " + hgname + "\n\n";
+    for (const char *h : {"cstdint", "cstring", "string", "vector", "map", "memory", "sstream", "iostream", "iomanip",
+                          "limits", "stdexcept", "algorithm", "cmath", "cassert"}) {
+        fNeededStdLib.insert(h);
+    }
     for (auto& i: fNeededStdLib) {
         fGC += "#include <" + i + ">\n";
     }
     for (auto& i: fCustomOpHeaders) {
         fGC += "#include \"" + i + "\"\n";
     }
-    // for the session we need to include SOFIE_Common functions
-    //needed for convolution operator (need to add a flag)
-    fGC += "#include \"SOFIE/SOFIE_common.hxx\"\n";
+    fGC += kHelperIncludesMarker;
     if (fUseWeightFile)
         fGC += "#include <fstream>\n";
+    if (fWeightFile == WeightFileType::Safetensors)
+        fGC += "#include <iterator>\n";
 
-    if (fWeightFile == WeightFileType::RootBinary){
-    #ifdef SOFIE_SUPPORT_ROOT_BINARY
-        // Include TFile when saving the weights in a binary ROOT file
-            fGC += "#include \"TFile.h\"\n";
-    #else
-        throw std::runtime_error("sofie: ROOT binary weight file option is enabled but the code is not compiled with ROOT support");
-    #endif
-    
-    }
 
     fGC += "\nnamespace SOFIE_" + fName + "{\n";
     if (!fNeededBlasRoutines.empty()) {
@@ -51,6 +46,7 @@ void RModel_Base::GenerateHeaderInfo(std::string& hgname) {
                 fGC += ("\textern \"C\" void sgemm_(const char * transa, const char * transb, const int * m, const int * n, const int * k,\n"
                         "\t                       const float * alpha, const float * A, const int * lda, const float * B, const int * ldb,\n"
                         "\t                       const float * beta, float * C, const int * ldc);\n");
+                fBlasSgemmDeclared = true;
             } else if (routine == "Gemv") {
                 fGC += ("\textern \"C\" void sgemv_(const char * trans, const int * m, const int * n, const float * alpha, const float * A,\n"
                         "\t                       const int * lda, const float * X, const int * incx, const float * beta, const float * Y, const int * incy);\n");
@@ -63,10 +59,36 @@ void RModel_Base::GenerateHeaderInfo(std::string& hgname) {
         }
         fGC += ("}//BLAS\n");
     }
+    fGC += kHelperFunctionsMarker;
+}
+
+void RModel_Base::EmitHelperFunctionsCode()
+{
+    HelperFunctionsCode code =
+        GenerateHelperFunctionsCode(fNeededHelperFunctions, "SOFIE_" + fName, fBlasSgemmDeclared);
+
+    auto replaceMarker = [this](const std::string &marker, const std::string &replacement) {
+        auto pos = fGC.find(marker);
+        if (pos != std::string::npos) {
+            fGC.replace(pos, marker.size(), replacement);
+        }
+    };
+
+    replaceMarker(kHelperIncludesMarker, code.includes);
+    replaceMarker(kHelperFunctionsMarker, code.definitions);
+
+    if (!code.cladDefinitions.empty()) {
+        auto pos = fGC.rfind("#endif");
+        if (pos != std::string::npos) {
+            fGC.insert(pos, code.cladDefinitions + "\n");
+        } else {
+            fGC += code.cladDefinitions;
+        }
+    }
 }
 
 void RModel_Base::GenerateHeaderInfo_GPU_ALPAKA(std::string& hgname) {
-    fGC += ("//Code generated automatically by TMVA for GPU Inference using ALPAKA of Model file [" + fFileName + "] at [" + fParseTime.substr(0, fParseTime.length()-1) +"] \n");
+    fGC += ("//Code generated automatically by SOFIE for GPU Inference using ALPAKA of Model file [" + fFileName + "] at [" + fParseTime.substr(0, fParseTime.length()-1) +"] \n");
     // add header guards
     hgname = fName;
     std::transform(hgname.begin(), hgname.end(), hgname.begin(), [](unsigned char c) {
@@ -91,14 +113,6 @@ void RModel_Base::GenerateHeaderInfo_GPU_ALPAKA(std::string& hgname) {
     if (fUseWeightFile)
         fGC += "#include <fstream>\n";
 
-    if (fWeightFile == WeightFileType::RootBinary){
-        #ifdef SOFIE_SUPPORT_ROOT_BINARY
-            // Include TFile when saving the weights in a binary ROOT file
-                fGC += "#include \"TFile.h\"\n";
-        #else 
-            throw std::runtime_error("sofie: ROOT binary weight file option is enabled but the code is not compiled with ROOT support");
-        #endif
-    }
 
     fGC += "\n#ifndef SOFIE_ALPAKA_DIM1D_DEFINED\n";
     fGC += "#define SOFIE_ALPAKA_DIM1D_DEFINED\n";

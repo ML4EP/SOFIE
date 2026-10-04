@@ -1,8 +1,6 @@
 #include "SOFIE/RModelParser_ONNX.hxx"
 #include "SOFIE/ROperator_BatchNormalization.hxx"
-#include "onnx_proto3.pb.h"
-
-
+#include "onnx.hxx"
 namespace SOFIE {
 
 ParserFuseFuncSignature ParseFuseBatchnormRelu = [](RModelParser_ONNX &parser, const onnx::NodeProto &batchnormnode,
@@ -13,7 +11,7 @@ ParserFuseFuncSignature ParseFuseBatchnormRelu = [](RModelParser_ONNX &parser, c
         if (parser.IsRegisteredTensorType(input_name)) {
             input_type = parser.GetTensorType(input_name);
         } else {
-            throw std::runtime_error("TMVA::SOFIE ONNX Parser BatchNorm op has input tensor " + input_name +
+            throw std::runtime_error("SOFIE ONNX Parser BatchNorm op has input tensor " + input_name +
                                     " but its type is not yet registered");
         }
         
@@ -22,7 +20,14 @@ ParserFuseFuncSignature ParseFuseBatchnormRelu = [](RModelParser_ONNX &parser, c
         float fepsilon = 1e-05;
         float fmomentum = 0.9;
         std::size_t ftraining_mode = 0;
-        
+        for (int_t i = 0; i < batchnormnode.attribute_size(); i++) {
+           const std::string &attribute_name = batchnormnode.attribute(i).name();
+           if (attribute_name == "epsilon")
+              fepsilon = batchnormnode.attribute(i).f();
+           else if (attribute_name == "momentum")
+              fmomentum = batchnormnode.attribute(i).f();
+        }
+
         switch (input_type) {
         case ETensorType::FLOAT:
             if (batchnormnode.input_size() == 5) {
@@ -32,7 +37,7 @@ ParserFuseFuncSignature ParseFuseBatchnormRelu = [](RModelParser_ONNX &parser, c
             }
             break;
         default:
-            throw std::runtime_error("TMVA::SOFIE - Unsupported - Operator BatchNorm does not yet support input type " +
+            throw std::runtime_error("SOFIE - Unsupported - Operator BatchNorm does not yet support input type " +
                                     std::to_string(static_cast<int>(input_type)));
         }
         

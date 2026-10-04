@@ -9,7 +9,6 @@
 ############################################################################
 #Author: Sitong An, Lorenzo Moneta 10/03/2021
 
-#sofie is built only if protobuf is found
 
 add_library(SOFIE_core SHARED)
 
@@ -51,7 +50,7 @@ set(sources_headers
    SOFIE/ROperator_Erf.hxx
    SOFIE/ROperator_Swish.hxx
    SOFIE/ROperator_Elu.hxx
-   SOFIE/ROperator_Comparision.hxx
+   SOFIE/ROperator_Comparison.hxx
    SOFIE/ROperator_EyeLike.hxx
    SOFIE/ROperator_Range.hxx
    SOFIE/ROperator_TopK.hxx
@@ -61,8 +60,8 @@ set(sources_headers
    SOFIE/ROperator_Pad.hxx
    SOFIE/ROperator_Where.hxx
    SOFIE/ROperator_Einsum.hxx
-   SOFIE/ROperator_Random.hxx
    SOFIE/ROperator_ScatterElements.hxx
+   SOFIE/RTensor.hxx
    SOFIE/SOFIE_common.hxx
    SOFIE/SOFIEHelpers.hxx
 
@@ -91,6 +90,7 @@ set(sources_cxx
     src/RFunction_Mean.cxx
     src/RFunction_Sum.cxx
     src/SOFIE_common.cxx
+    src/SOFIE_common_helpers.cxx
 )
 
 target_sources(SOFIE_core PRIVATE ${sources_headers} ${sources_cxx})
@@ -98,23 +98,6 @@ target_include_directories(SOFIE_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/inc>
   $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
-target_link_libraries(SOFIE_core PUBLIC utils)
-
-if(SOFIE_WITH_ROOT AND ROOT_FOUND)
-  target_compile_definitions(SOFIE_core PUBLIC SOFIE_SUPPORT_ROOT_BINARY)
-  target_link_libraries(SOFIE_core PUBLIC Tree Core RIO)
-
-  ROOT_GENERATE_DICTIONARY(G__SOFIE_core ${sources_headers}
-      LINKDEF inc/LinkDef.h
-      MODULE SOFIE_core
-      OPTIONS --deep
-  )
-
-  # Install the dictionaries.
-  install(FILES ${CMAKE_CURRENT_BINARY_DIR}/libSOFIE_core_rdict.pcm
-                ${CMAKE_CURRENT_BINARY_DIR}/libSOFIE_core.rootmap
-          DESTINATION lib)
-endif()
 
 install(TARGETS SOFIE_core
   EXPORT SOFIETargets

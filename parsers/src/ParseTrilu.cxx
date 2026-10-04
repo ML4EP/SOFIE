@@ -1,6 +1,6 @@
 #include "SOFIE/RModelParser_ONNX.hxx"
 #include "SOFIE/ROperator_Trilu.hxx"
-#include "onnx_proto3.pb.h"
+#include "onnx.hxx"
 
 namespace SOFIE {
 
@@ -12,7 +12,7 @@ ParserFuncSignature ParseTrilu = [](RModelParser_ONNX &parser,
    const std::string input_name = nodeproto.input(0);
    if (!parser.IsRegisteredTensorType(input_name))
       throw std::runtime_error(
-         "TMVA::SOFIE ONNX Parser Trilu: input tensor '" + input_name +
+         "SOFIE ONNX Parser Trilu: input tensor '" + input_name +
          "' type not yet registered");
 
    const ETensorType input_type = parser.GetTensorType(input_name);
@@ -53,7 +53,7 @@ ParserFuncSignature ParseTrilu = [](RModelParser_ONNX &parser,
       case ETensorType::BOOL:    make_op.template operator()<uint8_t>();  break;
       default:
          throw std::runtime_error(
-            "TMVA::SOFIE ONNX Parser Trilu: unsupported input type " +
+            "SOFIE ONNX Parser Trilu: unsupported input type " +
             std::to_string(static_cast<int>(input_type)));
    }
 

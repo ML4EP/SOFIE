@@ -50,12 +50,6 @@ public:
       fOutputTensorNames = { fNY };
    }
 
-   std::vector<std::vector<size_t>> ShapeInference(std::vector<std::vector<size_t>> input) override
-   { return { input[0] }; }
-
-   std::vector<ETensorType> TypeInference(std::vector<ETensorType> input) override
-   { return { input[0] }; }
-
    void Initialize(RModel &model) override {
       if (!model.CheckIfTensorAlreadyExist(fNX))
          throw std::runtime_error("SOFIE RMSNorm: input tensor " + fNX + " not found");

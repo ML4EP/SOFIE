@@ -6,7 +6,6 @@
 #include <charconv>
 #include <unordered_map>
 #include <set>
-
 namespace SOFIE {
 
 /// @brief  Convert shape from integer format to dynamic one (based on Dim)
@@ -41,6 +40,10 @@ std::vector<size_t> ConvertShapeToInt(const std::vector<Dim> & shape){
             ret_shape.clear();
             break;
          }
+         catch (const std::out_of_range& ) {
+            ret_shape.clear();
+            break;
+         }
       } else {
          ret_shape[i] = shape[i].dim;
       }
@@ -52,7 +55,8 @@ std::vector<size_t> ConvertShapeToInt(const std::vector<Dim> & shape){
 std::size_t ConvertShapeToLength(const std::vector<size_t> & shape){
    // Empty shape represent scalar values, so we return a length=1
    std::size_t fLength = 1;
-   for (auto& dim: shape) fLength *= dim;
+   for (const auto &dim : shape)
+   fLength *= dim;
    return fLength;
 }
 
@@ -118,10 +122,13 @@ ETensorType ConvertStringToType(std::string type){
    else if(type == "int64" || type == "int64_t"){
      return ETensorType::INT64;
    }
+   else if(type == "int32" || type == "int32_t"){
+     return ETensorType::INT32;
+   }
    else if (type == "double" || type == "float64"){
       return ETensorType::DOUBLE;
    }
-   else if (type == "bool" ){
+   else if (type == "bool" || type == "uint8_t" ){
       return ETensorType::BOOL;
    }
    else{
@@ -245,7 +252,7 @@ std::vector<size_t>  UTILITY::MultidirectionalBroadcastShape(std::vector<std::ve
 {
    if (shape.size() < 2) {
       throw
-         std::runtime_error("TMVA::SOFIE - MultidirectionalBroadcastShape requires at least 2 input shapes.");
+         std::runtime_error("SOFIE - MultidirectionalBroadcastShape requires at least 2 input shapes.");
    }
    // Number of input shapes to broadcast
    size_t n = shape.size();
@@ -304,7 +311,7 @@ std::vector<size_t>  UTILITY::MultidirectionalBroadcastShape(std::vector<std::ve
             return targetShape;
          } else {
             std::stringstream ss;
-            ss << "TMVA::SOFIE - Error multidirectional broadcasting shapes ";
+            ss << "SOFIE - Error multidirectional broadcasting shapes ";
             for (size_t i = 0; i < n; i++) {
                ss << ConvertShapeToString(shape[i]);
                if (n > 2 && i < n - 2) {
@@ -352,7 +359,7 @@ std::vector<size_t>  UTILITY::MultidirectionalBroadcastShape(std::vector<std::ve
       return targetShape;
    } else {
       std::stringstream ss;
-      ss << "TMVA::SOFIE - Error multidirectional broadcasting shapes ";
+      ss << "SOFIE - Error multidirectional broadcasting shapes ";
       for (size_t i = 0; i < n; i++) {
          ss << ConvertShapeToString(shape[i]);
          if (n > 2 && i < n - 2) {
@@ -415,7 +422,7 @@ std::pair<int, std::vector<size_t>>  UTILITY::MultidirectionalBroadcastShape(std
       return std::make_pair(broadcastFlag, targetShape);
    } else {
       throw
-         std::runtime_error("TMVA::SOFIE - Error multidirectional broadcasting tensors of shape "
+         std::runtime_error("SOFIE - Error multidirectional broadcasting tensors of shape "
             + ConvertShapeToString(shapeA) + " and " + ConvertShapeToString(shapeB)
             + " to a common shape.");
    }
@@ -426,7 +433,7 @@ std::vector<size_t>  UTILITY::UnidirectionalBroadcastShape(std::vector<size_t> &
    auto ret = UTILITY::MultidirectionalBroadcastShape(shapeB, shapeA);
    if (ret.first > 1) {
       throw
-         std::runtime_error("TMVA::SOFIE - Error unidirectional broadcasting tensors of shape "
+         std::runtime_error("SOFIE - Error unidirectional broadcasting tensors of shape "
             + ConvertShapeToString(shapeA) + " to  " + ConvertShapeToString(shapeB)
             + " in a common shape.");
    }
@@ -504,11 +511,11 @@ std::pair<int, std::vector<Dim>> UTILITY::MultidirectionalBroadcastShape(std::ve
          broadcastFlag |= 5;
       } else {
          // all cases should be covered
-         throw std::runtime_error("TMVA::SOFIE - Fatal error in MultiDirectionalBroadCastDimShape");
+         throw std::runtime_error("SOFIE - Fatal error in MultiDirectionalBroadCastDimShape");
       }
    }
    if (broadcastFlag == -1) {
-      throw std::runtime_error("TMVA::SOFIE - Error multidirectional broadcasting tensors of shape " +
+      throw std::runtime_error("SOFIE - Error multidirectional broadcasting tensors of shape " +
                                  ConvertDimShapeToString(shapeA) + " and " + ConvertDimShapeToString(shapeB) +
                                  " to a common shape.");
    }
@@ -520,7 +527,7 @@ std::string UTILITY::Clean_name(std::string input_tensor_name){
    std::string s (input_tensor_name);
    std::replace( s.begin(), s.end(), '-', '_');
    // replace all non-alpohanumeric character except for "_"
-   s.erase(std::remove_if(s.begin(), s.end(), []( char const& c ) -> bool { return !std::isalnum(c) && c != '_'; } ), s.end());
+   s.erase(std::remove_if(s.begin(), s.end(), []( char const& c ) -> bool { return !std::isalnum(static_cast<unsigned char>(c)) && c != '_'; } ), s.end());
    return s;
 }
 
@@ -703,5 +710,22 @@ MemoryResult OrganizeMemory(const std::vector<TensorLifeInfo> & tensorsInfo )
 
    return MemoryResult{total_bytes, std::move(tensorsOffset)};
 }
+
+const std::string SP = "   ";
+void EmitNestedLoops(std::stringstream &out, size_t loopRank, const std::vector<Dim> shape) {
+   for (size_t i = 0; i < loopRank; ++i) {
+      for (size_t s = 0; s < i + 2; ++s) out << SP;
+
+      out << "for (size_t idx_" << i << " = 0; idx_" << i
+          << " < " << shape[i] << "; ++idx_" << i << ") {\n";
+   }
+}
+void CloseNestedLoops(std::stringstream &out, size_t loopRank) {
+   for (int64_t i = loopRank - 1; i >= 0; --i) {
+      for (int64_t s = 0; s < i + 2; ++s) out << SP;
+         out << "}\n";
+   }
+}
+
 
 } // namespace SOFIE

@@ -1,14 +1,11 @@
 #ifndef SOFIE_ROPERATOR_Custom
 #define SOFIE_ROPERATOR_Custom
 
-
 #include "SOFIE/SOFIE_common.hxx"
 #include "SOFIE/ROperator.hxx"
 #include "SOFIE/RModel.hxx"
 
-
 namespace SOFIE{
-
 
 template<typename T>
 class ROperator_Custom final : public ROperator
@@ -39,9 +36,6 @@ public:
         }
     }
 
-    std::vector<std::vector<size_t>> ShapeInference(std::vector<std::vector<size_t>>) override {return {{}};};
-    std::vector<ETensorType> TypeInference(std::vector<ETensorType>) override { return {};};
-
    void Initialize(RModel& model) override {
       model.AddNeededCustomHeader(fHeaderName);
       fInputType = model.GetTensorType(fInputNames[0]);
@@ -61,7 +55,6 @@ public:
         model.AddIntermediateTensor(std::string(fOutputNames[i]), ETensorType::FLOAT, fOutputShapes[i]);
       }
 
-
       model.UpdateOutputTensorList(fInputNames, fOutputNames);
 
       if (model.Verbose()) {
@@ -71,7 +64,7 @@ public:
          for (auto & i : fOutputNames) std::cout << " " << i;
          std::cout << "\n";
       }
-      model.AddNeededCustomHeader("ROOT/RSpan.hxx");
+      model.AddNeededStdLib("span");
    }
 
     std::string Generate(std::string OpName) override {
@@ -80,11 +73,11 @@ public:
       out << "\n//------ "<<fOpName<<" \n";
       std::string args;
       for(long unsigned int i = 0; i<fInputNames.size(); ++i){
-        args+="std::span<const "+ConvertTypeToString(fInputType)+">(tensor_"+std::string(fInputNames[i])+", "+fInputSizes[i]+"),";
+        args+="std::span<const "+ConvertTypeToString(fInputType)+">(tensor_"+std::string(fInputNames[i])+", "+std::to_string(fInputSizes[i])+"),";
       }
 
       for(long unsigned int i = 0; i<fOutputNames.size(); ++i){
-        args+="std::span<"+TensorType<T>::Name()+">(tensor_"+std::string(fOutputNames[i])+", "+ConvertShapeToLength(fOutputShapes[i])+"),";
+        args+="std::span<"+TensorType<T>::Name()+">(tensor_"+std::string(fOutputNames[i])+", "+std::to_string(ConvertShapeToLength(fOutputShapes[i]))+"),";
       }
       args.pop_back();
       out << SP << fOpName<<"::Compute("+args+");\n";
@@ -93,8 +86,6 @@ public:
 
 };
 
-
 }//SOFIE
-
 
 #endif //SOFIE_ROPERATOR_Custom

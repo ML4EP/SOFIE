@@ -1,8 +1,6 @@
 #include "SOFIE/RModelParser_ONNX.hxx"
 #include "SOFIE/ROperator_Expand.hxx"
-#include "onnx_proto3.pb.h"
-
-
+#include "onnx.hxx"
 namespace SOFIE {
 
 ParserFuncSignature ParseExpand = [](RModelParser_ONNX &parser, const onnx::NodeProto &nodeproto) {
@@ -14,7 +12,7 @@ ParserFuncSignature ParseExpand = [](RModelParser_ONNX &parser, const onnx::Node
       input_type = parser.GetTensorType(input_name);
    } else {
       throw std::runtime_error(
-        "TMVA::SOFIE ONNX Parser Expand op has input tensor " + input_name +
+        "SOFIE ONNX Parser Expand op has input tensor " + input_name +
         " but its type is not yet registered");
    }
 
@@ -22,11 +20,11 @@ ParserFuncSignature ParseExpand = [](RModelParser_ONNX &parser, const onnx::Node
    if (parser.IsRegisteredTensorType(shape_name)) {
       if (parser.GetTensorType(shape_name) != ETensorType::INT64) {
          throw
-            std::runtime_error("TMVA::SOFIE - ONNX Parser Expand Op shape type not supported");
+            std::runtime_error("SOFIE - ONNX Parser Expand Op shape type not supported");
       }
    } else {
       throw std::runtime_error(
-        "TMVA::SOFIE ONNX Parser Sign op has input tensor " + input_name +
+        "SOFIE ONNX Parser Sign op has input tensor " + input_name +
         " but its type is not yet registered");
    }
 
@@ -49,7 +47,7 @@ ParserFuncSignature ParseExpand = [](RModelParser_ONNX &parser, const onnx::Node
          op.reset(new ROperator_Expand<uint8_t>(input_name, shape_name, output_name));
          break;
       default:
-         throw std::runtime_error("TMVA::SOFIE - Unsupported - Expand Operator does "
+         throw std::runtime_error("SOFIE - Unsupported - Expand Operator does "
                              "not support input type " +
                              std::to_string(static_cast<int>(input_type)));
    }

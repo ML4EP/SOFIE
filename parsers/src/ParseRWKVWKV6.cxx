@@ -1,6 +1,6 @@
 #include "SOFIE/RModelParser_ONNX.hxx"
 #include "SOFIE/ROperator_RWKV_WKV6.hxx"
-#include "onnx_proto3.pb.h"
+#include "onnx.hxx"
 
 namespace SOFIE {
 

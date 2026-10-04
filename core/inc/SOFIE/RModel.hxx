@@ -50,6 +50,7 @@ private:
    std::set<std::string> fInternalDynamicParams;
    std::unordered_map<std::string, std::string>
       fShapeParams; // parameters defining the dynamic shape (e.g. batch size), store also its default value
+   std::unordered_set<std::string> fComputedShapeParams; //!
    std::vector<std::string> fDimShapeNames; // parameter names used to define the shapes
    std::vector<std::string> fOutputTensorNames;
    std::vector<std::string> fInputTensorNames; // input tensor names using ONNX order
@@ -70,8 +71,8 @@ private:
 
 public:
    // Rule of five: explicitly define move semantics, disallow copy
-   RModel(RModel &&other);
-   RModel &operator=(RModel &&other);
+   RModel(RModel &&other) = default;
+   RModel &operator=(RModel &&other) = default;
    RModel(const RModel &other) = delete;
    RModel &operator=(const RModel &other) = delete;
    ~RModel() = default;
@@ -108,6 +109,8 @@ public:
    }
    void AddInitializedTensor(std::string tensor_name, ETensorType type, std::vector<std::size_t> shape,
                              std::shared_ptr<void> data);
+   void AddInitializedTensor(const std::string &tensor_name, ETensorType tensor_type,
+                             const std::vector<std::size_t> &shape, void *raw_data);
    void AddConstantTensor(std::string tensor_name, ETensorType type, std::vector<std::size_t> shape,
                              std::shared_ptr<void> data);
 
@@ -116,7 +119,6 @@ public:
       size_t length = ConvertShapeToLength(shape);
       std::shared_ptr<void> data_ptr(malloc(length * sizeof(T)), free);
       std::memcpy(data_ptr.get(), (void*) data, length * sizeof(T));
-      std::cout<<"Length of constant tensor "<<name<<" added: "<<length<<std::endl;
       AddConstantTensor(name, GetTemplatedType<T>(T()), shape, data_ptr);
    }
    // for boolean can be more convenient passing an std::vector
@@ -129,17 +131,8 @@ public:
       AddConstantTensor(name, GetTemplatedType<T>(T()), shape, data_ptr);
    }
 
-   template <typename T>
-   void AddInitializedTensor(const std::string & tensor_name, const std::vector<std::size_t> & shape, T *raw_data)
-   {
-      size_t size = ConvertShapeToLength(shape);
-      std::shared_ptr<void> data(malloc(size * sizeof(T)), free);
-      std::memcpy(data.get(), raw_data, size * sizeof(T));
-      AddInitializedTensor(tensor_name,  GetTemplatedType(T()), shape, data);
-   }
-
    void AddShapeTensor(const std::string & name, const std::vector<Dim> & shapeValues, bool scalar = false);
-   void AddAliasTensor(const std::string & name, const std::string & origin);
+   bool AddAliasTensor(const std::string &tensor_name, const std::string &orig_tensor_name);
    bool IsAliasTensor(const std::string & tensor_name) const;
    std::string ResolveAliasTensor(const std::string &tensorName) const;
 
@@ -180,6 +173,8 @@ public:
    // Add an intermediate dynamic tensor
    void AddDynamicTensor(std::string tensor_name, ETensorType type, std::vector<Dim> shape);
    void AddShapeParam(const std::string & name, size_t def_value = 0);
+   void AddComputedShapeParam(const std::string &name);
+   bool IsComputedShapeParam(const std::string &name) const { return fComputedShapeParams.count(name) != 0; }
    void AddInputTensorName(std::string name);
    void AddOutputTensorNameList(std::vector<std::string> output_tensor_names);
    void
@@ -194,10 +189,15 @@ public:
    void Initialize(int batchSize = -1, bool verbose = false);
    void Initialize(const std::map<std::string,size_t> & inputParams, bool verbose = false);
 
-   void Generate(std::underlying_type_t<Options> options, int batchSize = -1, long pos = 0, bool verbose = false);
-   void Generate(Options options = Options::kDefault, int batchSize = -1, int pos = 0, bool verbose = false)
+   void Generate(std::underlying_type_t<Options> options, int batchSize, long pos, bool verbose);
+   void Generate(Options options, int batchSize, long pos, bool verbose)
    {
       Generate(static_cast<std::underlying_type_t<Options>>(options), batchSize, pos, verbose);
+   }
+   void Generate(std::underlying_type_t<Options> options, int batchSize = -1, bool verbose = false);
+   void Generate(Options options = Options::kDefault, int batchSize = -1, bool verbose = false)
+   {
+      Generate(static_cast<std::underlying_type_t<Options>>(options), batchSize, verbose);
    }
    void GenerateGPU_ALPAKA(std::underlying_type_t<Options> options, int batchSize = -1, bool verbose = false);
    void GenerateGPU_ALPAKA(Options options = Options::kDefault, int batchSize = -1, bool verbose = false)
@@ -226,8 +226,19 @@ public:
    }
 
    // calculate total intermediate memory and position intermediate tensor addresses
-   std::string AllocateIntermediateMemory(std::span<const std::string> op_output_tensors);
-   void CheckAndFlushIntermediateMemory(std::span<const std::string> op_output_tensors, const size_t& op_idx);
+   std::string AllocateIntermediateMemory(std::span<const std::string_view> op_output_tensors);
+   void CheckAndFlushIntermediateMemory(std::span<const std::string_view> op_output_tensors, const size_t& op_idx);
+
+   void SetOptimizationLevel(OptimizationLevel optim_level) { fOptimizationLevel = optim_level; }
+
+   size_t GetConstantTensorSize() const { return fConstantTensorSize; }
+   size_t GetWeightsTensorSize() const { return fWeightsTensorSize; }
+   size_t GetOtherTensorSize() const { return fOtherTensorSize; }
+   size_t GetIntermediateTensorSize() const {
+      return (!fIntermediateMemoryInfo.total_stack.empty())
+                ? fIntermediateMemoryInfo.total_stack.rbegin()->first + fIntermediateMemoryInfo.total_stack.rbegin()->second.tensor_size
+                : 0;
+   }
 
 
 protected:
@@ -272,14 +283,15 @@ public:
    const std::vector<std::string> &GetOutputTensorNames() const { return fOutputTensorNames; }
    const std::vector<std::string> & GetDimShapeNames() const { return fDimShapeNames; }
 
-   void ReadInitializedTensorsFromFile(long);
+   void ReadInitializedTensorsFromFile();
    long WriteInitializedTensorsToFile(std::string filename = "");
+   void WriteInitializedTensorsToStream(std::ostream &os);
+   std::string WriteInitializedTensorsToBuffer();
 
    void PrintIntermediateTensors() const;
    void PrintOutputTensors() const;
    void PrintSummary() const;
    void OutputGenerated(std::string filename = "", bool append = false);
-   std::vector<std::string> GetOutputTensorNames() { return fOutputTensorNames; }
    void SetFilename(std::string filename) { fName = filename; }
 
    /*
@@ -312,11 +324,6 @@ public:
    bool LowRankFactorize() const { return fLowRankFactorize; }
    void SetLowRankRatio(float ratio) { fLowRankRatio = ratio; }
    float LowRankRatio() const { return fLowRankRatio; }
-
-#ifdef SOFIE_SUPPORT_ROOT_BINARY
-   // Use the ClassDef macro to allow definition of custom streaming
-   ClassDefNV(RModel, 3);
-#endif
 
 };
 

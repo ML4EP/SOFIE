@@ -11,12 +11,13 @@
 #include <stdexcept>
 #include <vector>
 #include <cassert>
+#include <limits>
 
 namespace SOFIE{
 
-enum EReduceOpMode { ReduceMean, ReduceSum, ReduceSumSquare, ReduceProd, ReduceL2, ReduceMax, InvalidReduceOp };
+enum EReduceOpMode { ReduceMean, ReduceSum, ReduceSumSquare, ReduceProd, ReduceL2, ReduceMax, ReduceMin, InvalidReduceOp };
 
-template <typename T, EReduceOpMode Op>
+template <EReduceOpMode Op>
 class ROperator_Reduce final : public ROperator
 {
 private:
@@ -31,6 +32,7 @@ private:
     std::vector<Dim> fShapeX;
     std::vector<Dim> fShapeY;
     std::vector<Dim> fShapeYNotPruned; // needed for fKeepdims=0
+    std::string fType;
 
     // GPU kernel launch tuning parameters
     struct GpuLaunchParams { std::size_t blockSize = 256; std::size_t groups = 1; };
@@ -69,6 +71,7 @@ public:
       else if (fReduceOpMode == ReduceSum)       return "ReduceSum";
       else if (fReduceOpMode == ReduceL2)        return "ReduceL2";
       else if (fReduceOpMode == ReduceMax)       return "ReduceMax";
+      else if (fReduceOpMode == ReduceMin)       return "ReduceMin";
       return "Invalid";
    }
 
@@ -76,7 +79,7 @@ public:
       std::vector<std::string> libs = { std::string("memory") };
       if (fReduceOpMode == ReduceL2)
          libs.push_back("cmath");
-      if (fReduceOpMode == ReduceMax)
+      if (fReduceOpMode == ReduceMax || fReduceOpMode == ReduceMin)
          libs.push_back("limits");
       return libs;
    }
@@ -94,13 +97,7 @@ public:
       fOutputTensorNames = { fNY };
    }
 
-   // type of output given input
-   std::vector<ETensorType> TypeInference(std::vector<ETensorType> input) override {
-      return input;
-   }
-
    // shape of output tensors given input tensors
-   using ROperator::ShapeInference;
    std::vector<Dim> ShapeInference(const std::vector<Dim> & input) {
       auto ret = input;
       auto & outputShape = ret;
@@ -116,7 +113,7 @@ public:
          std::sort(ax.begin(), ax.end());
          for (size_t j = 0; j < ax.size(); j++) {
             // erase reduced dimensions, but keep last one
-            if (outputShape.size() > 1) {
+            if (outputShape.size() > 0) {
                outputShape.erase(outputShape.begin() + ax[j]);
                for (size_t k = j+1; k < ax.size(); k++)
                   ax[k] -= 1;
@@ -127,8 +124,6 @@ public:
    }
 
    void Initialize(RModel& model) override {
-
-      fUseSession = model.UseSession();
 
       if (!model.CheckIfTensorAlreadyExist(fNX)) {
          // input must be a graph input, or already initialized intermediate tensor
@@ -158,7 +153,10 @@ public:
       if (model.Verbose()){
          std::cout << Name() << " : " << fNX << " -> " << fNY << " shape " << ConvertDimShapeToString(fShapeY) << std::endl;
       }
+      fType = ConvertTypeToString(model.GetTensorType(fNX));
       model.AddNeededStdLib("algorithm");
+      if (fReduceOpMode == ReduceMax || fReduceOpMode == ReduceMin)
+         model.AddNeededStdLib("limits");
    }
 
    bool IsReducedAxis(size_t d) const {
@@ -305,7 +303,6 @@ public:
       std::string inputLength = SOFIE::ConvertDimShapeToLength(fShapeX);
       std::string outputLength = SOFIE::ConvertDimShapeToLength(fShapeY);
 
-      auto inputStrides = SOFIE::UTILITY::ComputeStrideFromShape(fShapeX);
       // output stride (or not pruned vector)
       auto outputStrides = SOFIE::UTILITY::ComputeStrideFromShape(fShapeYNotPruned);
 
@@ -341,6 +338,14 @@ public:
             }
          }
       }
+      std::string initValue = "0";
+      if (fReduceOpMode == ReduceProd)
+         initValue = "1";
+      else if (fReduceOpMode == ReduceMax)
+         initValue = "std::numeric_limits<" + fType + ">::lowest()";
+      else if (fReduceOpMode == ReduceMin)
+         initValue = "std::numeric_limits<" + fType + ">::max()";
+
       std::string reducedLength;
       if (fInputDimShape) {
          reducedLength = "reducedLength_" + opName;
@@ -349,113 +354,84 @@ public:
          int rLength = std::stoi(inputLength) / std::stoi(outputLength);
          reducedLength = std::to_string(rLength);
       }
+      auto accumulate = [&](const std::string &y, const std::string &x) {
+         if (fReduceOpMode == ReduceMax)
+            return y + " = std::max(" + y + ", " + x + ");\n";
+         if (fReduceOpMode == ReduceMin)
+            return y + " = std::min(" + y + ", " + x + ");\n";
+         if (fReduceOpMode == ReduceProd)
+            return y + " *= " + x + ";\n";
+         if (fReduceOpMode == ReduceSumSquare || fReduceOpMode == ReduceL2)
+            return y + " += " + x + " * " + x + ";\n";
+         return y + " += " + x + ";\n";
+      };
       if (reduceDims == kLast) {
 
-         // loop on output dimensions
          out << SP << "for (size_t i = 0; i < " << outputLength << "; i++) {\n";
-         // loop on reduce dimensions
-         if (fReduceOpMode == ReduceProd)
-            out << SP << SP << "tensor_" << fNY << "[i] = 1;\n";
-         else if (fReduceOpMode == ReduceMax)
-            out << SP << SP << "tensor_" << fNY << "[i] = std::numeric_limits<float>::lowest();\n";
-         else
-            out << SP << SP << "tensor_" << fNY << "[i] = 0;\n";
+         out << SP << SP << "tensor_" << fNY << "[i] = " << initValue << ";\n";
          out << SP << SP << "for (size_t j = 0; j < " << reducedLength << "; j++) {\n";
-
-         if (fReduceOpMode == ReduceProd)
-            out << SP << SP << SP <<  "tensor_" << fNY << "[i] *= tensor_" << fNX << "[i * " << reducedLength << " + j];\n";
-         else if (fReduceOpMode == ReduceSum || fReduceOpMode == ReduceMean)
-            out << SP << SP << SP <<  "tensor_" << fNY << "[i] += tensor_" << fNX << "[i * " << reducedLength << " + j];\n";
-         else if(fReduceOpMode == ReduceSumSquare || fReduceOpMode == ReduceL2)
-            out << SP << SP << SP <<  "tensor_" << fNY << "[i] += tensor_" << fNX << "[i * " << reducedLength << " + j] * tensor_"
-                                    << fNX << "[i * " << reducedLength << " + j];\n";
-         else if (fReduceOpMode == ReduceMax)
-            out << SP << SP << SP << "if (tensor_" << fNX << "[i * " << reducedLength << " + j] > tensor_" << fNY << "[i])\n"
-                << SP << SP << SP << SP << "tensor_" << fNY << "[i] = tensor_" << fNX << "[i * " << reducedLength << " + j];\n";
-         out << SP << SP << "}\n"; // end j loop
+         out << SP << SP << SP
+             << accumulate("tensor_" + fNY + "[i]", "tensor_" + fNX + "[i * " + reducedLength + " + j]");
+         out << SP << SP << "}\n";
          if(fReduceOpMode == ReduceMean)
             out << SP << SP << "tensor_" << fNY << "[i] /= static_cast<float>(" << reducedLength << ");\n";
          else if (fReduceOpMode == ReduceL2)
             out << SP << SP << "tensor_" << fNY << "[i] = std::sqrt(tensor_" << fNY << "[i]);\n";
 
-         out << SP << "}\n"; // end i loop
+         out << SP << "}\n";
       } else if (reduceDims == kFirst) {
-         //std::cout << "reduction for operator " << opName << " is first" << std::endl;
-         // case reduction is at beginning
-         // reset output tensors
-         if (fReduceOpMode == ReduceProd)
-            out << SP << "std::fill(tensor_" << fNY <<", tensor_"<< fNY <<" + "<< outputLength << ", 1);\n";
-         else if (fReduceOpMode == ReduceMax)
-            out << SP << "std::fill(tensor_" << fNY <<", tensor_"<< fNY <<" + "<< outputLength
-                      << ", std::numeric_limits<float>::lowest());\n";
-         else
-            out << SP << "std::fill(tensor_" << fNY <<", tensor_"<< fNY <<" + "<< outputLength << ", 0);\n";
+         out << SP << "std::fill(tensor_" << fNY << ", tensor_" << fNY << " + " << outputLength << ", " << initValue
+             << ");\n";
 
          out << SP << "for (size_t i = 0; i < " << reducedLength << "; i++) {\n";
          out << SP << SP << "for (size_t j = 0; j < " << outputLength << "; j++) {\n";
-
-         if (fReduceOpMode == ReduceProd)
-            out << SP << SP << SP << "tensor_" << fNY << "[j] *= tensor_" << fNX << "[i * " << outputLength << " + j];\n";
-         else if (fReduceOpMode == ReduceSum || fReduceOpMode == ReduceMean)
-            out << SP << SP << SP << "tensor_" << fNY << "[j] += tensor_" << fNX << "[i * " << outputLength << " + j];\n";
-         else if(fReduceOpMode == ReduceSumSquare || fReduceOpMode == ReduceL2)
-            out << SP << SP << SP << "tensor_" << fNY << "[j] += tensor_" << fNX << "[i * " << outputLength << " + j] * tensor_"
-                                    << fNX << "[i * " << outputLength << " + j];\n";
-         else if (fReduceOpMode == ReduceMax)
-            out << SP << SP << SP << "if (tensor_" << fNX << "[i * " << outputLength << " + j] > tensor_" << fNY << "[j])\n"
-                << SP << SP << SP << SP << "tensor_" << fNY << "[j] = tensor_" << fNX << "[i * " << outputLength << " + j];\n";
-         out << SP << SP << "}\n"; // end j loop
-         out << SP  << "}\n"; // end i loop
+         out << SP << SP << SP
+             << accumulate("tensor_" + fNY + "[j]", "tensor_" + fNX + "[i * " + outputLength + " + j]");
+         out << SP << SP << "}\n";
+         out << SP << "}\n";
          if(fReduceOpMode == ReduceMean) {
             out << SP  << "for (size_t j = 0; j < " << outputLength << "; j++) {\n";
             out << SP << SP << "tensor_" << fNY << "[j] /= static_cast<float>(" << reducedLength << ");\n";
-            out << SP << "}\n"; // end j loop
+            out << SP << "}\n";
          } else if (fReduceOpMode == ReduceL2) {
             out << SP  << "for (size_t j = 0; j < " << outputLength << "; j++) {\n";
             out << SP << SP << "tensor_" << fNY << "[j] = std::sqrt(tensor_" << fNY << "[j]);\n";
-            out << SP << "}\n"; // end j loop
+            out << SP << "}\n";
          }
       }
       else
-      { // standard case
-         //std::cout << "reduction for operator " << opName << " is middle" << std::endl;
-         // reset output tensors
-         if (fReduceOpMode == ReduceProd)
-            out << SP << "std::fill(tensor_" << fNY <<", tensor_"<< fNY <<" + "<< outputLength << ", 1);\n";
-         else if (fReduceOpMode == ReduceMax)
-            out << SP << "std::fill(tensor_" << fNY <<", tensor_"<< fNY <<" + "<< outputLength
-                      << ", std::numeric_limits<float>::lowest());\n";
-         else
-            out << SP << "std::fill(tensor_" << fNY <<", tensor_"<< fNY <<" + "<< outputLength << ",0);\n";
+      {
+         out << SP << "std::fill(tensor_" << fNY << ", tensor_" << fNY << " + " << outputLength << ", " << initValue
+             << ");\n";
 
-         out << SP << "for (size_t i = 0; i < " << inputLength << "; i++) {\n";
+         size_t dim = fShapeX.size();
 
-         size_t dim = fShapeX.size(); // this is the input dimension (e.g. 2, 3 or 4 or more)
-
-         // here we find output index
-         out << SP << SP << "size_t outputIndex = 0;\n";
+         auto indent = [&](size_t n) {
+            for (size_t q = 0; q < n; q++)
+               out << SP;
+         };
+         out << SP << "{\n";
+         out << SP << SP << "size_t inputIndex = 0;\n";
+         std::string outputIndex = "0";
          for (size_t k = 0; k < dim; k++) {
+            indent(k + 2);
+            out << "for (size_t i_" << k << " = 0; i_" << k << " < (" << fShapeX[k].GetVal() << "); i_" << k << "++) {\n";
             if (!IsReducedAxis(k)) {
-               // do for not reducing axes
-               out << SP << SP << "size_t i_" << k << " = i / (" << inputStrides[k].GetVal() << ") % (" << fShapeX[k].GetVal() << ");\n";
-               out << SP << SP << "outputIndex += i_" << k << " * (" << outputStrides[k].GetVal() << ");\n";
+               std::string next = "outputIndex_" + std::to_string(k);
+               indent(k + 3);
+               out << "size_t " << next << " = " << outputIndex << " + i_" << k << " * (" << outputStrides[k].GetVal() << ");\n";
+               outputIndex = next;
             }
          }
-         // now compute reduction
-         out << SP << SP << "// compute reduction....\n";
-         if (fReduceOpMode == ReduceProd)
-            out << SP << SP << "tensor_" << fNY << "[outputIndex] *= tensor_" << fNX << "[i];\n";
-         else if (fReduceOpMode == ReduceSum || fReduceOpMode == ReduceMean)
-            out << SP << SP << "tensor_" << fNY << "[outputIndex] += tensor_" << fNX << "[i];\n";
-         else if (fReduceOpMode == ReduceSumSquare || fReduceOpMode == ReduceL2) {
-            out << SP << SP << "tensor_" << fNY << "[outputIndex] += tensor_" << fNX << "[i] * tensor_" << fNX
-                << "[i];\n";
-         } else if (fReduceOpMode == ReduceMax) {
-            out << SP << SP << "if (tensor_" << fNX << "[i] > tensor_" << fNY << "[outputIndex])\n";
-            out << SP << SP << SP << "tensor_" << fNY << "[outputIndex] = tensor_" << fNX << "[i];\n";
+         indent(dim + 2);
+         out << accumulate("tensor_" + fNY + "[" + outputIndex + "]", "tensor_" + fNX + "[inputIndex]");
+         indent(dim + 2);
+         out << "inputIndex++;\n";
+         for (size_t k = dim; k > 0; k--) {
+            indent(k + 1);
+            out << "}\n";
          }
-         out << SP << "}\n"; // end loop on input elements
-         // post-processing passes
+         out << SP << "}\n";
          if (fReduceOpMode == ReduceMean) {
             out << SP << "for (size_t i = 0; i < " << outputLength << "; i++) {\n";
             out << SP << SP << "tensor_" << fNY << "[i] /= static_cast<float>(" << reducedLength << ");\n";
@@ -571,6 +547,7 @@ public:
       std::string startVal;
       if (Op == ReduceProd)       startVal = "static_cast<T>(1)";
       else if (Op == ReduceMax)   startVal = "std::numeric_limits<T>::lowest()";
+      else if (Op == ReduceMin)   startVal = "std::numeric_limits<T>::max()";
       else                        startVal = "static_cast<T>(0)";
       op += SP + SP + SP + "T partial = " + startVal + ";\n";
       if (useGroupsDecomp)
@@ -614,6 +591,8 @@ public:
          op += SP + SP + SP + SP + "partial += input[in_idx] * input[in_idx];\n";
       else if (Op == ReduceMax)
          op += SP + SP + SP + SP + "if (input[in_idx] > partial) partial = input[in_idx];\n";
+      else if (Op == ReduceMin)
+         op += SP + SP + SP + SP + "if (input[in_idx] < partial) partial = input[in_idx];\n";
 
       op += SP + SP + SP + "}\n\n"; // end thread-stride loop
 
@@ -632,6 +611,8 @@ public:
          op += SP + SP + SP + SP + SP + "shmem[thread_id] *= shmem[thread_id + s];\n";
       else if (Op == ReduceMax)
          op += SP + SP + SP + SP + SP + "if (shmem[thread_id + s] > shmem[thread_id]) shmem[thread_id] = shmem[thread_id + s];\n";
+      else if (Op == ReduceMin)
+         op += SP + SP + SP + SP + SP + "if (shmem[thread_id + s] < shmem[thread_id]) shmem[thread_id] = shmem[thread_id + s];\n";
       else
          op += SP + SP + SP + SP + SP + "shmem[thread_id] += shmem[thread_id + s];\n";
       op += SP + SP + SP + SP + "}\n";
@@ -647,6 +628,8 @@ public:
          op += SP + SP + SP + SP + SP + "val *= other;\n";
       else if (Op == ReduceMax)
          op += SP + SP + SP + SP + SP + "if (other > val) val = other;\n";
+      else if (Op == ReduceMin)
+         op += SP + SP + SP + SP + SP + "if (other < val) val = other;\n";
       else
          op += SP + SP + SP + SP + SP + "val += other;\n";
       op += SP + SP + SP + SP + "}\n\n";
@@ -700,6 +683,8 @@ public:
             op += SP + SP + SP + SP + "result *= v;\n";
          else if (Op == ReduceMax)
             op += SP + SP + SP + SP + "if (v > result) result = v;\n";
+         else if (Op == ReduceMin)
+            op += SP + SP + SP + SP + "if (v < result) result = v;\n";
          else
             op += SP + SP + SP + SP + "result += v;\n";
          op += SP + SP + SP + "}\n\n";
@@ -728,7 +713,7 @@ public:
          // T's actual element type — a boolean-derived reduction like ReduceSum
          // over an int64 tensor would otherwise get a float scratch buffer,
          // which fails to compile against the int64 input/output kernel args.
-         op += SP + "std::unique_ptr<alpaka::Buf<Acc, " + ConvertTypeToString(GetTemplatedType(T())) + ", Dim, Idx>> reduceScratch_" + fNY + ";\n";
+         op += SP + "std::unique_ptr<alpaka::Buf<Acc, " + fType + ", Dim, Idx>> reduceScratch_" + fNY + ";\n";
          op += SP + "std::size_t reduceScratchCapacity_" + fNY + " = 0;\n";
       }
       return op;
@@ -774,8 +759,8 @@ public:
          out << SP << SP << "if (!reduceScratch_" << fNY << " || reduceScratchCapacity_" << fNY << " < " << rl
              << "_capacity) {\n";
          out << SP << SP << SP << "reduceScratch_" << fNY
-             << " = std::make_unique<alpaka::Buf<Acc, " << ConvertTypeToString(GetTemplatedType(T())) << ", Dim, Idx>>(alpaka::allocBuf<"
-             << ConvertTypeToString(GetTemplatedType(T())) << ", Idx>(devAcc, Ext1D::all(Idx{" << rl
+             << " = std::make_unique<alpaka::Buf<Acc, " << fType << ", Dim, Idx>>(alpaka::allocBuf<"
+             << fType << ", Idx>(devAcc, Ext1D::all(Idx{" << rl
              << "_capacity})));\n";
          out << SP << SP << SP << "reduceScratchCapacity_" << fNY << " = " << rl << "_capacity;\n";
          out << SP << SP << "}\n";
@@ -823,8 +808,8 @@ public:
          std::string totalBlocks = std::to_string(std::stoul(outputLength) * lp.groups);
          out << SP << "if (!reduceScratch_" << fNY << ") {\n";
          out << SP << SP << "reduceScratch_" << fNY
-             << " = std::make_unique<alpaka::Buf<Acc, " << ConvertTypeToString(GetTemplatedType(T())) << ", Dim, Idx>>(alpaka::allocBuf<"
-             << ConvertTypeToString(GetTemplatedType(T())) << ", Idx>(devAcc, Ext1D::all(Idx{" << totalBlocks
+             << " = std::make_unique<alpaka::Buf<Acc, " << fType << ", Dim, Idx>>(alpaka::allocBuf<"
+             << fType << ", Idx>(devAcc, Ext1D::all(Idx{" << totalBlocks
              << "})));\n";
          out << SP << SP << "reduceScratchCapacity_" << fNY << " = " << totalBlocks << ";\n";
          out << SP << "}\n";

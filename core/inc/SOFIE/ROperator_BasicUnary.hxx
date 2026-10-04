@@ -8,7 +8,7 @@
 
 namespace SOFIE {
 
-enum class EBasicUnaryOperator { kReciprocal, kSqrt , kNeg, kExp, kLog, kSin, kCos, kAbs, kSoftplus, kAtan, kFloor };
+enum class EBasicUnaryOperator { kReciprocal, kSqrt , kNeg, kExp, kLog, kSin, kCos, kAbs, kSoftplus, kAtan, kFloor, kAsinh, kAcosh, kAtanh };
 
 template <typename T, EBasicUnaryOperator Op>
 struct UnaryOpTraits {
@@ -65,7 +65,10 @@ struct UnaryOpTraits<T, EBasicUnaryOperator::kAbs> {
 template <typename T>
 struct UnaryOpTraits<T, EBasicUnaryOperator::kSoftplus> {
    static std::string Name() { return "Softplus"; }
-   static std::string Op(const std::string &X) { return "std::log(std::exp(" + X + ") + 1)"; }
+   static std::string Op(const std::string &X)
+   {
+      return "((" + X + " >= 0x1.4000000000000p+4f) ? " + X + " : std::log1p(std::exp(" + X + ")))";
+   }
 };
 
 template <typename T>
@@ -78,6 +81,24 @@ template <typename T>
 struct UnaryOpTraits<T, EBasicUnaryOperator::kFloor> {
    static std::string Name() { return "Floor"; }
    static std::string Op(const std::string &X) { return "std::floor(" + X + ")"; }
+};
+
+template <typename T>
+struct UnaryOpTraits<T, EBasicUnaryOperator::kAsinh> {
+   static std::string Name() { return "Asinh"; }
+   static std::string Op(const std::string &X) { return "std::asinh(" + X + ")"; }
+};
+
+template <typename T>
+struct UnaryOpTraits<T, EBasicUnaryOperator::kAcosh> {
+   static std::string Name() { return "Acosh"; }
+   static std::string Op(const std::string &X) { return "std::acosh(" + X + ")"; }
+};
+
+template <typename T>
+struct UnaryOpTraits<T, EBasicUnaryOperator::kAtanh> {
+   static std::string Name() { return "Atanh"; }
+   static std::string Op(const std::string &X) { return "std::atanh(" + X + ")"; }
 };
 
 template <typename T, EBasicUnaryOperator Op>
@@ -135,17 +156,15 @@ public:
          fOutputTensorNames = { fNY };
    }
 
-   std::vector<std::vector<size_t>> ShapeInference(std::vector<std::vector<size_t>> input) override { return input; }
-
-   std::vector<ETensorType> TypeInference(std::vector<ETensorType> input) override { return input; }
-
    void Initialize(RModel& model) override {
       if (!model.CheckIfTensorAlreadyExist(fNX)) {
-         throw std::runtime_error("TMVA::SOFIE - Tensor " + fNX + " not found.");
+         throw std::runtime_error("SOFIE - Tensor " + fNX + " not found.");
       }
       fShapeX = model.GetDimTensorShape(fNX);
       fShapeY = fShapeX;
       model.AddIntermediateTensor(fNY, model.GetTensorType(fNX), fShapeY);
+
+      model.AddNeededStdLib("cmath");
    }
 
    std::string Generate(std::string OpName) override
@@ -154,7 +173,7 @@ public:
       std::stringstream out;
 
       out << SP << "\n//---- Operator" << UnaryOpTraits<T, Op>::Name() << " " << OpName << "\n";
-      std::string length = ConvertDimShapeToLength(fShapeX);
+      auto length = ConvertDimShapeToLength(fShapeX);
       out << SP << "for (size_t i = 0; i < " << length << "; i++) {\n";
       out << SP << SP << "tensor_" << fNY << "[i] = " << UnaryOpTraits<T, Op>::Op("tensor_" + fNX + "[i]") << ";\n";
       out << SP << "}\n";
