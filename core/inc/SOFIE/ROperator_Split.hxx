@@ -45,6 +45,7 @@ public:
          throw std::runtime_error("SOFIE Split Op Input Tensor is not found in model");
       }
       fInputShape = model.GetDimTensorShape(fNX);
+      fHasStridedInput = model.IsStridedInputTensor(fNX) && !fInputShape.empty();
 
       // correct for negative axis
       if (fAxis < 0) fAxis += fInputShape.size();
@@ -104,7 +105,7 @@ public:
 
    EFusionMappingType GetFusionMappingType() const override
    {
-      if (fInputShape.empty() || fOutputShapes.empty())
+      if (fHasStridedInput || fInputShape.empty() || fOutputShapes.empty())
          return EFusionMappingType::Unsupported;
 
       return EFusionMappingType::OneToMany;
@@ -165,6 +166,8 @@ public:
       return "(" + expression + ")";
    }
 
+   bool SupportsStridedInput() const override { return true; }
+
    std::string Generate(std::string OpName) override {
       OpName = "op_" + OpName;
       if (fOutputShapes.empty()){
@@ -176,6 +179,13 @@ public:
       // generate now the code for split
       std::stringstream out;
       out << "\n" << SP << "//------ Split\n";
+      if (fHasStridedInput) {
+         // input read through the strides given to the Session
+         const std::string name = "strX_" + OpName;
+         out << GenerateInputStrideArray(name, fNX, fInputShape);
+         for (size_t k = 0; k < fInputShape.size(); k++)
+            input_strides[k] = Dim{name + "[" + std::to_string(k) + "]", static_cast<size_t>(-1)};
+      }
       out << SP << "size_t " << OpName << "_axis_offset = 0;\n";
       // unroll the loop on split outputs
       for (size_t i = 0; i < fNYs.size(); i++)  {
@@ -197,10 +207,13 @@ public:
                out << ") * " << input_strides[k].GetVal() << ";\n";
                out << SP << SP  << "remaining %= " << output_strides[k].GetVal() << ";\n";
             } else {
-               // for last dims all strides are one
-               out << SP << SP << "input_index += remaining";
+               // for last dims all strides are one (the input ones are only known at run time if it is strided)
+               out << SP << SP << "input_index += (remaining";
                if (k == static_cast<size_t>(fAxis) && i > 0)
                   out << " + " << OpName << "_axis_offset";
+               out << ")";
+               if (fHasStridedInput)
+                  out << " * " << input_strides[k].GetVal();
                out << ";\n\n";
             }
          }
@@ -221,6 +234,10 @@ std::string Generate_GPU_Kernel_ALPAKA(std::string opName, const std::vector<std
     const std::size_t Nin = fNYs.size();
 
     auto inputStrides = UTILITY::ComputeStrideFromShape(fInputShape);
+    // input read through the strides given to the Session: the kernels receive them in a layout
+    if (fHasStridedInput)
+        for (std::size_t d = 0; d < D; ++d)
+            inputStrides[d] = Dim{"layoutX.stride[" + std::to_string(d) + "]", static_cast<std::size_t>(-1)};
 
     std::string op;
     op  = "\n//------ SPLIT_KERNEL_ALPAKA\n";
@@ -244,6 +261,8 @@ std::string Generate_GPU_Kernel_ALPAKA(std::string opName, const std::vector<std
         op += SP + SP + SP + "T* output,\n";
         for (auto &p : dynParamNames)
            op += SP + SP + SP + "std::size_t const " + p + ",\n";
+        if (fHasStridedInput)
+           op += SP + SP + SP + "sofie_strided_layout<" + std::to_string(D) + "> const layoutX,\n";
         op += SP + SP + SP + "std::size_t const totalElements) const {\n\n";
 
         op += SP + SP + SP + "auto const global_thread_idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
@@ -293,6 +312,8 @@ std::string Generate_GPU_ALPAKA(std::string opName, const std::vector<std::strin
 
     std::stringstream out;
     out << "\n//------ SPLIT_GPU_ALPAKA\n";
+    if (fHasStridedInput)
+        out << GenerateStridedBroadcastLayout(opName + "_X", fNX, fInputShape, fInputShape.size(), fInputShape);
 
     for (std::size_t i = 0; i < fNYs.size(); ++i) {
         std::string length = ConvertDimShapeToLength(fOutputShapes[i]);
@@ -308,6 +329,8 @@ std::string Generate_GPU_ALPAKA(std::string opName, const std::vector<std::strin
             << ", alpaka::getPtrNative(deviceBuf_" << fNYs[i] << ")";
         for (auto &p : dynParamNames)
            out << ", static_cast<std::size_t>(" << p << ")";
+        if (fHasStridedInput)
+           out << ", layout_" << opName << "_X";
         out << ", static_cast<Idx>(" << length << "));\n";
         out << SP << "alpaka::enqueue(queue, task_" << opName << "_" << i << ");\n";
         out << SP << "}\n";

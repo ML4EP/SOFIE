@@ -130,6 +130,7 @@ public:
          throw std::runtime_error("SOFIE Reduce Op Input Tensor " + fNX + " is not found in model");
       }
       fShapeX = model.GetDimTensorShape(fNX);
+      fHasStridedInput = model.IsStridedInputTensor(fNX) && !fShapeX.empty();
       if (model.IsDynamicTensor(fNX))
          fInputDimShape = true;
       // check if tensor with axes is provided
@@ -171,7 +172,7 @@ public:
 
    EFusionMappingType GetFusionMappingType() const override
    {
-      if (fInputDimShape || fShapeX.empty() || fShapeY.empty())
+      if (fHasStridedInput || fInputDimShape || fShapeX.empty() || fShapeY.empty())
          return EFusionMappingType::Unsupported;
       return EFusionMappingType::ManyToMany;
    }
@@ -181,7 +182,7 @@ public:
       return {0};
    }
 
-   bool IsFusionReduction() const override { return !fInputDimShape && !fShapeX.empty() && !fShapeY.empty(); }
+   bool IsFusionReduction() const override { return !fHasStridedInput && !fInputDimShape && !fShapeX.empty() && !fShapeY.empty(); }
 
    std::string GetFusionReductionInitExpr() const override
    {
@@ -294,6 +295,8 @@ public:
       return expression;
    }
 
+   bool SupportsStridedInput() const override { return true; }
+
    std::string Generate(std::string opName) override {
       opName = "op_" + opName;
       if (fShapeX.empty() || fShapeY.empty()) {
@@ -316,6 +319,13 @@ public:
 
       std::stringstream out;
       out << "\n//----  operator " << Name() << "  " << opName << "\n";
+      // a strided input is read through its strides, from the logical (contiguous) index of its elements
+      auto readX = [&](const std::string &index) {
+         return fHasStridedInput ? "tensor_" + fNX + "[xoff_" + opName + "(" + index + ")]"
+                                 : "tensor_" + fNX + "[" + index + "]";
+      };
+      if (fHasStridedInput)
+         out << GenerateStridedOffsetLambda(opName, fNX, fShapeX);
       // check where is reduced axes are first or last one. In these case we can do a faster implementation
       enum EReduceDim {kFirst, kLast, kMiddle};
       EReduceDim reduceDims = kLast;
@@ -371,7 +381,7 @@ public:
          out << SP << SP << "tensor_" << fNY << "[i] = " << initValue << ";\n";
          out << SP << SP << "for (size_t j = 0; j < " << reducedLength << "; j++) {\n";
          out << SP << SP << SP
-             << accumulate("tensor_" + fNY + "[i]", "tensor_" + fNX + "[i * " + reducedLength + " + j]");
+             << accumulate("tensor_" + fNY + "[i]", readX("i * " + reducedLength + " + j"));
          out << SP << SP << "}\n";
          if(fReduceOpMode == ReduceMean)
             out << SP << SP << "tensor_" << fNY << "[i] /= static_cast<float>(" << reducedLength << ");\n";
@@ -386,7 +396,7 @@ public:
          out << SP << "for (size_t i = 0; i < " << reducedLength << "; i++) {\n";
          out << SP << SP << "for (size_t j = 0; j < " << outputLength << "; j++) {\n";
          out << SP << SP << SP
-             << accumulate("tensor_" + fNY + "[j]", "tensor_" + fNX + "[i * " + outputLength + " + j]");
+             << accumulate("tensor_" + fNY + "[j]", readX("i * " + outputLength + " + j"));
          out << SP << SP << "}\n";
          out << SP << "}\n";
          if(fReduceOpMode == ReduceMean) {
@@ -424,7 +434,7 @@ public:
             }
          }
          indent(dim + 2);
-         out << accumulate("tensor_" + fNY + "[" + outputIndex + "]", "tensor_" + fNX + "[inputIndex]");
+         out << accumulate("tensor_" + fNY + "[" + outputIndex + "]", readX("inputIndex"));
          indent(dim + 2);
          out << "inputIndex++;\n";
          for (size_t k = dim; k > 0; k--) {
@@ -496,6 +506,9 @@ public:
 
       std::string kname = "ReduceKernel_" + Name() + "_" + fNY;
 
+      // a strided input is read through its strides, from the logical (contiguous) index of its elements
+      const std::string xin = fHasStridedInput ? "input[sofie_strided_offset(layoutX, in_idx)]" : "input[in_idx]";
+
       std::string op;
       op  = "\n//------ " + Name() + "_KERNEL_ALPAKA (block parallel reduction)\n";
       op += SP + "struct " + kname + " {\n";
@@ -510,6 +523,8 @@ public:
          op += ",\n" + SP + SP + SP + "std::size_t const groups";
       for (auto &p : dynParamNames)
          op += ",\n" + SP + SP + SP + "std::size_t const " + p;
+      if (fHasStridedInput)
+         op += ",\n" + SP + SP + SP + "sofie_strided_layout<" + std::to_string(Dx) + "> const layoutX";
       op += ") const {\n\n";
 
       // ---- shared memory ----
@@ -584,15 +599,15 @@ public:
 
       // Partial accumulation step.
       if (Op == ReduceProd)
-         op += SP + SP + SP + SP + "partial *= input[in_idx];\n";
+         op += SP + SP + SP + SP + "partial *= " + xin + ";\n";
       else if (Op == ReduceSum || Op == ReduceMean)
-         op += SP + SP + SP + SP + "partial += input[in_idx];\n";
+         op += SP + SP + SP + SP + "partial += " + xin + ";\n";
       else if (Op == ReduceSumSquare || Op == ReduceL2)
-         op += SP + SP + SP + SP + "partial += input[in_idx] * input[in_idx];\n";
+         op += SP + SP + SP + SP + "partial += " + xin + " * " + xin + ";\n";
       else if (Op == ReduceMax)
-         op += SP + SP + SP + SP + "if (input[in_idx] > partial) partial = input[in_idx];\n";
+         op += SP + SP + SP + SP + "if (" + xin + " > partial) partial = " + xin + ";\n";
       else if (Op == ReduceMin)
-         op += SP + SP + SP + SP + "if (input[in_idx] < partial) partial = input[in_idx];\n";
+         op += SP + SP + SP + SP + "if (" + xin + " < partial) partial = " + xin + ";\n";
 
       op += SP + SP + SP + "}\n\n"; // end thread-stride loop
 
@@ -733,9 +748,14 @@ public:
 
       std::string dynArgs;
       for (auto &p : dynParamNames) dynArgs += ", static_cast<std::size_t>(" + p + ")";
+      // the layout of a strided input is the last argument of the reduction kernel
+      if (fHasStridedInput)
+         dynArgs += ", layout_" + fNY + "_X";
 
       std::stringstream out;
       out << "\n//------ " << Name() << "_GPU_ALPAKA\n";
+      if (fHasStridedInput)
+         out << GenerateStridedBroadcastLayout(fNY + "_X", fNX, fShapeX, fShapeX.size(), fShapeX);
 
       if (dyn) {
          std::string rl = "reduceLaunch_" + fNY;

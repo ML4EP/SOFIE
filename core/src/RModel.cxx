@@ -374,6 +374,12 @@ bool RModel::IsDimInputTensor(const std::string& tensorName) const {
    std::string name = UTILITY::Clean_name(tensorName);
    return fInputTensorInfos.find(name) != fInputTensorInfos.end();
 }
+bool RModel::IsStridedInputTensor(const std::string &tensorName) const {
+   if (!fStridedInput)
+      return false;
+   std::string name = UTILITY::Clean_name(tensorName);
+   return std::find(fInputTensorNames.begin(), fInputTensorNames.end(), name) != fInputTensorNames.end();
+}
 bool RModel::IsReadyInputTensor(const std::string& tensorName) const {
    std::string name = UTILITY::Clean_name(tensorName);
    return fReadyInputTensorInfos.find(name) != fReadyInputTensorInfos.end();
@@ -752,6 +758,15 @@ void RModel::Initialize(const std::map<std::string, size_t> & inputParams, bool 
          std::cout << "Initializing operator " << i << "  " << typeid(r).name() << std::endl;
       }
       fOperators[op_idx]->Initialize(*this);
+      // every operator reading a strided graph input must be able to access it through its strides
+      if (fStridedInput && !fOperators[op_idx]->IsOutputConstant()) {
+         for (auto &it : fOperators[op_idx]->GetOpInputTensors()) {
+            if (IsStridedInputTensor(std::string{it}) && !fOperators[op_idx]->SupportsStridedInput())
+               throw std::runtime_error("sofie: Options::kStridedInput - operator " + std::to_string(op_idx) + " (" +
+                                        typeid(*fOperators[op_idx]).name() + ") reads the input tensor " +
+                                        std::string{it} + " but does not support strided input access");
+         }
+      }
       for(auto &it:fOperators[op_idx]->GetOpOutputTensors()){
          std::string name = std::string{it};
          // check if tensor is not an initialized or output tensor and it is not already in the list
@@ -1236,6 +1251,29 @@ std::string GetMemberNameForDimShape(std::string name)
    return name;
 }
 
+// Constructor code (shared by the CPU and GPU sessions) checking and storing the strides of the input tensors
+// given in the `inputStrides` argument (one array per input tensor, in the order of the inputs)
+std::string RModel::GenerateInputStrideInitCode() const
+{
+   std::string code;
+   const std::string sp = "   ";
+   code += sp + "if (!inputStrides.empty()) {\n";
+   code += sp + sp + "if (inputStrides.size() != " + std::to_string(fInputTensorNames.size()) + ")\n";
+   code += sp + sp + sp + "throw std::runtime_error(\"sofie: expected " + std::to_string(fInputTensorNames.size()) +
+           " input stride array(s), one per input tensor\");\n";
+   for (size_t i = 0; i < fInputTensorNames.size(); i++) {
+      const auto &name = fInputTensorNames[i];
+      const size_t rank = GetDimTensorShape(name).size();
+      const std::string member = GetInputStrideMember(name);
+      code += sp + sp + member + " = inputStrides[" + std::to_string(i) + "];\n";
+      code += sp + sp + "if (!" + member + ".empty() && " + member + ".size() != " + std::to_string(rank) + ")\n";
+      code += sp + sp + sp + "throw std::runtime_error(\"sofie: the stride array of input tensor " + name +
+              " must have " + std::to_string(rank) + " element(s)\");\n";
+   }
+   code += sp + "}\n";
+   return code;
+}
+
 void RModel::GenerateOutput()
 {
    size_t outputSize = fOutputTensorNames.size();
@@ -1445,6 +1483,15 @@ void RModel::GenerateSessionCode()
       }
    }
 
+   // strides of the input tensors (in elements), as given to the constructor. Empty means contiguous input
+   if (fStridedInput) {
+      if (!fSubGraphs.empty())
+         throw std::runtime_error("sofie: Options::kStridedInput is not supported for models with subgraphs");
+      fGC += "\n//   strides of the input tensors (empty = contiguous)\n";
+      for (const auto &name : fInputTensorNames)
+         fGC += "std::vector<size_t> " + GetInputStrideMember(name) + ";\n";
+   }
+
    // add subgraph session
    if (!fSubGraphs.empty()) fGC += "//   subgraph sessions\n";
    for (auto & graph : fSubGraphs) {
@@ -1467,6 +1514,10 @@ void RModel::GenerateSessionCode()
             dynParamDecls += ",\n        size_t " + p + " = " + fShapeParams[p];
             dynParamArgs += ", " + p;
          }
+      }
+      if (fStridedInput) {
+         dynParamDecls += ",\n        std::vector<std::vector<size_t>> inputStrides = {}";
+         dynParamArgs += ", inputStrides";
       }
       // here add initialization and reading of weight tensors
       if (fUseWeightFile && fWeightFile == WeightFileType::Safetensors) {
@@ -1504,6 +1555,11 @@ void RModel::GenerateSessionCode()
       }
       // add some extra code needed for initialization of dynamic parameters
       fGC += fExtraCodeForDimShapes;
+
+      // store the strides of the input tensors
+      if (fStridedInput) {
+         fGC += GenerateInputStrideInitCode();
+      }
 
       if (fUseWeightFile) {
          fGC += "\n//--- reading weights from file\n";
@@ -1667,6 +1723,14 @@ void RModel::Generate(std::underlying_type_t<Options> options, int batchSize, bo
       fIsGNNComponent = true;
    if (static_cast<std::underlying_type_t<Options>>(Options::kLowRankFactorize) & options)
       fLowRankFactorize = true;
+   if (static_cast<std::underlying_type_t<Options>>(Options::kStridedInput) & options) {
+      if (fIsGNN || fIsGNNComponent)
+         throw std::runtime_error("sofie: RModel::Generate: Options::kStridedInput is not supported for GNN models");
+      if (!fUseSession)
+         throw std::runtime_error("sofie: RModel::Generate: Options::kStridedInput requires a Session class "
+                                  "(the strides are passed to its constructor)");
+      fStridedInput = true;
+   }
 
    if (fProfile)
       RModelProfiler::AddNeededStdLibs(*this);

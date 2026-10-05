@@ -34,8 +34,12 @@ public:
          throw std::runtime_error("SOFIE Selu Op Input Tensor is not found in model");
       }
       fShape = model.GetDimTensorShape(fNX);
+      fHasStridedInput = model.IsStridedInputTensor(fNX) && !fShape.empty();
       model.AddIntermediateTensor(fNY, model.GetTensorType(fNX), fShape);
    }
+
+   bool SupportsStridedInput() const override { return true; }
+
 
 
    std::string Generate(std::string OpName) override {
@@ -47,6 +51,13 @@ public:
       std::string length = ConvertDimShapeToLength(fShape);
       out << "\t" << "constexpr float " << OpName << "_alpha = " << std::setprecision(std::numeric_limits<float>::max_digits10) << falpha << ";\n";
       out << "\t" << "constexpr float " << OpName << "_gamma = " << std::setprecision(std::numeric_limits<float>::max_digits10) << fgamma << ";\n";
+      if (fHasStridedInput) {
+         out << GenerateStridedUnaryLoop(OpName, fNX, fNY, fShape, [&](const std::string &v) {
+            return OpName + "_gamma * (std::max(0.0f, " + v + ") + std::min(0.0f, " + OpName + "_alpha * (std::exp(" + v +
+                   ")-1)))";
+         });
+         return out.str();
+      }
       out << "\t" << "for (int id = 0; id < " << length << " ; id++){\n";
       out << "\t\t" << "tensor_" << fNY << "[id] = " << OpName << "_gamma * (std::max(0.0f, tensor_"  << fNX << "[id]) + std::min(0.0f, " << OpName << "_alpha * (std::exp(" << "tensor_" << fNX << "[id]" <<")-1)));\n";
       out << "\t}\n";
@@ -56,6 +67,14 @@ public:
    std::vector<std::string> GetStdLibs() override { return { std::string("cmath") };}
 
    std::string Generate_GPU_Kernel_ALPAKA(std::string /*opName*/) override {
+      if (fHasStridedInput)
+         return GenerateStridedUnaryKernel(
+            "SeluStridedKernel", "SELU",
+            [](const std::string &v) {
+               return "gamma * ((" + v + " > T(0) ? " + v + " : T(0)) + ((alpha * (exp(" + v + ") - T(1))) < T(0) ? (alpha * (exp(" +
+                      v + ") - T(1))) : T(0)))";
+            },
+            ", T alpha, T gamma");
       std::string op;
       op = "\n//---- SELU_KERNEL_ALPAKA//\n";
       op += "struct SeluKernel {\n";
@@ -73,6 +92,8 @@ public:
    }
 
    std::string Generate_GPU_Kernel_Definitions_ALPAKA(std::string /*opName*/) override {
+      if (fHasStridedInput)
+         return SP + "SeluStridedKernel seluStridedKernel;\n";
       return SP + "SeluKernel seluKernel;\n";
    }
 
@@ -84,6 +105,12 @@ public:
       std::stringstream out;
       std::string length = ConvertDimShapeToLength(fShape);
       out << "\n//------ SELU_GPU_ALPAKA\n";
+      if (fHasStridedInput) {
+         std::stringstream args;
+         args << ", static_cast<float>(" << std::setprecision(std::numeric_limits<float>::max_digits10) << falpha
+              << "), static_cast<float>(" << std::setprecision(std::numeric_limits<float>::max_digits10) << fgamma << ")";
+         return GenerateStridedUnaryLaunch(OpName, "seluStridedKernel", "SELU", fNX, fNY, fShape, args.str());
+      }
       out << SP << "auto const elementsPerThread_" << fNX << " = Vec::all(static_cast<Idx>(1));\n";
       out << SP << "auto const elementsPerGrid_" << fNX << " = Vec::all(Idx{" << length << "});\n";
       out << SP << "auto const workDiv_" << fNX << " = sofie_workdiv(elementsPerGrid_" << fNX << ");\n";

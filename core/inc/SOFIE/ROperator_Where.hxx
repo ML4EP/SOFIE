@@ -46,6 +46,15 @@ private:
    //   bit 4: shapes may differ at runtime (dynamic)
    int fBroadcastFlag = 0;
 
+   // inputs which are graph inputs read through their strides (Options::kStridedInput), with their original rank
+   // (the shapes can be padded to the rank of the output)
+   bool fStridedX = false;
+   bool fStridedY = false;
+   bool fStridedC = false;
+   size_t fRankX = 0;
+   size_t fRankY = 0;
+   size_t fRankC = 0;
+
 public:
    ROperator_Where(){}
    ROperator_Where(const std::string & nameC, const std::string & nameX, const std::string & nameY, const std::string & nameZ):
@@ -68,6 +77,14 @@ public:
       // check if fNC input tensor is boolean
       if (model.IsReadyInputTensor(fNC))
          fIsInputBoolTensor = true;
+
+      fRankX = model.GetDimTensorShape(fNX).size();
+      fRankY = model.GetDimTensorShape(fNY).size();
+      fRankC = model.GetDimTensorShape(fNC).size();
+      fStridedX = model.IsStridedInputTensor(fNX) && fRankX > 0;
+      fStridedY = model.IsStridedInputTensor(fNY) && fRankY > 0;
+      fStridedC = model.IsStridedInputTensor(fNC) && fRankC > 0;
+      fHasStridedInput = fStridedX || fStridedY || fStridedC;
 
       // ---------------------------------------------------------------- //
       //  Collect shapes – dynamic or static
@@ -331,6 +348,8 @@ public:
          model.RemoveInitializedTensor(fNBroadcastedC);
    }
 
+   bool SupportsStridedInput() const override { return true; }
+
    std::string GenerateInitCode() override {
       std::stringstream out;
       return out.str();
@@ -412,6 +431,19 @@ public:
       std::string idxY = buildIdxExpr(fDimShapeY, stridesY, fDimShapeZ.size());
       std::string idxC = buildIdxExpr(fDimShapeC, stridesC, fDimShapeZ.size());
 
+      // inputs read through the strides given to the Session
+      auto stridedIndex = [&](bool strided, const std::string &name, const std::string &tag,
+                              const std::vector<Dim> &shape, size_t rank, std::string &idx) {
+         if (!strided)
+            return;
+         out << GenerateInputStrideCode(opName + "_" + tag, name, std::vector<Dim>(shape.end() - rank, shape.end()));
+         if (idx != "0")
+            idx = GenerateStridedBroadcastIndex("stride_" + opName + "_" + tag, shape, rank, fDimShapeZ.size());
+      };
+      stridedIndex(fStridedX, fNX, "X", fDimShapeX, fRankX, idxX);
+      stridedIndex(fStridedY, fNY, "Y", fDimShapeY, fRankY, idxY);
+      stridedIndex(fStridedC, fNC, "C", fDimShapeC, fRankC, idxC);
+
        // Emit nested loops over output shape
       int nloop = 0;
       std::string idxZ;
@@ -492,6 +524,11 @@ public:
 
       std::string kname = "WhereKernel_" + opName;
 
+      // inputs read through the strides given to the Session (a scalar input has no strides to apply)
+      const bool stridedX = fStridedX && !isXScalar;
+      const bool stridedY = fStridedY && !isYScalar;
+      const bool stridedC = fStridedC && !isCScalar;
+
       std::string op;
       op  = "\n//------ WHERE_KERNEL_ALPAKA\n";
       op += SP + "struct " + kname + " {\n";
@@ -504,6 +541,10 @@ public:
       op += SP + SP + SP + "T* __restrict__ output";
       for (auto &p : dynParamNames)
          op += ",\n" + SP + SP + SP + "std::size_t const " + p;
+      const std::string layoutType = "sofie_strided_layout<" + std::to_string(D) + "> const ";
+      if (stridedX) op += ",\n" + SP + SP + SP + layoutType + "layoutX";
+      if (stridedY) op += ",\n" + SP + SP + SP + layoutType + "layoutY";
+      if (stridedC) op += ",\n" + SP + SP + SP + layoutType + "layoutC";
       op += ",\n" + SP + SP + SP + "std::size_t const totalElements) const {\n\n";
 
       op += SP + SP + SP + "auto const global_thread_idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
@@ -533,6 +574,9 @@ public:
       std::string indexX = isXScalar ? "0" : (isXPartial ? "idxX" : "elem_idx");
       std::string indexY = isYScalar ? "0" : (isYPartial ? "idxY" : "elem_idx");
       std::string indexC = isCScalar ? "0" : (isCPartial ? "idxC" : "elem_idx");
+      if (stridedX) indexX = "sofie_strided_offset(layoutX, elem_idx)";
+      if (stridedY) indexY = "sofie_strided_offset(layoutY, elem_idx)";
+      if (stridedC) indexC = "sofie_strided_offset(layoutC, elem_idx)";
 
       op += SP + SP + SP + SP + "output[elem_idx] = cond[" + indexC + "] ? x[" + indexX + "] : y[" + indexY + "];\n";
       op += SP + SP + SP + "}\n";
@@ -560,6 +604,16 @@ public:
 
       std::stringstream out;
       out << "\n//------ WHERE_GPU_ALPAKA\n";
+      const std::size_t D = fDimShapeZ.size();
+      const bool stridedX = fStridedX && ConvertDimShapeToLength(fDimShapeX) != "1";
+      const bool stridedY = fStridedY && ConvertDimShapeToLength(fDimShapeY) != "1";
+      const bool stridedC = fStridedC && ConvertDimShapeToLength(fDimShapeC) != "1";
+      if (stridedX)
+         out << GenerateStridedBroadcastLayout(opName + "_X", fNX, PadToRank(fDimShapeX, D), fRankX, fDimShapeZ);
+      if (stridedY)
+         out << GenerateStridedBroadcastLayout(opName + "_Y", fNY, PadToRank(fDimShapeY, D), fRankY, fDimShapeZ);
+      if (stridedC)
+         out << GenerateStridedBroadcastLayout(opName + "_C", fNC, PadToRank(fDimShapeC, D), fRankC, fDimShapeZ);
       out << SP << "auto const elementsPerThread_" << opName << " = Vec::all(static_cast<Idx>(1));\n";
       out << SP << "auto const elementsPerGrid_"   << opName << " = Vec::all(Idx{static_cast<Idx>(" << totalElements << ")});\n";
       out << SP << "auto const workDiv_" << opName << " = sofie_workdiv(elementsPerGrid_" << opName << ");\n";
@@ -571,6 +625,9 @@ public:
          << ", alpaka::getPtrNative(deviceBuf_" << fNZ << ")";
       for (auto &p : dynParamNames)
          out << ", static_cast<std::size_t>(" << p << ")";
+      if (stridedX) out << ", layout_" << opName << "_X";
+      if (stridedY) out << ", layout_" << opName << "_Y";
+      if (stridedC) out << ", layout_" << opName << "_C";
       out << ", static_cast<std::size_t>(" << totalElements << "));\n";
 
       return out.str();
@@ -578,7 +635,7 @@ public:
 
    EFusionMappingType GetFusionMappingType() const override
    {
-      if (fIsOutputConstant || fDimShapeZ.empty())
+      if (fIsOutputConstant || fHasStridedInput || fDimShapeZ.empty())
          return EFusionMappingType::Unsupported;
 
       if (fDimShapeX == fDimShapeZ && fDimShapeY == fDimShapeZ && fDimShapeC == fDimShapeZ)

@@ -75,8 +75,10 @@ public:
          model.AddShapeTensor(fNY, shapeData, fShape.size() == 0);
          fIsOutputConstant = true;
       }
-      if (!fIsOutputConstant)
+      if (!fIsOutputConstant) {
+         fHasStridedInput = model.IsStridedInputTensor(fNX) && !fShape.empty();
          model.AddIntermediateTensor(fNY, fType, fShape);
+      }
       if (model.Verbose()) {
          std::cout << "Cast : " << ConvertTypeToString(inputType) << " " << fNX << " -> " << ConvertTypeToString(fType);
          if (fType == ETensorType::BOOL) std::cout << " (converted from BOOL) ";
@@ -98,6 +100,15 @@ public:
        // no generated code for constant outputs
       if (fIsOutputConstant) return out.str();
 
+      if (fHasStridedInput) {
+         const bool toBool = fType == ETensorType::BOOL;
+         const std::string dstType = ConvertTypeToString(fType);
+         out << GenerateStridedUnaryLoop("op_" + opName, fNX, fNY, fShape, [&](const std::string &v) {
+            return toBool ? "(" + v + " != 0) ? 1 : 0" : "static_cast<" + dstType + ">(" + v + ")";
+         });
+         return out.str();
+      }
+
       out << SP << "for (int id = 0; id < " << length << " ; id++){\n";
 
       // need to handle bool case separatly since casting to uint8 will not give right result
@@ -110,8 +121,27 @@ public:
       return out.str();
    }
 
+   bool SupportsStridedInput() const override { return true; }
+
    std::string Generate_GPU_Kernel_ALPAKA(std::string opName) override {
       if (fIsOutputConstant) return "";
+      if (fHasStridedInput) {
+         // source and destination types differ: the strided kernel has its own signature
+         std::string op = "\n//------ CAST_STRIDED_KERNEL_ALPAKA\n";
+         op += SP + "struct CastStridedKernel" + opName + "{\n";
+         op += SP + SP + "template<typename TAcc, typename SrcT, typename DstT, std::size_t R>\n";
+         op += SP + SP + "ALPAKA_FN_ACC void operator()(TAcc const & acc, SrcT const * src, DstT * dst, std::size_t numElements, "
+                         "sofie_strided_layout<R> const layout) const {\n";
+         op += SP + SP + SP + "auto idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
+         op += SP + SP + SP + "if (idx < numElements) {\n";
+         op += SP + SP + SP + SP + "SrcT const x = src[sofie_strided_offset(layout, idx)];\n";
+         op += SP + SP + SP + SP + (fType == ETensorType::BOOL ? "dst[idx] = (x != 0) ? 1 : 0;\n"
+                                                                : "dst[idx] = static_cast<DstT>(x);\n");
+         op += SP + SP + SP + "}\n";
+         op += SP + SP + "}\n";
+         op += SP + "};\n";
+         return op;
+      }
       std::string op;
       op = "\n//------ CAST_KERNEL_ALPAKA\n";
       op += SP + "struct CastKernel"+opName+"{\n";
@@ -129,6 +159,8 @@ public:
    // distinct member variable (the struct type is already per-op: CastKernelN).
    std::string Generate_GPU_Kernel_Definitions_ALPAKA(std::string opName) override {
       if (fIsOutputConstant) return "";
+      if (fHasStridedInput)
+         return SP + "CastStridedKernel" + opName + " castKernel_" + opName + ";\n";
       return SP + "CastKernel" + opName + " castKernel_" + opName + ";\n";
    }
 
@@ -141,6 +173,9 @@ public:
       if (fShape.empty()) {
          throw std::runtime_error("SOFIE Operator Cast called to Generate without being initialized first");
       }
+
+      if (fHasStridedInput)
+         return GenerateStridedUnaryLaunch(OpName, varName, "CAST", fNX, fNY, fShape);
 
       std::stringstream out;
       auto length = ConvertDimShapeToLength(fShape);
@@ -159,12 +194,12 @@ public:
    // which correctly uses separate SrcT and DstT device buffers.
    bool IsElementwise() const override
    {
-      return !fIsOutputConstant;
+      return !fIsOutputConstant && !fHasStridedInput;
    }
 
    EFusionMappingType GetFusionMappingType() const override
    {
-      return fIsOutputConstant ? EFusionMappingType::Unsupported : EFusionMappingType::OneToOne;
+      return (fIsOutputConstant || fHasStridedInput) ? EFusionMappingType::Unsupported : EFusionMappingType::OneToOne;
    }
 
    bool SupportsFusionTypes(const std::vector<ETensorType> &inputTypes, ETensorType outputType) const override

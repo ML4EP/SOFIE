@@ -163,6 +163,10 @@ template <typename T> class ROperator_LSTM final : public ROperator {
     */
    std::string GenerateSessionMembersCode(std::string opName) override;
 
+   /*! \brief The data input can be read through its strides: it is gathered in the internal input buffer
+    */
+   bool SupportsStridedInput() const override { return true; }
+
    /*! \brief Returns the blas routines needed to compile the generated code
     */
    std::vector<std::string> GetBlasRoutines() override { return { std::string("Gemm"), std::string("Axpy") }; }
@@ -201,6 +205,11 @@ auto ROperator_LSTM<T>::Initialize(RModel &model) -> void
    if (fShapeX.size() != 3) {
       throw std::runtime_error("SOFIE LSTM Op input tensor " + fNX + " is not of 3 dimensions.");
    }
+   fHasStridedInput = model.IsStridedInputTensor(fNX);
+   for (const auto &name : fInputTensorNames)
+      if (name != fNX && model.IsStridedInputTensor(std::string(name)))
+         throw std::runtime_error("SOFIE LSTM Op - strided input is only supported for the data tensor X");
+
    if (!model.CheckIfTensorAlreadyExist(fNW)) {
       throw std::runtime_error("SOFIE LSTM Op input tensor " + fNW + "  is not found in model.");
    }
@@ -383,8 +392,10 @@ std::string ROperator_LSTM<T>::GenerateSessionMembersCode(std::string opName)
    size_t ff_size = seq_length * batch_size * fAttrHiddenSize;
    size_t hs_size = seq_length * num_directions * batch_size * fAttrHiddenSize;
 
-   if (fAttrLayout != 0) {
+   // (the input of a strided tensor is gathered in the input buffer)
+   if (fAttrLayout != 0 || fHasStridedInput)
       blocks.push_back({"input", seq_length * batch_size * input_size});
+   if (fAttrLayout != 0) {
       blocks.push_back({"initial_hidden_state", num_directions * batch_size * fAttrHiddenSize});
       blocks.push_back({"initial_cell_state", num_directions * batch_size * fAttrHiddenSize});
    }
@@ -448,17 +459,25 @@ auto ROperator_LSTM<T>::Generate(std::string OpName) -> std::string
          out << SP << fType << " " << OpName << "_" << name << "[" << size << "] = {0};\n";
    };
 
-   if (fAttrLayout == 0) {
+   if (fAttrLayout == 0 && !fHasStridedInput) {
       out << SP << fType << " const *" << OpName << "_input = tensor_" << fNX << ";\n";
    } else {
       declareBuffer("input", seq_length * batch_size * input_size);
+      if (fHasStridedInput)
+         out << GenerateStridedOffsetLambda(OpName, fNX, ConvertShapeToDim(fShapeX));
 
       out << SP << "for(size_t seq = 0; seq < " << seq_length << "; seq++) {\n";
       out << SP << SP << "for(size_t batch = 0; batch < " << batch_size << "; batch++) {\n";
       out << SP << SP << SP << "for(size_t i = 0; i < " << input_size << "; i++) {\n";
-      out << SP << SP << SP << SP << OpName << "_input[seq * " << batch_size * input_size << " + batch * " << input_size
-          << " + i] = " << "tensor_" << fNX << "[batch * " << seq_length * input_size << " + seq * " << input_size
-          << " + i];\n";
+      {
+         // logical (contiguous) index of the element of X, which is read through its strides if it is strided
+         const std::string index = (fAttrLayout == 0)
+            ? "seq * " + std::to_string(batch_size * input_size) + " + batch * " + std::to_string(input_size) + " + i"
+            : "batch * " + std::to_string(seq_length * input_size) + " + seq * " + std::to_string(input_size) + " + i";
+         out << SP << SP << SP << SP << OpName << "_input[seq * " << batch_size * input_size << " + batch * " << input_size
+             << " + i] = tensor_" << fNX << (fHasStridedInput ? "[xoff_" + OpName + "(" + index + ")]" : "[" + index + "]")
+             << ";\n";
+      }
       out << SP << SP << SP << "}\n";
       out << SP << SP << "}\n";
       out << SP << "}\n";

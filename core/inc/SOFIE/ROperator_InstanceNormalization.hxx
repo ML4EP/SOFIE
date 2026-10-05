@@ -60,8 +60,13 @@ public:
       }
 
       fType = ConvertTypeToString(model.GetTensorType(fNInput));
+      fHasStridedInput = model.IsStridedInputTensor(fNInput);
+      if (model.IsStridedInputTensor(fNScale) || model.IsStridedInputTensor(fNBias))
+         throw std::runtime_error("SOFIE - InstanceNormalization - strided input is only supported for the data tensor");
       model.AddIntermediateTensor(fNOutput, model.GetTensorType(fNInput), fShape);
    }
+
+   bool SupportsStridedInput() const override { return true; }
 
    std::string Generate(std::string) override
    {
@@ -77,6 +82,14 @@ public:
 
       std::stringstream out;
       out << "\n" << SP << "//---- InstanceNormalization " << fNOutput << "\n";
+      // a strided input is read through its strides, from the logical (contiguous) index of its elements
+      const std::string xAt = "xoff_" + fNOutput;
+      auto readX = [&](const std::string &index) {
+         return fHasStridedInput ? "tensor_" + fNInput + "[" + xAt + "(" + index + ")]"
+                                 : "tensor_" + fNInput + "[" + index + "]";
+      };
+      if (fHasStridedInput)
+         out << GenerateStridedOffsetLambda(fNOutput, fNInput, ConvertShapeToDim(fShape));
       out << SP << "for (size_t n = 0; n < " << batchSize << "; n++) {\n";
       out << SP << SP << "for (size_t c = 0; c < " << channels << "; c++) {\n";
       out << SP << SP << SP << "const size_t offset = n * " << channels * spatialSize << " + c * " << spatialSize
@@ -84,13 +97,13 @@ public:
 
       out << SP << SP << SP << fType << " mean = 0.;\n";
       out << SP << SP << SP << "for (size_t i = 0; i < " << spatialSize << "; i++) {\n";
-      out << SP << SP << SP << SP << "mean += tensor_" << fNInput << "[offset + i];\n";
+      out << SP << SP << SP << SP << "mean += " << readX("offset + i") << ";\n";
       out << SP << SP << SP << "}\n";
       out << SP << SP << SP << "mean /= " << fType << "(" << spatialSize << ");\n";
 
       out << SP << SP << SP << fType << " sum = 0.;\n";
       out << SP << SP << SP << "for (size_t i = 0; i < " << spatialSize << "; i++) {\n";
-      out << SP << SP << SP << SP << fType << " tmp = tensor_" << fNInput << "[offset + i] - mean;\n";
+      out << SP << SP << SP << SP << fType << " tmp = " << readX("offset + i") << " - mean;\n";
       out << SP << SP << SP << SP << "sum += tmp * tmp;\n";
       out << SP << SP << SP << "}\n";
       out << SP << SP << SP << fType << " invStdDev = 1 / std::sqrt(sum / " << fType << "(" << spatialSize << ") + "
@@ -99,8 +112,8 @@ public:
       out << SP << SP << SP << fType << " scale = tensor_" << fNScale << "[c];\n";
       out << SP << SP << SP << fType << " bias = tensor_" << fNBias << "[c];\n";
       out << SP << SP << SP << "for (size_t i = 0; i < " << spatialSize << "; i++) {\n";
-      out << SP << SP << SP << SP << "tensor_" << fNOutput << "[offset + i] = scale * (tensor_" << fNInput
-          << "[offset + i] - mean) * invStdDev + bias;\n";
+      out << SP << SP << SP << SP << "tensor_" << fNOutput << "[offset + i] = scale * (" << readX("offset + i")
+          << " - mean) * invStdDev + bias;\n";
       out << SP << SP << SP << "}\n";
 
       out << SP << SP << "}\n";

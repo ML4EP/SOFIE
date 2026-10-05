@@ -35,6 +35,9 @@ public:
          fOutputTensorNames = { fNY };
    }
 
+   // only the shape of the input is used: its data (and so its strides) are never read
+   bool SupportsStridedInput() const override { return true; }
+
    void Initialize(RModel& model) override {
       if (model.CheckIfTensorAlreadyExist(fNX) == false){   //input must be a graph input, or already initialized intermediate tensor
          throw std::runtime_error("SOFIE Shape Op Input Tensor " + fNX + " is not found in model");

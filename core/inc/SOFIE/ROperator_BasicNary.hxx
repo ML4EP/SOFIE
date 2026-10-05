@@ -122,6 +122,7 @@ private:
    std::vector<Dim> fDimShapeY;
 
    bool fBroadcast = false;
+   std::vector<bool> fStrided; ///< inputs which are graph inputs read through their strides (Options::kStridedInput)
 
    std::string fType;
 
@@ -214,6 +215,8 @@ public:
          return;
       for (auto &it : fNInputs) {
          fShapeInputs.push_back(model.GetDimTensorShape(it));
+         fStrided.push_back(model.IsStridedInputTensor(it) && !fShapeInputs.back().empty());
+         fHasStridedInput |= fStrided.back();
          if (fNInputs.size()> 2) {
             if (model.IsDimInputTensor(it))
                throw std::runtime_error("SOFIE BasicNary : supports only 2 inputs for dynamic tensors");
@@ -291,7 +294,9 @@ public:
 
       int nInputs = fNInputs.size();
 
-      if (nInputs == 1) {
+      if (nInputs == 1 && fStrided[0]) {
+         out << GenerateStridedUnaryLoop(OpName, fNInputs[0], fNY, fShapeInputs[0], [](const std::string &v) { return v; });
+      } else if (nInputs == 1) {
          out << SP << "std::copy(tensor_" << fNInputs[0] << ", tensor_" << fNInputs[0] << " + ";
          out << length << ", tensor_" << fNY << ");\n";
       } else {
@@ -301,6 +306,11 @@ public:
             inputStrides[i] = UTILITY::ComputeStrideFromShape(fShapeInputs[i]);
 
          auto stridesY = UTILITY::ComputeStrideFromShape(fDimShapeY);
+
+         // inputs read through the strides given to the Session
+         for (int i = 0; i < nInputs; i++)
+            if (fStrided[i])
+               out << GenerateInputStrideCode(OpName + "_" + std::to_string(i), fNInputs[i], fShapeInputs[i]);
 
          std::string compute_idx_Y;
          int nloop = 0;
@@ -343,6 +353,9 @@ public:
                for (int j = 0; j < 3; j++)
                   compute_idx_X.pop_back();
             }
+            if (fStrided[ipt] && compute_idx_X != "0")
+               compute_idx_X = GenerateStridedBroadcastIndex("stride_" + OpName + "_" + std::to_string(ipt), shape,
+                                                             shape.size(), fDimShapeY.size());
             inputs[ipt] = "tensor_" + fNInputs[ipt] + "[" + compute_idx_X + "]";
          }
 
@@ -357,6 +370,8 @@ public:
       }
       return out.str();
    }
+
+   bool SupportsStridedInput() const override { return true; }
 
    std::vector<std::string> GetStdLibs() override {return { std::string("cmath") }; }
 
@@ -391,6 +406,11 @@ public:
             anyPartial = true;
          }
       }
+      // inputs read through the strides given to the Session (a scalar input has no strides to apply)
+      std::vector<bool> strided(nIn);
+      for (size_t i = 0; i < nIn; i++)
+         strided[i] = fStrided[i] && !isScalar[i];
+
       std::string op;
       op += "\n//------ BASICNARY_KERNEL_ALPAKA\n";
       op += SP + "struct BasicNaryKernel_" + OpName + " {\n";
@@ -404,6 +424,9 @@ public:
       op += ", TOut* out";
       for (auto &p : dynParamNames)
          op += ", std::size_t const " + p;
+      for (size_t i = 0; i < nIn; i++)
+         if (strided[i])
+            op += ", sofie_strided_layout<" + std::to_string(D) + "> const layout" + std::to_string(i);
       op += ", std::size_t n) const {\n";
       op += SP + SP + SP + "auto const idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
       op += SP + SP + SP + "if (idx >= n) return;\n";
@@ -427,6 +450,7 @@ public:
          }
       }
       auto index = [&](size_t i) -> std::string {
+         if (strided[i]) return "sofie_strided_offset(layout" + std::to_string(i) + ", idx)";
          if (isContiguous[i]) return "idx";
          if (isScalar[i]) return "0";
          return "idx" + std::to_string(i);
@@ -456,6 +480,17 @@ public:
       std::stringstream out;
       std::string length = ConvertDimShapeToLength(fDimShapeY);
       out << "\n//------ BASICNARY_GPU_ALPAKA\n";
+      std::vector<bool> strided(fNInputs.size());
+      for (size_t i = 0; i < fNInputs.size(); i++) {
+         strided[i] = fStrided[i] && ConvertDimShapeToLength(fShapeInputs[i]) != "1";
+         if (!strided[i])
+            continue;
+         std::vector<Dim> padded = fShapeInputs[i];
+         if (padded.size() < fDimShapeY.size())
+            padded.insert(padded.begin(), fDimShapeY.size() - padded.size(), Dim{1});
+         out << GenerateStridedBroadcastLayout(OpName + "_" + std::to_string(i), fNInputs[i], padded,
+                                               fShapeInputs[i].size(), fDimShapeY);
+      }
       out << SP << "auto const elementsPerGrid_" << OpName << " = Vec::all(Idx{" << length << "});\n";
       out << SP << "auto const workDiv_" << OpName << " = sofie_workdiv(elementsPerGrid_" << OpName << ");\n";
       out << SP << "auto task_" << OpName << " = alpaka::createTaskKernel<Acc>(workDiv_" << OpName
@@ -465,6 +500,9 @@ public:
       out << ", alpaka::getPtrNative(deviceBuf_" << fNY << ")";
       for (auto &p : dynParamNames)
          out << ", static_cast<std::size_t>(" << p << ")";
+      for (size_t i = 0; i < fNInputs.size(); i++)
+         if (strided[i])
+            out << ", layout_" << OpName << "_" << i;
       out << ", static_cast<std::size_t>(" << length << "));\n";
       out << SP << "alpaka::enqueue(queue, task_" << OpName << ");\n";
       return out.str();

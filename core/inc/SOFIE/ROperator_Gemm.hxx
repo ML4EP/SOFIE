@@ -52,6 +52,8 @@ namespace SOFIE{
       std::vector<Dim> fDimShapeC;
       std::vector<Dim> fShapeY;
       RModel * fModel = nullptr;
+      bool fStridedA = false;  ///< A is a graph input read through its strides (Options::kStridedInput)
+      bool fStridedB = false;  ///< B is a graph input read through its strides
 
    public:
 
@@ -383,6 +385,19 @@ namespace SOFIE{
                std::cout << ConvertShapeToString(shapeY) << std::endl;
          }
 
+         // the operands A and B can be graph inputs read through their strides (Options::kStridedInput).
+         // BLAS describes a matrix by a leading dimension and a transpose flag, so the strides of an operand must have
+         // a unit stride; the plain 2D case is supported.
+         fStridedA = model.IsStridedInputTensor(fNA);
+         fStridedB = model.IsStridedInputTensor(fNB);
+         fHasStridedInput = fStridedA || fStridedB;
+         if (!fNC.empty() && model.IsStridedInputTensor(fNC))
+            throw std::runtime_error("SOFIE Gemm Op - strided input is not supported for the bias (C)");
+         if (fHasStridedInput && (fLowRank || fShapeA.size() != 2 || fShapeB.size() != 2 ||
+                                  model.GetDimTensorShape(fNA).size() != 2 || model.GetDimTensorShape(fNB).size() != 2))
+            throw std::runtime_error("SOFIE Gemm Op - strided input is only supported for a plain 2D Gemm "
+                                     "(no MatMul batching, no low rank factorization)");
+
          model.AddNeededStdLib("algorithm");
 
 
@@ -624,6 +639,47 @@ namespace SOFIE{
             }
             out << ");\n";
 
+         } else if (fType == "float" && fHasStridedInput) {
+            // A and B are read through their strides {s0, s1}: element (i,j) of the stored matrix is at i*s0 + j*s1.
+            // Row-major with s1 == 1: leading dimension s0. Column-major with s0 == 1: leading dimension s1 and the
+            // transpose flag is flipped. Without a unit stride the matrix cannot be described to BLAS.
+            auto resolve = [&](const std::string &tag, const std::string &name, bool strided,
+                               const std::vector<Dim> &shape, bool trans, const std::string &defaultLd) {
+               out << SP2 << "bool " << opName << "_trans" << tag << " = " << (trans ? "true" : "false") << ";\n";
+               out << SP2 << "size_t " << opName << "_ld" << tag << " = " << defaultLd << ";\n";
+               if (!strided)
+                  return;
+               const std::string st = "stride_" + opName + "_" + tag;
+               const std::string rows = "static_cast<size_t>(" + shape[0].GetVal() + ")";
+               const std::string cols = "static_cast<size_t>(" + shape[1].GetVal() + ")";
+               out << GenerateInputStrideCode(opName + "_" + tag, name, shape);
+               out << SP2 << "if (" << st << "[1] == 1) {\n";
+               out << SP2 << SP << opName << "_ld" << tag << " = std::max<size_t>(" << st << "[0], " << cols << ");\n";
+               out << SP2 << "} else if (" << st << "[0] == 1) {\n";
+               out << SP2 << SP << opName << "_trans" << tag << " = !" << opName << "_trans" << tag << ";\n";
+               out << SP2 << SP << opName << "_ld" << tag << " = std::max<size_t>(" << st << "[1], " << rows << ");\n";
+               out << SP2 << "} else {\n";
+               out << SP2 << SP << "throw std::runtime_error(\"SOFIE Gemm Op " << opName << " - input tensor " << name
+                   << " has strides {\" + std::to_string(" << st << "[0]) + \", \" + std::to_string(" << st
+                   << "[1]) + \"} without a unit stride, which BLAS cannot handle\");\n";
+               out << SP2 << "}\n";
+            };
+            out << SP2 << "{\n";
+            resolve("A", fNA, fStridedA, fShapeA, fAttrTransA, fAttrTransA ? m : k);
+            resolve("B", fNB, fStridedB, fShapeB, fAttrTransB, fAttrTransB ? k : n);
+            // the operands of Gemm_Call_ld are swapped: B first
+            out << SP2 << "Gemm_Call_ld(" << "tensor_" << fNY << ", " << opName << "_transB, " << opName << "_transA, "
+                << n << ", " << m << ", " << k << ", ";
+            out << std::setprecision(std::numeric_limits<float>::max_digits10) << fAttrAlpha << ", tensor_" << fNB
+                << ", " << opName << "_ldB, tensor_" << fNA << ", " << opName << "_ldA, "
+                << std::setprecision(std::numeric_limits<float>::max_digits10) << fAttrBeta << ",";
+            if (!fNC.empty() && !fBroadcastBias)
+               out << "tensor_" << fNC;
+            else
+               out << "nullptr";
+            out << ");\n";
+            out << SP2 << "}\n";
+
          } else if (fType == "float"){
 
             out << SP2 << "Gemm_Call(" << "tensor_" << fNY;
@@ -837,7 +893,59 @@ namespace SOFIE{
             pY += " + i * (" + strideYExpr + ")";
          }
 
-         if (fLowRank) {
+         if (fHasStridedInput) {
+            // ----------------------------------------------------------------
+            // plain 2D Gemm with A and/or B read through their strides {s0, s1} (Options::kStridedInput). The
+            // sofieBLAS gemm/matmul entry points always use dense leading dimensions, so the cuBLAS strided batched
+            // entry point (batchCount = 1), which takes explicit leading dimensions, is used. The bias (and the fused
+            // ReLU) are then applied by the bias kernel. As for the CPU, a strided operand needs a unit stride:
+            // row-major (s1 == 1) gives ld = s0, column-major (s0 == 1) gives ld = s1 and the transpose flag is flipped.
+            // ----------------------------------------------------------------
+            if (haveExtraC)
+               throw std::runtime_error("SOFIE Gemm Op - strided input does not support a bias with batch dimensions");
+            auto resolve = [&](const std::string &tag, const std::string &name, bool strided,
+                               const std::vector<Dim> &shape, const std::string &defaultLd) {
+               out << SP << "char " << opName << "_trans" << tag << "_rt = " << opName << "_trans" << tag << ";\n";
+               out << SP << "int " << opName << "_ld" << tag << " = " << defaultLd << ";\n";
+               if (!strided)
+                  return;
+               const std::string st = "stride_" + opName + "_" + tag;
+               const std::string rows = "static_cast<size_t>(" + shape[0].GetVal() + ")";
+               const std::string cols = "static_cast<size_t>(" + shape[1].GetVal() + ")";
+               out << GenerateInputStrideCode(opName + "_" + tag, name, shape);
+               out << SP << "if (" << st << "[1] == 1) {\n";
+               out << SP << SP << opName << "_ld" << tag << " = static_cast<int>(std::max<size_t>(" << st << "[0], " << cols << "));\n";
+               out << SP << "} else if (" << st << "[0] == 1) {\n";
+               out << SP << SP << opName << "_trans" << tag << "_rt = (" << opName << "_trans" << tag << " == 'n') ? 't' : 'n';\n";
+               out << SP << SP << opName << "_ld" << tag << " = static_cast<int>(std::max<size_t>(" << st << "[1], " << rows << "));\n";
+               out << SP << "} else {\n";
+               out << SP << SP << "throw std::runtime_error(\"SOFIE Gemm Op " << opName << " - input tensor " << name
+                   << " has strides {\" + std::to_string(" << st << "[0]) + \", \" + std::to_string(" << st
+                   << "[1]) + \"} without a unit stride, which BLAS cannot handle\");\n";
+               out << SP << "}\n";
+            };
+            resolve("A", fNA, fStridedA, fShapeA, fAttrTransA ? opName + "_m" : opName + "_k");
+            resolve("B", fNB, fStridedB, fShapeB, fAttrTransB ? opName + "_k" : opName + "_n");
+            out << SP << "blas.gemmStridedBatched("
+                << opName << "_transB_rt, " << opName << "_transA_rt, "
+                << opName << "_n, " << opName << "_m, " << opName << "_k, " << opName << "_alpha, "
+                << pB << ", " << opName << "_ldB, 0, "
+                << pA << ", " << opName << "_ldA, 0, "
+                << opName << "_beta, " << pY << ", " << opName << "_n, 0, 1);\n";
+            if (!fNC.empty()) {
+               out << SP << "auto const elementsPerGrid_" << opName << "_bias = Vec::all(Idx{static_cast<Idx>(" << lengthGemm << ")});\n";
+               out << SP << "auto const workDiv_" << opName << "_bias = sofie_workdiv(elementsPerGrid_" << opName << "_bias);\n";
+               out << SP << "auto task_" << opName << "_bias = alpaka::createTaskKernel<Acc>(workDiv_" << opName << "_bias, gemmBiasAddKernel, "
+                   << "alpaka::getPtrNative(deviceBuf_" << fNY << "), "
+                   << "alpaka::getPtrNative(deviceBuf_" << fNC << "), "
+                   << "static_cast<std::size_t>(" << m << "), static_cast<std::size_t>(" << n << "), "
+                   << "static_cast<std::size_t>(" << sC[0].GetVal() << "), static_cast<std::size_t>(" << sC[1].GetVal() << "), "
+                   << "false, "
+                   << (fActivation == EActivationType::RELU ? "true" : "false") << ", "
+                   << "static_cast<Idx>(" << lengthGemm << "));\n";
+               out << SP << "alpaka::enqueue(queue, task_" << opName << "_bias);\n";
+            }
+         } else if (fLowRank) {
             // ----------------------------------------------------------------
             // low rank factorized GEMM: B (k x n) ~= Bin (k x rank) * Bout (rank x n).
             // Restricted (in Initialize()) to the plain 2D case (no MatMul batch
@@ -1028,6 +1136,8 @@ namespace SOFIE{
 
          return out.str();
       }
+
+      bool SupportsStridedInput() const override { return true; }
 
       std::vector<std::string> GetBlasRoutines() override { return { std::string("Gemm"), std::string("Gemv") }; }
       std::string GetFusableOutputTensorName() override {

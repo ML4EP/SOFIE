@@ -42,11 +42,14 @@ public:
          throw std::runtime_error("SOFIE Elu Op Input Tensor is not found in model");
       }
       fShape = model.GetDimTensorShape(fNX);
+      fHasStridedInput = model.IsStridedInputTensor(fNX) && !fShape.empty();
       model.AddIntermediateTensor(fNY, model.GetTensorType(fNX), fShape);
       if (model.Verbose()) {
          std::cout << "Elu : " << fNX << " -> " << fNY << " " << ConvertDimShapeToString(fShape) << std::endl;
       }
    }
+
+   bool SupportsStridedInput() const override { return true; }
 
    std::string Generate(std::string OpName) override
    {
@@ -61,6 +64,12 @@ public:
           << falpha << ";\n";
 
       out << "\n//------ ELU \n";
+      if (fHasStridedInput) {
+         out << GenerateStridedUnaryLoop(OpName, fNX, fNY, fShape, [&](const std::string &v) {
+            return "((" + v + " >= 0 )? " + v + " : " + OpName + "_alpha * (std::exp(" + v + ") - 1))";
+         });
+         return out.str();
+      }
       out << SP << "for (int id = 0; id < " << length << " ; id++){\n";
       out << SP << SP << "tensor_" << fNY << "[id] = ((tensor_" << fNX << "[id] >= 0 )? tensor_" << fNX << "[id] : "<< OpName << "_alpha * (std::exp(tensor_"<< fNX<<"[id]) - 1));\n";
       out << SP << "}\n";
@@ -71,6 +80,11 @@ public:
 
    // elu gpu kernel
    std::string Generate_GPU_Kernel_ALPAKA(std::string /*opName*/) override {
+      if (fHasStridedInput)
+         return GenerateStridedUnaryKernel(
+            "EluStridedKernel", "ELU",
+            [](const std::string &v) { return v + " >= T(0) ? " + v + " : alpha * (exp(" + v + ") - T(1))"; },
+            ", T alpha");
       std::string op;
       op = "\n//------ ELU_KERNEL_ALPAKA\n";
       op += "struct EluKernel {\n";
@@ -84,6 +98,8 @@ public:
    }
 
    std::string Generate_GPU_Kernel_Definitions_ALPAKA(std::string /*opName*/) override {
+      if (fHasStridedInput)
+         return SP + "EluStridedKernel eluStridedKernel;\n";
       return SP + "EluKernel eluKernel;\n";
    }
 
@@ -95,6 +111,14 @@ public:
       std::stringstream out;
       std::string length = ConvertDimShapeToLength(fShape);
       out << "\n//------ ELU_GPU_ALPAKA\n";
+      if (fHasStridedInput)
+         return GenerateStridedUnaryLaunch(OpName, "eluStridedKernel", "ELU", fNX, fNY, fShape,
+                                           ", static_cast<float>(" +
+                                              [&] {
+                                                 std::stringstream s;
+                                                 s << std::setprecision(std::numeric_limits<float>::max_digits10) << falpha;
+                                                 return s.str();
+                                              }() + ")");
       out << SP << "auto const elementsPerThread_"<<fNX<<" = Vec::all(static_cast<Idx>(1));\n";
       out << SP << "auto const elementsPerGrid_"<<fNX<<" = Vec::all(Idx{"<< length << "});\n";
       out << SP << "auto const workDiv_" << fNX << " = sofie_workdiv(elementsPerGrid_" << fNX << ");\n";

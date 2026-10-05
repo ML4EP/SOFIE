@@ -31,7 +31,13 @@ private:
 
    std::vector<Dim> fShapeX;
    std::vector<Dim> fShapeI;
+   std::vector<Dim> fShapeU;
    std::vector<Dim> fShapeY;
+
+   // inputs which are graph inputs read through their strides (Options::kStridedInput)
+   bool fStridedX = false;
+   bool fStridedI = false;
+   bool fStridedU = false;
 
    // define reduction function. Possibilities are:
    // none (default), add, mul, max, min
@@ -83,6 +89,11 @@ public:
       fShapeX = model.GetDimTensorShape(fNX);
       fShapeI = model.GetDimTensorShape(fNI);
       auto shapeU = model.GetDimTensorShape(fNU);
+      fShapeU = shapeU;
+      fStridedX = model.IsStridedInputTensor(fNX) && !fShapeX.empty();
+      fStridedI = model.IsStridedInputTensor(fNI) && !fShapeI.empty();
+      fStridedU = model.IsStridedInputTensor(fNU) && !shapeU.empty();
+      fHasStridedInput = fStridedX || fStridedI || fStridedU;
       if (model.Verbose()) {
          std::cout << "ScatterElements: input: " << ConvertDimShapeToString(fShapeX)
                                                 << " indices " << ConvertDimShapeToString(fShapeI)
@@ -123,6 +134,8 @@ public:
       if (model.Verbose())
          std::cout << "\t----> " << ConvertDimShapeToString(fShapeY) << std::endl;
    }
+
+   bool SupportsStridedInput() const override { return true; }
 
    std::string GenerateInitCode() override {
       std::stringstream out;
@@ -213,6 +226,13 @@ public:
 
       auto length = ConvertDimShapeToLength(fShapeY);
 
+      // inputs read through the strides given to the Session, from the logical (contiguous) index of their elements
+      const std::string id = "op_" + opName;
+      if (fStridedI)
+         out << GenerateStridedOffsetLambda(id + "_I", fNI, fShapeI);
+      if (fStridedU)
+         out << GenerateStridedOffsetLambda(id + "_U", fNU, fShapeU);
+
       auto tensorIndex = [](const std::vector<Dim> & stride, const std::vector<std::string> & idx) {
          std::stringstream strst;
          int dims = idx.size();
@@ -241,7 +261,10 @@ public:
 
 
       // copy first input in output (maybe can be avoided??)
-      out << SP << "std::copy(tensor_" << fNX << ", tensor_" << fNX << " + " << length << ", tensor_" << fNY << ");\n";
+      if (fStridedX)
+         out << GenerateStridedUnaryLoop(id + "_cp", fNX, fNY, fShapeX, [](const std::string &v) { return v; });
+      else
+         out << SP << "std::copy(tensor_" << fNX << ", tensor_" << fNX << " + " << length << ", tensor_" << fNY << ");\n";
 
       // loop on tensor rank
       int dims = fShapeY.size();
@@ -264,7 +287,10 @@ public:
       for (int j = 0; j <= dims; j++) out << SP;
       out << "int updateIndex = " << tensorIndexOpt(sdx,idx) << ";\n";
       for (int j = 0; j <= dims; j++) out << SP;
-      out << "int iAxis = tensor_" << fNI << "[updateIndex];\n";
+      if (fStridedI)
+         out << "int iAxis = tensor_" << fNI << "[xoff_" << id << "_I(updateIndex)];\n";
+      else
+         out << "int iAxis = tensor_" << fNI << "[updateIndex];\n";
       for (int j = 0; j <= dims; j++) out << SP;
       out << "if (iAxis < 0) iAxis += " << fShapeY[fAxis].GetVal() << ";\n";
       idx[fAxis] = "iAxis";
@@ -272,7 +298,9 @@ public:
       out << "int  outIndex = " << tensorIndex(strideY, idx) << ";\n";
       for (int j = 0; j <= dims; j++) out << SP;
       out << "tensor_" << fNY << "[outIndex] = "
-         << ReductionFunction(std::string("tensor_") + fNY + "[outIndex]", std::string("tensor_") + fNU + "[updateIndex]") << ";\n";
+         << ReductionFunction(std::string("tensor_") + fNY + "[outIndex]",
+                              std::string("tensor_") + fNU + (fStridedU ? "[xoff_" + id + "_U(updateIndex)]" : std::string("[updateIndex]")))
+         << ";\n";
 
       for (int i = dims; i > 0; i--) {
          for (int j = 0; j < i; j++) out << SP;
@@ -315,6 +343,17 @@ public:
 
       std::string totalElementsStr = ConvertDimShapeToLength(fShapeI);
 
+      // the data input is copied in the output through its strides, before the updates are scattered
+      std::string copyKernel;
+      if (fStridedX)
+         copyKernel = GenerateStridedUnaryKernel("ScatterElementsCopyKernel_" + opName, "SCATTERELEMENTS_COPY",
+                                                 [](const std::string &v) { return v; });
+      // the updates (and the indices of the atomic kernel) read through the strides given to the Session
+      const std::string layoutParams =
+         std::string(fStridedI && !fUseSegmentedReduction ? SP + SP + SP + "sofie_strided_layout<" + std::to_string(D) + "> const layoutI,\n" : "") +
+         std::string(fStridedU ? SP + SP + SP + "sofie_strided_layout<" + std::to_string(fShapeU.size()) + "> const layoutU,\n" : "");
+      const std::string uAt = fStridedU ? "U[sofie_strided_offset(layoutU, elem_idx)]" : "U[elem_idx]";
+
       // ---- segmented-add path (only when index tensor is static/constant) ----
       if (fUseSegmentedReduction) {
          // Number of output rows along the scatter axis.
@@ -324,7 +363,8 @@ public:
          std::string featStride = strideI[D - 1].GetVal();   // stride of last dim
 
          std::string op;
-         op  = "\n//------ SCATTERELEMENTS_SEGMENTED_ADD_KERNEL_ALPAKA\n";
+         op  = copyKernel;
+         op += "\n//------ SCATTERELEMENTS_SEGMENTED_ADD_KERNEL_ALPAKA\n";
          op += "// One thread per output-row × feature column.\n";
          op += "// Reads updates in sorted order — no atomics needed.\n";
          op += SP + "struct ScatterElementsKernel_" + opName + " {\n";
@@ -337,6 +377,7 @@ public:
          op += SP + SP + SP + "int32_t const* sortPerm,\n";   // argsort of I
          for (auto &p : dynParamNames)
             op += SP + SP + SP + "std::size_t const " + p + ",\n";
+         op += layoutParams;
          op += SP + SP + SP + "std::size_t const totalUpdates,\n";
          op += SP + SP + SP + "std::size_t const numFeatures) const {\n\n";
 
@@ -359,7 +400,7 @@ public:
          op += SP + SP + SP + SP + "for (std::size_t k = lo; k < totalUpdates; ++k) {\n";
          op += SP + SP + SP + SP + SP + "if (static_cast<std::size_t>(I_sorted[k * numFeatures]) != out_row) break;\n";
          op += SP + SP + SP + SP + SP + "std::size_t const perm_k = static_cast<std::size_t>(sortPerm[k * numFeatures + feat]);\n";
-         op += SP + SP + SP + SP + SP + "acc_val += U[perm_k];\n";
+         op += SP + SP + SP + SP + SP + "acc_val += " + std::string(fStridedU ? "U[sofie_strided_offset(layoutU, perm_k)]" : "U[perm_k]") + ";\n";
          op += SP + SP + SP + SP + "}\n";
          op += SP + SP + SP + SP + "Y[out_row * numFeatures + feat] = acc_val;\n";
          op += SP + SP + SP + "}\n";
@@ -369,8 +410,8 @@ public:
       }
 
       // ---- original atomic kernel (non-add reductions) ----
-      std::string op;
-      op  = "\n//------ SCATTERELEMENTS_KERNEL_ALPAKA\n";
+      std::string op = copyKernel;
+      op += "\n//------ SCATTERELEMENTS_KERNEL_ALPAKA\n";
       op += SP + "struct ScatterElementsKernel_" + opName + " {\n";
       op += SP + SP + "template<typename TAcc, typename T>\n";
       op += SP + SP + "ALPAKA_FN_ACC void operator()(\n";
@@ -380,6 +421,7 @@ public:
       op += SP + SP + SP + "T const* U,\n";
       for (auto &p : dynParamNames)
          op += SP + SP + SP + "std::size_t const " + p + ",\n";
+      op += layoutParams;
       op += SP + SP + SP + "std::size_t const totalElements) const {\n\n";
 
       op += SP + SP + SP + "auto const global_thread_idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
@@ -397,7 +439,7 @@ public:
       }
       op += "\n";
 
-      op += SP + SP + SP + SP + "int64_t iAxis = I[elem_idx];\n";
+      op += SP + SP + SP + SP + "int64_t iAxis = " + std::string(fStridedI ? "I[sofie_strided_offset(layoutI, elem_idx)]" : "I[elem_idx]") + ";\n";
       op += SP + SP + SP + SP + "if (iAxis < 0) iAxis += " + fShapeY[fAxis].GetVal() + ";\n\n";
 
       op += SP + SP + SP + SP + "std::size_t const out_idx =\n";
@@ -410,15 +452,15 @@ public:
       }
 
       if (fReduction.empty() || fReduction == "none") {
-         op += SP + SP + SP + SP + "Y[out_idx] = U[elem_idx];\n";
+         op += SP + SP + SP + SP + "Y[out_idx] = " + uAt + ";\n";
       } else if (fReduction == "add") {
-         op += SP + SP + SP + SP + "alpaka::atomicAdd(acc, &Y[out_idx], U[elem_idx]);\n";
+         op += SP + SP + SP + SP + "alpaka::atomicAdd(acc, &Y[out_idx], " + uAt + ");\n";
       } else if (fReduction == "mul") {
-         op += SP + SP + SP + SP + "alpaka::atomicMul(acc, &Y[out_idx], U[elem_idx]);\n";
+         op += SP + SP + SP + SP + "alpaka::atomicMul(acc, &Y[out_idx], " + uAt + ");\n";
       } else if (fReduction == "max") {
-         op += SP + SP + SP + SP + "alpaka::atomicMax(acc, &Y[out_idx], U[elem_idx]);\n";
+         op += SP + SP + SP + SP + "alpaka::atomicMax(acc, &Y[out_idx], " + uAt + ");\n";
       } else if (fReduction == "min") {
-         op += SP + SP + SP + SP + "alpaka::atomicMin(acc, &Y[out_idx], U[elem_idx]);\n";
+         op += SP + SP + SP + SP + "alpaka::atomicMin(acc, &Y[out_idx], " + uAt + ");\n";
       }
 
       op += SP + SP + SP + "}\n";
@@ -430,7 +472,10 @@ public:
 
 std::string Generate_GPU_Kernel_Definitions_ALPAKA(std::string opName) override {
     opName = "op_" + opName;
-    return SP + "ScatterElementsKernel_" + opName + " scatterElementsKernel_" + opName + ";\n";
+    std::string defs = SP + "ScatterElementsKernel_" + opName + " scatterElementsKernel_" + opName + ";\n";
+    if (fStridedX)
+       defs += SP + "ScatterElementsCopyKernel_" + opName + " scatterElementsCopyKernel_" + opName + ";\n";
+    return defs;
 }
 
 std::string Generate_GPU_ALPAKA(std::string opName, const std::vector<std::string> &dynParamNames) override {
@@ -446,7 +491,20 @@ std::string Generate_GPU_ALPAKA(std::string opName, const std::vector<std::strin
 
     // Copy input → output (seeds the accumulation buffer, then scatter adds to it).
     // No wait needed here — ALPAKA's in-order queue ensures ordering.
-    out << SP << "alpaka::memcpy(queue, deviceBuf_" << fNY << ", deviceBuf_" << fNX << ");\n";
+    if (fStridedX)
+       out << GenerateStridedUnaryLaunch(opName + "_copy", "scatterElementsCopyKernel_" + opName, "SCATTERELEMENTS_COPY", fNX,
+                                         fNY, fShapeX);
+    else
+       out << SP << "alpaka::memcpy(queue, deviceBuf_" << fNY << ", deviceBuf_" << fNX << ");\n";
+    if (fStridedI && !fUseSegmentedReduction)
+       out << GenerateStridedBroadcastLayout(opName + "_I", fNI, fShapeI, fShapeI.size(), fShapeI);
+    if (fStridedU)
+       out << GenerateStridedBroadcastLayout(opName + "_U", fNU, fShapeU, fShapeU.size(), fShapeU);
+    std::string layoutArgs;
+    if (fStridedI && !fUseSegmentedReduction)
+       layoutArgs += ", layout_" + opName + "_I";
+    if (fStridedU)
+       layoutArgs += ", layout_" + opName + "_U";
 
     if (fUseSegmentedReduction) {
        // ---- segmented-add path: atomic-free, uses pre-sorted index buffers ----
@@ -468,6 +526,7 @@ std::string Generate_GPU_ALPAKA(std::string opName, const std::vector<std::strin
            << ", alpaka::getPtrNative(deviceBuf_" << fNI << "_sortPerm)";
        for (auto &p : dynParamNames)
           out << ", static_cast<std::size_t>(" << p << ")";
+       out << layoutArgs;
        out << ", static_cast<Idx>(" << numRows << ")"
            << ", static_cast<Idx>(" << numFeatures << "));\n";
        out << SP << "alpaka::enqueue(queue, task_" << opName << ");\n";
@@ -483,6 +542,7 @@ std::string Generate_GPU_ALPAKA(std::string opName, const std::vector<std::strin
            << ", alpaka::getPtrNative(deviceBuf_" << fNU << ")";
        for (auto &p : dynParamNames)
           out << ", static_cast<std::size_t>(" << p << ")";
+       out << layoutArgs;
        out << ", static_cast<Idx>(" << totalElements << "));\n";
        out << SP << "alpaka::enqueue(queue, task_" << opName << ");\n";
     }

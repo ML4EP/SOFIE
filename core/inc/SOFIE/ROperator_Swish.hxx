@@ -31,8 +31,12 @@ public:
          throw std::runtime_error("SOFIE Swish Op Input Tensor is not found in model");
       }
       fShape = model.GetDimTensorShape(fNX);
+      fHasStridedInput = model.IsStridedInputTensor(fNX) && !fShape.empty();
       model.AddIntermediateTensor(fNY, model.GetTensorType(fNX), fShape);
    }
+
+   bool SupportsStridedInput() const override { return true; }
+
 
 
    std::string Generate(std::string OpName) override {
@@ -42,6 +46,11 @@ public:
       }
       std::stringstream out;
       std::string length = ConvertDimShapeToLength(fShape);
+      if (fHasStridedInput) {
+         out << GenerateStridedUnaryLoop(OpName, fNX, fNY, fShape,
+                                         [](const std::string &v) { return v + " / (1 + std::exp( - " + v + "))"; });
+         return out.str();
+      }
       out << "\t" << "for (int id = 0; id < " << length << " ; id++){\n";
       out << "\t\t" << "tensor_" << fNY << "[id] = tensor_" << fNX <<"[id] / (1 + std::exp( - tensor_"  << fNX << "[id]));\n";
       out << "\t}\n";

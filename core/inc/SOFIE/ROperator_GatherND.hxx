@@ -27,6 +27,10 @@ private:
 
    std::string fType;
 
+   // data and indices tensors which are graph inputs read through their strides (Options::kStridedInput)
+   bool fStridedX = false;
+   bool fStridedIndices = false;
+
    static std::string sz(const std::string &e) { return "static_cast<std::size_t>(" + e + ")"; }
 
 public:
@@ -46,6 +50,9 @@ public:
          std::cout << "GatherND - initial shape " << ConvertDimShapeToString(fShapeX) << " shape of indices "
                << ConvertDimShapeToString(model.GetDimTensorShape(fNIndices)) << std::endl;
       fShapeIndices = model.GetDimTensorShape(fNIndices);
+      fStridedX = model.IsStridedInputTensor(fNX) && !fShapeX.empty();
+      fStridedIndices = model.IsStridedInputTensor(fNIndices) && !fShapeIndices.empty();
+      fHasStridedInput = fStridedX || fStridedIndices;
       size_t q = fShapeIndices.size();
       size_t r = fShapeX.size();
 
@@ -102,6 +109,8 @@ public:
 
    }
 
+   bool SupportsStridedInput() const override { return true; }
+
    std::string Generate(std::string opName) override {
       if (fIsOutputConstant) {
          return "//---------------------------------------\n";
@@ -109,6 +118,12 @@ public:
       opName = "op_" + opName;
       std::stringstream out;
       out << "//--------- GatherND " << opName << " --> " << ConvertDimShapeToString(fShapeY) << "\n";
+      // inputs read through the strides given to the Session, from the logical (contiguous) index of their elements
+      const std::string xAt = "xoff_" + opName + "_X", iAt = "xoff_" + opName + "_I";
+      if (fStridedX)
+         out << GenerateStridedOffsetLambda(opName + "_X", fNX, fShapeX);
+      if (fStridedIndices)
+         out << GenerateStridedOffsetLambda(opName + "_I", fNIndices, fShapeIndices);
       size_t r = fShapeX.size();
       size_t q = fShapeIndices.size();
       auto stridesX = UTILITY::ComputeStrideFromShape(fShapeX);
@@ -160,7 +175,10 @@ public:
             idIndex.empty() ? std::to_string(l) : (l > 0 ? idIndex + " + " + std::to_string(l) : idIndex);
          for (size_t k = 0; k <= q - 1; k++)
             out << SP;
-         out << "int64_t index_" << l << " = tensor_" << fNIndices << "[" << indexIndex << "];\n";
+         if (fStridedIndices)
+            out << "int64_t index_" << l << " = tensor_" << fNIndices << "[" << iAt << "(" << indexIndex << ")];\n";
+         else
+            out << "int64_t index_" << l << " = tensor_" << fNIndices << "[" << indexIndex << "];\n";
          for (size_t k = 0; k <= q - 1; k++)
             out << SP;
          out << "if (index_" << l << " < 0) index_" << l << " += " << fShapeX[fBatchDims + l] << ";\n";
@@ -178,7 +196,12 @@ public:
       for (size_t k = 0; k <= q - 1; k++) out << SP;
       if (ss == r - fBatchDims) {
          out << "tensor_" << fNY << "[" << outIndex << "] = "
-             << "tensor_" << fNX << "[inputIndex];\n";
+             << "tensor_" << fNX << (fStridedX ? "[" + xAt + "(inputIndex)]" : std::string("[inputIndex]")) << ";\n";
+      } else if (fStridedX) {
+         // the slice is not contiguous in memory: copy it element by element
+         out << "for (size_t s = 0; s < " << stridesX[fBatchDims + ss - 1] << "; s++)\n";
+         for (size_t k = 0; k <= q; k++) out << SP;
+         out << "tensor_" << fNY << "[" << outIndex << " + s] = tensor_" << fNX << "[" << xAt << "(inputIndex + s)];\n";
       } else {
          out << "std::copy(tensor_" << fNX << " + inputIndex, tensor_" << fNX << " + inputIndex + "
              << stridesX[fBatchDims + ss - 1] << ","
@@ -224,6 +247,10 @@ public:
       op += SP + SP + SP + "T* __restrict__ output,\n";
       for (auto &p : dynParamNames)
          op += SP + SP + SP + "std::size_t const " + p + ",\n";
+      if (fStridedX)
+         op += SP + SP + SP + "sofie_strided_layout<" + std::to_string(r) + "> const layoutX,\n";
+      if (fStridedIndices)
+         op += SP + SP + SP + "sofie_strided_layout<" + std::to_string(q) + "> const layoutIndices,\n";
       op += SP + SP + SP + "std::size_t const totalElements) const {\n\n";
 
       op += SP + SP + SP + "auto const global_thread_idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
@@ -269,8 +296,11 @@ public:
          size_t data_axis  = b + k;
          op += SP + SP + SP + SP + "{\n";
          op += SP + SP + SP + SP + SP
-             + "int64_t idx_val = indices[idx_base + "
-             + std::to_string(idx_offset) + "u];\n";
+             + "int64_t idx_val = "
+             + (fStridedIndices
+                   ? StridedKernelRead("indices", "layoutIndices", "idx_base + " + std::to_string(idx_offset) + "u")
+                   : "indices[idx_base + " + std::to_string(idx_offset) + "u]")
+             + ";\n";
          op += SP + SP + SP + SP + SP
              + "if (idx_val < 0) idx_val += "
              + fShapeX[data_axis].GetVal() + ";\n";
@@ -290,7 +320,8 @@ public:
       }
       op += "\n";
 
-      op += SP + SP + SP + SP + "output[elem_idx] = data[data_idx];\n";
+      op += SP + SP + SP + SP + "output[elem_idx] = "
+            + (fStridedX ? StridedKernelRead("data", "layoutX", "data_idx") : std::string("data[data_idx]")) + ";\n";
       op += SP + SP + SP + "}\n";
       op += SP + SP + "}\n";
       op += SP + "};\n";
@@ -314,6 +345,11 @@ public:
 
       std::stringstream out;
       out << "\n//------ GATHERND_GPU_ALPAKA\n";
+      if (fStridedX)
+         out << GenerateStridedBroadcastLayout(opName + "_X", fNX, fShapeX, fShapeX.size(), fShapeX);
+      if (fStridedIndices)
+         out << GenerateStridedBroadcastLayout(opName + "_I", fNIndices, fShapeIndices, fShapeIndices.size(),
+                                               fShapeIndices);
       out << SP << "auto const elementsPerThread_" << opName << " = Vec::all(static_cast<Idx>(1));\n";
       out << SP << "auto const elementsPerGrid_"   << opName << " = Vec::all(Idx{static_cast<Idx>(" << totalElements << ")});\n";
       out << SP << "auto const workDiv_" << opName << " = sofie_workdiv(elementsPerGrid_" << opName << ");\n";
@@ -324,6 +360,10 @@ public:
           << ", alpaka::getPtrNative(deviceBuf_" << fNY << ")";
       for (auto &p : dynParamNames)
          out << ", static_cast<std::size_t>(" << p << ")";
+      if (fStridedX)
+         out << ", layout_" << opName << "_X";
+      if (fStridedIndices)
+         out << ", layout_" << opName << "_I";
       out << ", static_cast<Idx>(" << totalElements << "));\n";
       out << SP <<"alpaka::wait(queue);\n";
       return out.str();

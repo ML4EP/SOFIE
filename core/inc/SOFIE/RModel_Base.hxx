@@ -26,6 +26,9 @@ enum class Options {
    kLowRankFactorize = 0x40,
    kKernelOnly = 0x80,
    kSafetensorsWeightFile = 0x100,
+   // generate a Session whose constructor accepts the strides of the input tensors; the operators consuming
+   // the graph inputs read them through these strides (no copy to contiguous memory)
+   kStridedInput = 0x200,
 };
 
 // Optimization levels inspired by ONNXRuntime.
@@ -71,6 +74,7 @@ protected:
    bool fUseWeightFile = true;
    bool fUseSession = true;
    bool fKernelOnly = false;
+   bool fStridedInput = false; ///< the Session accepts the strides of the input tensors (Options::kStridedInput)
    bool fIsGNN = false;
    bool fIsGNNComponent = false;
 
