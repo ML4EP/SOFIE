@@ -377,6 +377,9 @@ bool RModel::IsDimInputTensor(const std::string& tensorName) const {
 bool RModel::IsStridedInputTensor(const std::string &tensorName) const {
    if (!fStridedInput)
       return false;
+   // a sub-graph (e.g. the branch of an If) reads the inputs of the main model, through the same strides
+   if (fIsSubGraph && fParentGraph)
+      return fParentGraph->IsStridedInputTensor(tensorName);
    std::string name = UTILITY::Clean_name(tensorName);
    return std::find(fInputTensorNames.begin(), fInputTensorNames.end(), name) != fInputTensorNames.end();
 }
@@ -841,11 +844,14 @@ void RModel::InitializeSubGraph(std::shared_ptr<RModel>  graph) {
    //this needs to be done before initializing
    graph->fParentGraph = this;
    graph->fIsSubGraph = true;
+   // the operators of the sub-graph read the strided inputs of the main model
+   graph->fStridedInput = fStridedInput;
 
    graph->Initialize(fBatchSize, fVerbose);
-   // set the same options as parent model
-   graph->fWeightFile = fWeightFile;
-   graph->fUseWeightFile = fUseWeightFile;
+   // set the same options as parent model. The weights of a sub-graph are not read from the weight file of the
+   // parent (which only contains its own tensors): they are embedded in the generated code as constant tensors
+   graph->fWeightFile = WeightFileType::None;
+   graph->fUseWeightFile = false;
    graph->fUseSession = fUseSession;
    // add needed blas routines and libs
    std::vector<std::string> blasRoutines;
@@ -863,6 +869,15 @@ void RModel::InitializeSubGraph(std::shared_ptr<RModel>  graph) {
 
    // clean graph name
    graph->fName = UTILITY::Clean_name(graph->fName);
+   // the names of the sub-graphs of a model must be unique, since they name their Session members
+   // (e.g. the branches of two If operators are often both called then_branch / else_branch)
+   const std::string baseName = graph->fName;
+   auto nameExists = [&](const std::string &name) {
+      return std::any_of(fSubGraphs.begin(), fSubGraphs.end(),
+                         [&](const auto &g) { return g != graph && g->fName == name; });
+   };
+   for (int n = 1; nameExists(graph->fName); n++)
+      graph->fName = baseName + "_" + std::to_string(n);
 
 }
 
@@ -1255,14 +1270,23 @@ std::string GetMemberNameForDimShape(std::string name)
 // given in the `inputStrides` argument (one array per input tensor, in the order of the inputs)
 std::string RModel::GenerateInputStrideInitCode() const
 {
+   // the strides are given for the input tensors of the main model. A sub-graph (e.g. the branch of an If) reads
+   // some of them: it takes the strides of the inputs it has in common with the main model
+   const RModel *mainModel = this;
+   while (mainModel->fIsSubGraph && mainModel->fParentGraph)
+      mainModel = mainModel->fParentGraph;
+   const auto &mainInputs = mainModel->fInputTensorNames;
+
    std::string code;
    const std::string sp = "   ";
    code += sp + "if (!inputStrides.empty()) {\n";
-   code += sp + sp + "if (inputStrides.size() != " + std::to_string(fInputTensorNames.size()) + ")\n";
-   code += sp + sp + sp + "throw std::runtime_error(\"sofie: expected " + std::to_string(fInputTensorNames.size()) +
+   code += sp + sp + "if (inputStrides.size() != " + std::to_string(mainInputs.size()) + ")\n";
+   code += sp + sp + sp + "throw std::runtime_error(\"sofie: expected " + std::to_string(mainInputs.size()) +
            " input stride array(s), one per input tensor\");\n";
-   for (size_t i = 0; i < fInputTensorNames.size(); i++) {
-      const auto &name = fInputTensorNames[i];
+   for (size_t i = 0; i < mainInputs.size(); i++) {
+      const auto &name = mainInputs[i];
+      if (std::find(fInputTensorNames.begin(), fInputTensorNames.end(), name) == fInputTensorNames.end())
+         continue;
       const size_t rank = GetDimTensorShape(name).size();
       const std::string member = GetInputStrideMember(name);
       code += sp + sp + member + " = inputStrides[" + std::to_string(i) + "];\n";
@@ -1485,8 +1509,6 @@ void RModel::GenerateSessionCode()
 
    // strides of the input tensors (in elements), as given to the constructor. Empty means contiguous input
    if (fStridedInput) {
-      if (!fSubGraphs.empty())
-         throw std::runtime_error("sofie: Options::kStridedInput is not supported for models with subgraphs");
       fGC += "\n//   strides of the input tensors (empty = contiguous)\n";
       for (const auto &name : fInputTensorNames)
          fGC += "std::vector<size_t> " + GetInputStrideMember(name) + ";\n";
@@ -1559,6 +1581,8 @@ void RModel::GenerateSessionCode()
       // store the strides of the input tensors
       if (fStridedInput) {
          fGC += GenerateInputStrideInitCode();
+         for (auto &graph : fSubGraphs)
+            fGC += "   fSession_" + graph->fName + ".SetInputStrides(inputStrides);\n";
       }
 
       if (fUseWeightFile) {
@@ -1582,6 +1606,15 @@ void RModel::GenerateSessionCode()
          AddNeededHelperFunction("SafetensorsBlob");
          fGC += sessionName + "(SafetensorsBlob" + dynParamDecls + ")\n";
          fGC += "      : " + sessionName + "(std::string{}" + dynParamArgs + ") {}\n\n";
+      }
+
+      // the session of a sub-graph is created by the session of the main model, which gives it the strides
+      if (fStridedInput && fIsSubGraph) {
+         fGC += "void SetInputStrides(std::vector<std::vector<size_t>> const &inputStrides) {\n";
+         fGC += GenerateInputStrideInitCode();
+         for (auto &graph : fSubGraphs)
+            fGC += "   fSession_" + graph->fName + ".SetInputStrides(inputStrides);\n";
+         fGC += "}\n\n";
       }
 
       fGC += "void SetWeightsToZero() {\n";
@@ -1609,7 +1642,9 @@ void RModel::GenerateSessionCode()
    if (fUseSession && !fIsGNNComponent) {
       fGC += "};   // end of Session\n\n";
 
-      GenerateRequiredInputTensorInfo();
+      // the tensor dimensions are only generated once, for the main model (a sub-graph would redefine them)
+      if (!fIsSubGraph)
+         GenerateRequiredInputTensorInfo();
    }
 
    fGC += doInferSignature + " {\n";

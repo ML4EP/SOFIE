@@ -258,6 +258,7 @@ SOFIE_GENERATE_EXECUTABLE(
       alpaka/TestAlpakaStridedInput.cxx
       alpaka/TestAlpakaNormReduction.cxx
       alpaka/TestAlpakaSequenceOps.cxx
+      alpaka/TestAlpakaSubGraph.cxx
     )
 
     set_source_files_properties(

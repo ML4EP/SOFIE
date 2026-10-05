@@ -794,6 +794,22 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
 
    bool OpNeedsBlas = false;
 
+   // the sessions of the sub-graphs (e.g. the branches of an If operator) are generated first, each one in its own
+   // namespace to keep their kernels separate. They share the queue of this session (see the members below)
+   for (auto &graph : fSubGraphs) {
+      if (fKernelOnly)
+         throw std::runtime_error("sofie: Options::kKernelOnly is not supported for models with subgraphs");
+      if (fVerbose)
+         std::cout << "generate session code for subgraph " << graph->fName << std::endl;
+      graph->fVerbose = fVerbose;
+      graph->fBatchSize = fBatchSize;
+      graph->fFusion = Fusion::Compute(*graph);
+      graph->GenerateSessionCode_GPU_ALPAKA();
+      fGC += "\nnamespace SubGraph_" + graph->fName + " {\n" + graph->fGC + "\n} // namespace SubGraph_" +
+             graph->fName + "\n";
+      fNeededHelperFunctions.insert(graph->fNeededHelperFunctions.begin(), graph->fNeededHelperFunctions.end());
+   }
+
    fGC += "\n//--- ALPAKA Kernels\n";
    for (size_t id = 0; id < fOperators.size(); id++) {
       if(fOperators[id]->GetKind() == OperatorKind::GEMM || fOperators[id]->GetKind() == OperatorKind::CONV) {
@@ -969,6 +985,12 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
 
    GenerateOperatorDeclarations();
 
+   // sessions of the sub-graphs, running on the queue of this session
+   if (!fSubGraphs.empty())
+      fGC += "\n//   subgraph sessions\n";
+   for (auto &graph : fSubGraphs)
+      fGC += "SubGraph_" + graph->fName + "::Session<tagAcc> fSession_" + graph->fName + "{queue};\n";
+
    // inject profiling session data member
    if (fProfile) {
       fGC += RModelProfilerGPU::GenerateSessionMembers();
@@ -1065,10 +1087,22 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
          if (fStridedInput) {
             initArgs += ", inputStrides";
             initParams += ", std::vector<std::vector<size_t>> const &inputStrides";
-            ctorBody = GenerateInputStrideInitCode() + ctorBody;
+            std::string strideCode = GenerateInputStrideInitCode();
+            for (auto &graph : fSubGraphs)
+               strideCode += "   fSession_" + graph->fName + ".SetInputStrides(inputStrides);\n";
+            ctorBody = strideCode + ctorBody;
             fGC += "\n//   strides of the input tensors (empty = contiguous)\n";
             for (const auto &name : fInputTensorNames)
                fGC += "std::vector<size_t> " + GetInputStrideMember(name) + ";\n";
+         }
+
+         // the session of a sub-graph is created by the session of the main model, which gives it the strides
+         if (fStridedInput && fIsSubGraph) {
+            fGC += "\nvoid SetInputStrides(std::vector<std::vector<size_t>> const &inputStrides) {\n";
+            fGC += GenerateInputStrideInitCode();
+            for (auto &graph : fSubGraphs)
+               fGC += "   fSession_" + graph->fName + ".SetInputStrides(inputStrides);\n";
+            fGC += "}\n";
          }
 
          fGC += "\nvoid InitSession(" + initParams + ") {\n";

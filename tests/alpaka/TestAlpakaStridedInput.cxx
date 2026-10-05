@@ -21,6 +21,7 @@
 #include "StridedBitwiseAnd_GPU_ALPAKA.hxx"
 #include "StridedNarySum_GPU_ALPAKA.hxx"
 #include "StridedWhere_GPU_ALPAKA.hxx"
+#include "StridedIf_GPU_ALPAKA.hxx"
 #include "StridedTranspose_GPU_ALPAKA.hxx"
 #include "StridedSlice_GPU_ALPAKA.hxx"
 #include "StridedGather_GPU_ALPAKA.hxx"
@@ -1115,4 +1116,28 @@ TEST_F(SofieAlpakaStridedTest, GemmOperandWithoutUnitStrideThrows)
    auto b_d = ToDevice(b);
    SOFIE_StridedGemmAB::Session<alpaka::TagGpuCudaRt> s("", {{5, 1}, {8, 2}});
    EXPECT_THROW(s.infer(a_d, b_d), std::runtime_error);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// If operator: the sub-graphs (branches) read the strided input of the main model
+// ---------------------------------------------------------------------------------------------------------------
+
+TEST_F(SofieAlpakaStridedTest, IfBranches)
+{
+   // 3x5 views: row padding, transposed and contiguous
+   for (const auto &strides : std::vector<std::vector<size_t>>{{8, 1}, {1, 3}, {5, 1}}) {
+      StridedData<> x({3, 5}, strides);
+      auto x_d = ToDevice(x);
+      // the condition has no strides (empty array)
+      SOFIE_StridedIf::Session<alpaka::TagGpuCudaRt> session("", {std::vector<size_t>{}, strides});
+      for (uint8_t cond : {1, 0, 1}) {
+         StridedData<uint8_t> c({1}, {1}, [cond](size_t) { return cond; });
+         auto c_d = ToDevice(c);
+         std::vector<float> ref(15);
+         for (size_t i = 0; i < 15; i++)
+            ref[i] = cond ? x.logical[i] * x.logical[i] : 1.f / (1.f + std::exp(x.logical[i]));
+         auto y = session.infer(c_d, x_d);
+         Check(y, ref);
+      }
+   }
 }

@@ -21,6 +21,7 @@
 #include "StridedBitwiseAnd.hxx"
 #include "StridedNarySum.hxx"
 #include "StridedWhere.hxx"
+#include "StridedIf.hxx"
 #include "StridedTranspose.hxx"
 #include "StridedSlice.hxx"
 #include "StridedGather.hxx"
@@ -1183,4 +1184,43 @@ TEST(StridedInput, GemmOperandWithoutUnitStrideThrows)
    StridedBuffer<> b({5, 4}, {8, 2});
    SOFIE_StridedGemmAB::Session s("", {{5, 1}, {8, 2}});
    EXPECT_THROW(s.infer(a.storage.data(), b.storage.data()), std::runtime_error);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// If operator: the sub-graphs (branches) read the strided input of the main model
+// ---------------------------------------------------------------------------------------------------------------
+
+TEST(StridedInput, IfBranches)
+{
+   // 3x5 views: row padding, transposed and contiguous
+   for (const auto &strides : std::vector<std::vector<size_t>>{{8, 1}, {1, 3}, {5, 1}}) {
+      StridedBuffer in({3, 5}, strides);
+      // the condition has no strides (empty array)
+      SOFIE_StridedIf::Session s("", {std::vector<size_t>{}, strides});
+      for (uint8_t cond : {1, 0, 1}) {
+         std::vector<float> ref(15);
+         for (size_t i = 0; i < 15; i++)
+            ref[i] = cond ? in.logical[i] * in.logical[i] : 1.f / (1.f + std::exp(in.logical[i]));
+         ExpectNear(s.infer(&cond, in.storage.data()), ref);
+      }
+   }
+}
+
+TEST(StridedInput, IfBranchesContiguousByDefault)
+{
+   // no strides passed: the branches read contiguous inputs
+   StridedBuffer in({3, 5}, {5, 1});
+   SOFIE_StridedIf::Session s;
+   for (uint8_t cond : {1, 0}) {
+      std::vector<float> ref(15);
+      for (size_t i = 0; i < 15; i++)
+         ref[i] = cond ? in.logical[i] * in.logical[i] : 1.f / (1.f + std::exp(in.logical[i]));
+      ExpectNear(s.infer(&cond, in.storage.data()), ref);
+   }
+}
+
+TEST(StridedInput, IfWrongNumberOfStrideArrays)
+{
+   // one stride array per input of the main model (condition and X)
+   EXPECT_THROW(SOFIE_StridedIf::Session("", {{8, 1}}), std::runtime_error);
 }

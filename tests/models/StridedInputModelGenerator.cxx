@@ -11,6 +11,7 @@
 //  - StridedCast, StridedIsNaN: Cast (float to int32) and IsNaN of a float input
 //  - StridedBinary, StridedCompare, StridedBitwiseAnd, StridedNarySum, StridedWhere: operators with several inputs
 //    (broadcasting, except for the bitwise And), each of them being a strided graph input
+//  - StridedIf: If operator whose branches read the strided input (subgraphs get the strides of the main model)
 //  - StridedTranspose, StridedSlice, StridedGather, StridedConcat, StridedSplit, StridedPad, StridedTile,
 //    StridedExpand: operators moving the data of strided inputs
 //  - StridedSoftmaxMid, StridedSoftmaxLast, StridedLogSoftmax, StridedReduceSumMid, StridedReduceMeanLast,
@@ -80,6 +81,7 @@
 #include "SOFIE/ROperator_Not.hxx"
 #include "SOFIE/ROperator_Selu.hxx"
 #include "SOFIE/ROperator_Swish.hxx"
+#include "SOFIE/ROperator_SubGraph.hxx"
 #include "SOFIE/ROperator_Where.hxx"
 #include "SOFIE/ROperator_Relu.hxx"
 #include "SOFIE/ROperator_Sigmoid.hxx"
@@ -270,6 +272,30 @@ RModel BuildWhere()
    model.AddInputTensorName("Y");
    model.AddOperator(std::make_unique<ROperator_Where<float>>("C", "X", "Y", "Z"));
    model.AddOutputTensorNameList({"Z"});
+   return model;
+}
+
+// If operator: the branches read the strided graph input X (the condition has one element)
+//  then: Y = X * X (stride aware)    else: Y = Sigmoid(-X) (a stride aware operator followed by one which is not)
+RModel BuildIf()
+{
+   auto thenGraph = std::make_unique<RModel>("then_branch", "now");
+   thenGraph->AddOperator(std::make_unique<ROperator_BasicBinary<float, EBasicBinaryOperator::Mul>>("X", "X", "then_out"));
+   thenGraph->AddOutputTensorNameList({"then_out"});
+
+   auto elseGraph = std::make_unique<RModel>("else_branch", "now");
+   elseGraph->AddOperator(std::make_unique<ROperator_BasicUnary<float, EBasicUnaryOperator::kNeg>>("X", "else_neg"));
+   elseGraph->AddOperator(std::make_unique<ROperator_Sigmoid<float>>("else_neg", "else_out"));
+   elseGraph->AddOutputTensorNameList({"else_out"});
+
+   RModel model("StridedIf", "now");
+   model.AddInputTensorInfo("cond", ETensorType::BOOL, std::vector<Dim>{Dim(1)});
+   model.AddInputTensorInfo("X", ETensorType::FLOAT, std::vector<Dim>{Dim(3), Dim(5)});
+   model.AddInputTensorName("cond");
+   model.AddInputTensorName("X");
+   model.AddOperator(std::make_unique<ROperator_If>("cond", std::vector<std::string>{"Y"}, std::move(thenGraph),
+                                                    std::move(elseGraph)));
+   model.AddOutputTensorNameList({"Y"});
    return model;
 }
 
@@ -480,6 +506,7 @@ int main()
    Emit(BuildBitwiseAnd, "StridedBitwiseAnd");
    Emit(BuildNarySum, "StridedNarySum");
    Emit(BuildWhere, "StridedWhere");
+   Emit(BuildIf, "StridedIf");
    Emit(BuildTranspose, "StridedTranspose");
    Emit(BuildSlice, "StridedSlice");
    Emit(BuildGather, "StridedGather");
