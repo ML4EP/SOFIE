@@ -110,7 +110,7 @@ public:
     */
    void Initialize(RModel &) override;
 
-   /*! \brief The data input can be read through its strides (see Generate for the layouts supported by BLAS)
+   /*! \brief The data input can be read through its strides
     */
    bool SupportsStridedInput() const override { return true; }
 

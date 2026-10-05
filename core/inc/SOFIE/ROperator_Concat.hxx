@@ -22,7 +22,7 @@
          std::string fOutput;
          std::vector<Dim>fOutputShape;
          std::vector<Dim> fOutputShapeData; // in case output is a shape tensor we store here the output shape value data (can be parametric)
-         std::vector<bool> fStrided; // inputs which are graph inputs read through their strides (Options::kStridedInput)
+         std::vector<bool> fStrided; // inputs which are graph inputs read through their strides
          std::vector<std::vector<Dim>> fInputShapes;
          ETensorType fInputType = ETensorType::UNDEFINED;
 
@@ -320,7 +320,7 @@
                return out.str();
             }
             if (fHasStridedInput) {
-               // general copy of each input, read through its strides (or contiguous), along the concat axis
+               // general copy of each input, read through its strides , along the concat axis
                const size_t D = fOutputShape.size();
                const auto outStride = UTILITY::ComputeStrideFromShape(fOutputShape);
                out << SP << "{\n";

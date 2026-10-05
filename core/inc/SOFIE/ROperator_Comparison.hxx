@@ -66,7 +66,7 @@ private:
    ETensorType fTensorType1 = ETensorType::UNDEFINED;
    ETensorType fTensorType2 = ETensorType::UNDEFINED;
    int fBroadcastFlag = 0;
-   bool fStridedX1 = false; ///< input X1 is a graph input read through its strides (Options::kStridedInput)
+   bool fStridedX1 = false; ///< input X1 is a graph input read through its strides
    bool fStridedX2 = false;
    size_t fOrigRankX1 = 0; ///< rank of the inputs, before the padding to the rank of the output
    size_t fOrigRankX2 = 0;

@@ -763,7 +763,7 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
                               [](const std::string &) {});
 
    // kernels shared by all the operators of a kind are generated once; the variant reading a strided input
-   // (Options::kStridedInput) is a different kernel
+   // is a different kernel
    std::set<std::pair<SOFIE::OperatorKind, bool>> registered_operators;
    auto kernelKey = [this](size_t id) {
       return std::make_pair(fOperators[id]->GetKind(), fOperators[id]->HasStridedInput());
@@ -795,7 +795,7 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
    bool OpNeedsBlas = false;
 
    // the sessions of the sub-graphs (e.g. the branches of an If operator) are generated first, each one in its own
-   // namespace to keep their kernels separate. They share the queue of this session (see the members below)
+   // namespace to keep their kernels separate. They share the queue of this session
    for (auto &graph : fSubGraphs) {
       if (fKernelOnly)
          throw std::runtime_error("sofie: Options::kKernelOnly is not supported for models with subgraphs");
@@ -1245,7 +1245,9 @@ void RModel::GenerateGPU_ALPAKA(std::underlying_type_t<Options> options, int bat
       fLowRankFactorize = true;
 
    if (static_cast<std::underlying_type_t<Options>>(Options::kStridedInput) & options) {
-      if (!fUseSession)
+      // without a Session (Options::kKernelOnly) the strides are not stored: the strided kernels take them as an
+      // argument (sofie_strided_layout), and the header defines the layout and the offset function
+      if (!fUseSession && !fKernelOnly)
          throw std::runtime_error("sofie: RModel::Generate: Options::kStridedInput requires a Session class "
                                   "(the strides are passed to its constructor)");
       fStridedInput = true;

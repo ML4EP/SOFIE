@@ -131,7 +131,7 @@ std::vector<Dim> RModel::GetDimTensorShape(const std::string & name) const {
    // an enclosing scope by name without declaring it as one of its own
    // inputs; delegate to the parent graph's dynamic-aware lookup before
    // falling back to GetTensorShape() below, which throws for any tensor
-   // that is dynamic in the parent scope (see GetTensorShape()).
+   // that is dynamic in the parent scope.
    if (fIsSubGraph && fParentGraph && fParentGraph->IsDynamicTensor(name))
       return fParentGraph->GetDimTensorShape(name);
    // in case is not a dynamic tensor convert normal shape to Dim one
@@ -377,7 +377,7 @@ bool RModel::IsDimInputTensor(const std::string& tensorName) const {
 bool RModel::IsStridedInputTensor(const std::string &tensorName) const {
    if (!fStridedInput)
       return false;
-   // a sub-graph (e.g. the branch of an If) reads the inputs of the main model, through the same strides
+   // a sub-graph reads the inputs of the main model, through the same strides
    if (fIsSubGraph && fParentGraph)
       return fParentGraph->IsStridedInputTensor(tensorName);
    std::string name = UTILITY::Clean_name(tensorName);
@@ -1642,7 +1642,7 @@ void RModel::GenerateSessionCode()
    if (fUseSession && !fIsGNNComponent) {
       fGC += "};   // end of Session\n\n";
 
-      // the tensor dimensions are only generated once, for the main model (a sub-graph would redefine them)
+      // the tensor dimensions are only generated once, for the main model
       if (!fIsSubGraph)
          GenerateRequiredInputTensorInfo();
    }

@@ -6,6 +6,8 @@
 
 #include <gtest/gtest.h>
 
+#include "common/onnx_proto_helpers.h"
+
 #include <cstdint>
 #include <cctype>
 #include <cstring>
@@ -18,28 +20,6 @@
 using namespace SOFIE;
 
 namespace {
-
-void AppendVarint(std::string &out, std::uint64_t v)
-{
-   while (v >= 0x80) {
-      out.push_back(char((v & 0x7f) | 0x80));
-      v >>= 7;
-   }
-   out.push_back(char(v));
-}
-
-void AppendVarintField(std::string &out, int field, std::uint64_t v)
-{
-   AppendVarint(out, std::uint64_t(field) << 3 | 0);
-   AppendVarint(out, v);
-}
-
-void AppendBytesField(std::string &out, int field, const std::string &payload)
-{
-   AppendVarint(out, std::uint64_t(field) << 3 | 2);
-   AppendVarint(out, payload.size());
-   out += payload;
-}
 
 std::string StringEntry(const std::string &key, const std::string &value)
 {

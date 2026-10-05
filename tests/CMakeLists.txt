@@ -134,6 +134,8 @@ SOFIE_GENERATE_EXECUTABLE(
   FIXTURES_SETUP sofie-lowrank-emit-build
 )
 
+target_include_directories(emitLowRankModels PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
 SOFIE_ADD_TEST(
   EmitLowRankModels
   COMMAND ./emitLowRankModels
@@ -150,6 +152,7 @@ SOFIE_GENERATE_EXECUTABLE(
 )
 
 target_include_directories(TestLowRankFactorization PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+target_include_directories(TestLowRankFactorization PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 SOFIE_ADD_TEST(
   TestLowRankFactorization
@@ -163,6 +166,8 @@ SOFIE_GENERATE_EXECUTABLE(
   LIBRARIES SOFIE_core
   FIXTURES_SETUP sofie-strided-emit-build
 )
+
+target_include_directories(emitStridedInputModels PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 SOFIE_ADD_TEST(
   EmitStridedInputModels
@@ -180,6 +185,7 @@ SOFIE_GENERATE_EXECUTABLE(
 )
 
 target_include_directories(TestStridedInput PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+target_include_directories(TestStridedInput PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 SOFIE_ADD_TEST(
   TestStridedInput
@@ -451,6 +457,7 @@ SOFIE_GENERATE_EXECUTABLE(TestSofieParser cpu/TestSofieParser.cxx
   LIBRARIES SOFIE_core SOFIE_parsers GTest::gtest GTest::gtest_main
   FIXTURES_SETUP sofie-test-parser-build
 )
+target_include_directories(TestSofieParser PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 SOFIE_ADD_TEST(TestSofieParser
                   EXEC ./TestSofieParser
                   FIXTURES_REQUIRED sofie-test-parser-build)

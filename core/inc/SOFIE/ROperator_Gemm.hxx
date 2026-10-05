@@ -52,7 +52,7 @@ namespace SOFIE{
       std::vector<Dim> fDimShapeC;
       std::vector<Dim> fShapeY;
       RModel * fModel = nullptr;
-      bool fStridedA = false;  ///< A is a graph input read through its strides (Options::kStridedInput)
+      bool fStridedA = false;  ///< A is a graph input read through its strides
       bool fStridedB = false;  ///< B is a graph input read through its strides
 
    public:
@@ -385,7 +385,7 @@ namespace SOFIE{
                std::cout << ConvertShapeToString(shapeY) << std::endl;
          }
 
-         // the operands A and B can be graph inputs read through their strides (Options::kStridedInput).
+         // the operands A and B can be graph inputs read through their strides.
          // BLAS describes a matrix by a leading dimension and a transpose flag, so the strides of an operand must have
          // a unit stride; the plain 2D case is supported.
          fStridedA = model.IsStridedInputTensor(fNA);
@@ -895,7 +895,7 @@ namespace SOFIE{
 
          if (fHasStridedInput) {
             // ----------------------------------------------------------------
-            // plain 2D Gemm with A and/or B read through their strides {s0, s1} (Options::kStridedInput). The
+            // plain 2D Gemm with A and/or B read through their strides {s0, s1}. The
             // sofieBLAS gemm/matmul entry points always use dense leading dimensions, so the cuBLAS strided batched
             // entry point (batchCount = 1), which takes explicit leading dimensions, is used. The bias (and the fused
             // ReLU) are then applied by the bias kernel. As for the CPU, a strided operand needs a unit stride:

@@ -1,30 +1,6 @@
 // Standalone generator for the strided input tests (Options::kStridedInput).
-//
-// Builds a few small models whose first operator reads a graph input, and emits for each one the CPU Session
-// and the GPU (Alpaka) Session accepting the strides of the input tensor:
-//  - StridedUnaryChain: Neg -> Sigmoid on a 2D input (the first operator is stride aware, the second is not)
-//  - StridedReluTwice : Relu -> Relu on a 3D input (same operator kind, with and without strided input)
-//  - StridedTanhDyn   : Tanh on an input with a dynamic leading dimension
-//  - StridedLeakyRelu, StridedElu, StridedSelu, StridedClip, StridedIdentity: one elementwise operator of a float input
-//  - StridedNot, StridedBitwiseNot: one elementwise operator of an int32 input
-//  - StridedActivationsCpu: Erf, Swish, Gelu, HardSigmoid and HardSwish of one input (CPU only, no GPU kernels)
-//  - StridedCast, StridedIsNaN: Cast (float to int32) and IsNaN of a float input
-//  - StridedBinary, StridedCompare, StridedBitwiseAnd, StridedNarySum, StridedWhere: operators with several inputs
-//    (broadcasting, except for the bitwise And), each of them being a strided graph input
-//  - StridedIf: If operator whose branches read the strided input (subgraphs get the strides of the main model)
-//  - StridedTranspose, StridedSlice, StridedGather, StridedConcat, StridedSplit, StridedPad, StridedTile,
-//    StridedExpand: operators moving the data of strided inputs
-//  - StridedSoftmaxMid, StridedSoftmaxLast, StridedLogSoftmax, StridedReduceSumMid, StridedReduceMeanLast,
-//    StridedReduceMaxFirst, StridedLayerNorm, StridedRMSNorm, StridedBatchNorm, StridedGroupNorm, StridedL2Norm,
-//    StridedCumSum, StridedCumSumRev: reductions and normalizations of the input, StridedInstanceNorm (CPU only)
-//  - StridedMaxPool, StridedAvgPool, StridedTopK
-//  - StridedReshape, StridedFlatten, StridedTrilu, StridedNonZero, StridedGatherND, StridedGatherNDElems,
-//    StridedScatterND, StridedScatterElements
-//  - StridedConv, StridedConvTranspose (CPU only), StridedEinsum (CPU only), StridedSDPA
-//  - StridedRNN, StridedLSTM, StridedGRU (CPU only), StridedMamba, StridedRWKV, StridedGriffin
-//  - StridedGemmBiasRelu: Y = Relu(X * W + b), X is 3x5 (with the Relu fused into the Gemm on the GPU)
-//  - StridedGemmTransAB : Y = X^T * W^T, X is stored 5x3 and W is stored 4x5
-// They are used by cpu/TestStridedInput.cxx and alpaka/TestAlpakaStridedInput.cxx
+
+#include "common/strided_input_test_utils.h"
 
 #include "SOFIE/RModel.hxx"
 #include "SOFIE/ROperator_BasicUnary.hxx"
@@ -123,15 +99,6 @@ RModel BuildTanhDynamic()
    model.AddOperator(std::make_unique<ROperator_Tanh<float>>("X", "Y"));
    model.AddOutputTensorNameList({"Y"});
    return model;
-}
-
-// deterministic weights shared with the tests (cpu/TestStridedInput.cxx and alpaka/TestAlpakaStridedInput.cxx)
-std::vector<float> GemmValues(size_t n, float scale)
-{
-   std::vector<float> v(n);
-   for (size_t i = 0; i < n; i++)
-      v[i] = scale * float((i * 7) % 11) - 0.5f;
-   return v;
 }
 
 RModel BuildGemmBiasRelu()
@@ -299,6 +266,33 @@ RModel BuildIf()
    return model;
 }
 
+// models emitted in Options::kKernelOnly mode: only the kernels
+// and the helpers are generated, there is no Session
+//  - KernelOnlyStridedChain : Neg -> Sigmoid on a 2D input (a stride aware kernel and one which is not)
+//  - KernelOnlyStridedBinary: A - B, both strided graph inputs, B broadcast over the first and last dimensions of A
+RModel BuildKernelOnlyChain()
+{
+   RModel model("KernelOnlyStridedChain", "now");
+   model.AddInputTensorInfo("X", ETensorType::FLOAT, std::vector<Dim>{Dim(3), Dim(5)});
+   model.AddInputTensorName("X");
+   model.AddOperator(std::make_unique<ROperator_BasicUnary<float, EBasicUnaryOperator::kNeg>>("X", "H"));
+   model.AddOperator(std::make_unique<ROperator_Sigmoid<float>>("H", "Y"));
+   model.AddOutputTensorNameList({"Y"});
+   return model;
+}
+
+RModel BuildKernelOnlyBinary()
+{
+   RModel model("KernelOnlyStridedBinary", "now");
+   model.AddInputTensorInfo("A", ETensorType::FLOAT, kShape3D);
+   model.AddInputTensorInfo("B", ETensorType::FLOAT, std::vector<Dim>{Dim(3), Dim(1)});
+   model.AddInputTensorName("A");
+   model.AddInputTensorName("B");
+   model.AddOperator(std::make_unique<ROperator_BasicBinary<float, EBasicBinaryOperator::Sub>>("A", "B", "Y"));
+   model.AddOutputTensorNameList({"Y"});
+   return model;
+}
+
 RModel BuildTranspose()
 {
    RModel model("StridedTranspose", "now");
@@ -398,15 +392,6 @@ RModel BuildExpand()
    return model;
 }
 
-// deterministic values a + b * i shared with the tests (cpu/TestStridedInput.cxx and alpaka/TestAlpakaStridedInput.cxx)
-std::vector<float> AffineValues(size_t n, float a, float b)
-{
-   std::vector<float> v(n);
-   for (size_t i = 0; i < n; i++)
-      v[i] = a + b * float(i);
-   return v;
-}
-
 // a model made of a graph input X (float, shape `shape`) and the initialized tensors `weights` (name, values)
 // used by the operator `op`
 RModel BuildWithWeights(const std::string &name, const std::vector<Dim> &shape,
@@ -473,8 +458,17 @@ void EmitCpu(F build, const std::string &name)
    m.OutputGenerated(name + ".hxx");
 }
 
+void EmitKernelOnly(RModel (*build)(), const std::string &name)
+{
+   RModel m = build();
+   m.GenerateGPU_ALPAKA(Options::kKernelOnly | Options::kStridedInput, -1, false);
+   m.OutputGenerated(name + "_KernelOnly_GPU_ALPAKA.hxx");
+}
+
 int main()
 {
+   EmitKernelOnly(BuildKernelOnlyChain, "KernelOnlyStridedChain");
+   EmitKernelOnly(BuildKernelOnlyBinary, "KernelOnlyStridedBinary");
    Emit(BuildUnaryChain, "StridedUnaryChain");
    Emit(BuildReluTwice, "StridedReluTwice");
    Emit(BuildTanhDynamic, "StridedTanhDyn");

@@ -99,7 +99,7 @@ private:
    std::string fNB;
    std::string fNY;
    std::vector<Dim> fShape;
-   bool fStridedA = false; ///< input A is a graph input read through its strides (Options::kStridedInput)
+   bool fStridedA = false;
    bool fStridedB = false;
 
    using Trait = LogicBinaryTrait<T, Op>;

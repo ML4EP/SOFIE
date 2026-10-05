@@ -27,7 +27,7 @@ private:
    std::string fOutputLabels;
    std::string fSumLabels;  // string containing the reducing labels
    std::string fGemmType;
-   std::vector<bool> fStrided; ///< inputs which are graph inputs read through their strides (Options::kStridedInput)
+   std::vector<bool> fStrided; ///< inputs which are graph inputs read through their strides
 
    std::vector<int> fSumDims; // dimension of the labels we use to perform summing
 

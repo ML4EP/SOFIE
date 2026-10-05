@@ -46,7 +46,7 @@ private:
    //   bit 4: shapes may differ at runtime (dynamic)
    int fBroadcastFlag = 0;
 
-   // inputs which are graph inputs read through their strides (Options::kStridedInput), with their original rank
+   // inputs which are graph inputs read through their strides, with their original rank
    // (the shapes can be padded to the rank of the output)
    bool fStridedX = false;
    bool fStridedY = false;

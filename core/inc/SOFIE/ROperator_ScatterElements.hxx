@@ -34,7 +34,7 @@ private:
    std::vector<Dim> fShapeU;
    std::vector<Dim> fShapeY;
 
-   // inputs which are graph inputs read through their strides (Options::kStridedInput)
+   // inputs which are graph inputs read through their strides
    bool fStridedX = false;
    bool fStridedI = false;
    bool fStridedU = false;

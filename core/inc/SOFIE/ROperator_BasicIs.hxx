@@ -94,7 +94,7 @@ public:
          return "";
 
       if (fHasStridedInput) {
-         // the output is uint8_t (bool storage) while the input is T: dedicated signature
+         // the output is uint8_t (bool storage) while the input is T
          std::string op = "\n//------ " + IsOpTraits<Op>::Name() + "_STRIDED_KERNEL_ALPAKA\n";
          op += SP + "struct Is" + IsOpTraits<Op>::Name() + "StridedKernel {\n";
          op += SP + SP + "template<typename TAcc, typename T, std::size_t R>\n";

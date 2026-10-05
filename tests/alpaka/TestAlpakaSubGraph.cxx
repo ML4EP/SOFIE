@@ -3,22 +3,6 @@
 #include "IfSimple_FromONNX_GPU_ALPAKA.hxx"
 #include "IfTwoOutputs_FromONNX_GPU_ALPAKA.hxx"
 
-namespace {
-
-// copy the first n elements of a device buffer (or view) to the host
-template <typename TBuf>
-std::vector<float> toHost(alpaka::DevCpu const &host, alpaka::Queue<alpaka::DevCudaRt, alpaka::NonBlocking> &queue,
-                          TBuf const &deviceBuf, std::size_t n)
-{
-   auto hostBuf = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{n}));
-   alpaka::memcpy(queue, hostBuf, deviceBuf);
-   alpaka::wait(queue);
-   const float *p = alpaka::getPtrNative(hostBuf);
-   return std::vector<float>(p, p + n);
-}
-
-} // namespace
-
 // If operator (subgraphs): both branches read the outer-scope input X
 TEST_F(SofieAlpakaTest, IfSimpleThen)
 {

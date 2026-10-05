@@ -21,7 +21,7 @@ private:
    std::string fType;
    bool fHasMask = false;
 
-   // Q, K, V and the mask which are graph inputs read through their strides (Options::kStridedInput)
+   // Q, K, V and the mask which are graph inputs read through their strides
    bool fStridedQ = false, fStridedK = false, fStridedV = false, fStridedMask = false;
    std::vector<Dim> fShapeK, fShapeV, fShapeMask;
 

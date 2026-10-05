@@ -122,7 +122,7 @@ private:
    std::vector<Dim> fDimShapeY;
 
    bool fBroadcast = false;
-   std::vector<bool> fStrided; ///< inputs which are graph inputs read through their strides (Options::kStridedInput)
+   std::vector<bool> fStrided; ///< inputs which are graph inputs read through their strides
 
    std::string fType;
 

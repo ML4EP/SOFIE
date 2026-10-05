@@ -27,7 +27,7 @@ private:
 
    std::string fType;
 
-   // data and indices tensors which are graph inputs read through their strides (Options::kStridedInput)
+   // data and indices tensors which are graph inputs read through their strides
    bool fStridedX = false;
    bool fStridedIndices = false;
 

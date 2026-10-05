@@ -123,8 +123,8 @@ public:
       }
       std::stringstream out;
       out << "\n//------ If operator\n";
-      // the code is generated inside doInfer, where the session is the (const) argument "session" ("this->" is
-      // replaced by it) and the tensors are plain pointers. Each branch writes directly into the output tensors
+      // the code is generated inside doInfer, where the session is the (const) argument "session"
+      //  and the tensors are plain pointers. Each branch writes directly into the output tensors
       // of the If operator, by calling the doInfer function of its sub-session.
       auto call = [&](const RModel &branch, const std::string &signature) {
          std::string args = signature;

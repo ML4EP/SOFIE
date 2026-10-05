@@ -105,7 +105,7 @@ inline const char* toString(OperatorKind kind) {
 }
 
 /// name of the Session member holding the user-provided strides (in elements) of a graph-input tensor;
-/// it is empty when the input is contiguous (Options::kStridedInput)
+/// it is empty when the input is contiguous
 inline std::string InputStrideMemberName(const std::string &inputName) { return "fInputStride_" + inputName; }
 
 inline std::set<OperatorKind> FusableKinds = { OperatorKind::RELU, OperatorKind::LAYERNORM, OperatorKind::BATCHNORM};
@@ -123,7 +123,7 @@ public:
       return Generate_GPU_ALPAKA(OpName);
    }
    // true if the operator can read its graph-input tensors through the strides given to the Session
-   // (Options::kStridedInput). An operator reading a strided input without supporting it is rejected at generation.
+   //. An operator reading a strided input without supporting it is rejected at generation.
    virtual bool SupportsStridedInput() const { return false; }
    // generate initialization code for session constructor
    virtual std::string GenerateInitCode() { return "";}
@@ -144,8 +144,8 @@ public:
    virtual std::string GetFusableOutputTensorName() { return "";}
    virtual std::string GetBlasConfig() { return ""; }
    // most operators issue a single cuBLASLt GEMM call and so need at most one layout
-   // config; operators that chain multiple GEMM calls of different shapes (e.g. a
-   // low-rank factorized Gemm) override this to register one config per call.
+   // config; operators that chain multiple GEMM calls of different shapes
+   //  override this to register one config per call.
    virtual std::vector<std::string> GetBlasConfigs() {
       auto c = GetBlasConfig();
       if (c.empty())
@@ -255,10 +255,10 @@ protected:
    std::set<std::string> fPooledOutputNames;
 
 protected:
-   bool fHasStridedInput = false; ///< the (first) input is a graph input read through user-provided strides
+   bool fHasStridedInput = false;
 
-   /// Code defining the local array `stride_<id>` with the strides (in elements) of the graph input `name`:
-   /// the ones given to the Session if any, else the contiguous ones of the current (runtime) shape.
+   /// Code defining the local array `stride_<id>` with the strides of the graph input `name`:
+   /// the ones given to the Session if any, else the contiguous ones of the current shape.
    /// Requires a non-scalar shape.
    std::string GenerateInputStrideCode(const std::string &id, const std::string &name,
                                        const std::vector<Dim> &shape) const
@@ -316,7 +316,7 @@ protected:
    }
 
    /// Rewrites in generated code every read `name[index]` (a whole identifier `name` followed by a bracketed index) as
-   /// `name[mapIndex(index)]`, e.g. to read through the strides of a tensor from the contiguous index computed by the code
+   /// `name[mapIndex(index)]`
    static std::string RewriteIndexedReads(std::string code, const std::string &name,
                                           const std::function<std::string(const std::string &)> &mapIndex)
    {
@@ -344,7 +344,7 @@ protected:
       return code;
    }
 
-   /// A graph input of an operator whose code reads it with the contiguous (logical) index of its elements
+   /// A graph input of an operator whose code reads it with the contiguous index of its elements
    struct StridedInputInfo {
       std::string tensor;      ///< name of the tensor
       std::string param;       ///< name of the kernel parameter (pointer) holding it
@@ -475,9 +475,9 @@ protected:
       return out.str();
    }
 
-   /// GPU: source of an elementwise kernel reading its input through a strided layout (see sofie_strided_layout)
+   /// GPU: source of an elementwise kernel reading its input through a strided layout
    /// `expr` maps the name of a variable holding the input element to the expression of the output element;
-   /// `extraParams` declares additional kernel parameters, e.g. ", T alpha"
+   /// `extraParams` declares additional kernel parameters
    std::string GenerateStridedUnaryKernel(const std::string &kernelName, const std::string &title,
                                           const std::function<std::string(const std::string &)> &expr,
                                           const std::string &extraParams = "") const
@@ -499,7 +499,7 @@ protected:
    }
 
    /// GPU: launch of a strided elementwise kernel (member `kernelMember`) on the graph input nX
-   /// `extraArgs` are the additional kernel arguments matching `extraParams` of the kernel, e.g. ", op_0_alpha"
+   /// `extraArgs` are the additional kernel arguments matching `extraParams` of the kernel
    std::string GenerateStridedUnaryLaunch(const std::string &opName, const std::string &kernelMember,
                                           const std::string &title, const std::string &nX, const std::string &nY,
                                           const std::vector<Dim> &shape, const std::string &extraArgs = "") const
@@ -527,7 +527,6 @@ protected:
    /// Operators with broadcasting read input X (original rank `origRank`, rank-padded shape `paddedShape` with leading 1s,
    /// output rank `outRank`) at the position of the output multi-index (idx_0, ..., idx_{outRank-1}).
    /// CPU: offset expression sum(idx_j * stride[k]) over the non-broadcast dims, strides in the array `strideVar`
-   /// (see GenerateInputStrideCode, defined for the original shape of X).
    std::string GenerateStridedBroadcastIndex(const std::string &strideVar, const std::vector<Dim> &paddedShape,
                                              size_t origRank, size_t outRank) const
    {

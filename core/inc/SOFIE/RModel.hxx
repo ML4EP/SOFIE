@@ -77,10 +77,6 @@ public:
    RModel &operator=(const RModel &other) = delete;
    ~RModel() = default;
 
-   /**
-       Default constructor. Needed to allow serialization of ROOT objects. See
-       https://root.cern/manual/io_custom_classes/#restrictions-on-types-root-io-can-handle
-   */
    RModel() = default;
    RModel(std::string name, std::string parsedtime) : RModel_Base(name, parsedtime) {}
 
@@ -166,7 +162,7 @@ public:
    bool IsReadyInputTensor(const std::string &name) const;
    /// check if a tensor is a shape tensor
    bool IsShapeTensor(const std::string & name) const;
-   /// check if a tensor is a graph input whose strides are provided to the Session (Options::kStridedInput)
+   /// check if a tensor is a graph input whose strides are provided to the Session
    bool IsStridedInputTensor(const std::string &name) const;
    /// name of the Session member holding the user-provided strides of an input tensor (empty = contiguous)
    static std::string GetInputStrideMember(const std::string &inputName) { return InputStrideMemberName(inputName); }

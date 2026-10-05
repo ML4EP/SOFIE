@@ -69,7 +69,7 @@ template <typename T, EBasicBinaryOperator Op>
 class ROperator_BasicBinary final : public ROperator {
 private:
    int fBroadcastFlag = 0;
-   bool fStridedA = false; ///< input A is a graph input read through its strides (Options::kStridedInput)
+   bool fStridedA = false;
    bool fStridedB = false;
    size_t fOrigRankA = 0; ///< rank of the inputs, before the padding to the rank of the output
    size_t fOrigRankB = 0;
