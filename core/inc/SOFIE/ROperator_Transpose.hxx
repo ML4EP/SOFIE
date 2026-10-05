@@ -69,12 +69,15 @@ public:
       }
    }
 
+   bool SupportsStridedInput() const override { return true; }
+
    void Initialize(RModel& model) override {
       if (model.CheckIfTensorAlreadyExist(fNX) == false){
          std::cout<<"Input tensor for transpose: "<<fNX<<'\n';
          throw std::runtime_error("SOFIE Tranpose Op Input Tensor is not found in model");
       }
       fShapeX = model.GetDimTensorShape(fNX);
+      fHasStridedInput = model.IsStridedInputTensor(fNX) && !fShapeX.empty();
       if (fAttrPerm.empty()){
          fAttrPerm.reserve(fShapeX.size());
          for (int i = fShapeX.size() - 1; i >= 0; i--){
@@ -140,11 +143,16 @@ public:
 
 
       out << SP << "{\n";
-      out << SP << SP << "// Pre-baked input strides (row-major)\n";
-      out << SP << SP << constQualifier << " size_t " << opName << "_strX[] = {";
-      for (size_t i = 0; i < rank; ++i)
-         out << stridesX[i] << (i + 1 < rank ? ", " : "");
-      out << "};\n";
+      if (fHasStridedInput) {
+         // input strides given to the Session
+         out << GenerateInputStrideArray(opName + "_strX", fNX, fShapeX);
+      } else {
+         out << SP << SP << "// Pre-baked input strides (row-major)\n";
+         out << SP << SP << constQualifier << " size_t " << opName << "_strX[] = {";
+         for (size_t i = 0; i < rank; ++i)
+            out << stridesX[i] << (i + 1 < rank ? ", " : "");
+         out << "};\n";
+      }
 
       out << SP << SP << "// Pre-baked output strides (row-major)\n";
       out << SP << SP << constQualifier << " size_t " << opName << "_strY[] = {";
@@ -152,7 +160,8 @@ public:
          out << stridesY[i] << (i + 1 < rank ? ", " : "");
       out << "};\n\n";
 
-      bool innerContiguous = (fAttrPerm.back() == (int64_t) (rank - 1));
+      // the inner stride of a strided input is only known at run time: no contiguous copy of the inner block
+      bool innerContiguous = !fHasStridedInput && (fAttrPerm.back() == (int64_t) (rank - 1));
       size_t outerRank    = innerContiguous ? rank - 1 : rank;
       size_t  innerSize    = innerContiguous ? (isDynamic ? 0 : intShapeX[fAttrPerm[rank - 1]])
                              : 1;
@@ -235,6 +244,8 @@ public:
       op += SP + SP + "ALPAKA_FN_ACC void operator()(TAcc const& acc, T const* input, T* output,";
       for (auto &p : dynParamNames)
          op += "const std::size_t " + p + ",";
+      if (fHasStridedInput)
+         op += "sofie_strided_layout<" + std::to_string(rank) + "> const layoutX,";
       op += "const std::size_t totalElements) const {\n";
       op += SP + SP + SP + "auto const idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
       op += SP + SP + SP + "if (idx >= totalElements) return;\n";
@@ -251,7 +262,8 @@ public:
          op += SP + SP + SP + SP + "remaining = remaining - coord * ("
                + outputStrides[k].GetVal() + ");\n";
          op += SP + SP + SP + SP + "input_idx += coord * ("
-               + inputStrides[fAttrPerm[k]].GetVal() + ");\n";
+               + (fHasStridedInput ? "layoutX.stride[" + std::to_string(fAttrPerm[k]) + "]"
+                                   : inputStrides[fAttrPerm[k]].GetVal()) + ");\n";
       }
 
       op += SP + SP + SP + "output[idx] = input[input_idx];\n";
@@ -286,6 +298,9 @@ public:
              << "static_cast<Idx>(" << length << ")}));\n";
       }
 
+      if (fHasStridedInput)
+         out << GenerateStridedBroadcastLayout("op_" + OpName + "_X", fNX, fShapeX, fShapeX.size(), fShapeX);
+
       out << SP << "auto const elementsPerThread_" << fNY << " = Vec::all(static_cast<Idx>(1));\n";
       out << SP << "auto const elementsPerGrid_" << fNY << " = Vec::all(Idx{" << length << "});\n";
       out << SP << "auto const workDiv_" << fNY << " = sofie_workdiv(elementsPerGrid_" << fNY << ");\n";
@@ -294,6 +309,8 @@ public:
          << "), alpaka::getPtrNative(" << outputBuffer << ")";
       for (auto &p : dynParamNames)
          out << ", static_cast<std::size_t>(" << p << ")";
+      if (fHasStridedInput)
+         out << ", layout_op_" << OpName << "_X";
       out << ", static_cast<Idx>(" << length << "));\n";
       out << SP << "alpaka::enqueue(queue, task_" << OpName << ");\n";
       return out.str();
@@ -301,7 +318,7 @@ public:
 
    EFusionMappingType GetFusionMappingType() const override
    {
-      if (fIsOutputConstant || fAttrPerm.empty())
+      if (fIsOutputConstant || fHasStridedInput || fAttrPerm.empty())
          return EFusionMappingType::Unsupported;
 
       return EFusionMappingType::Shuffle;

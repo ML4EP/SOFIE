@@ -40,8 +40,12 @@ public:
          throw std::runtime_error("SOFIE HardSigmoid Op Input Tensor is not found in model");
       }
       fShape = model.GetTensorShape(fNX);
+      fHasStridedInput = model.IsStridedInputTensor(fNX) && !fShape.empty();
       model.AddIntermediateTensor(fNY, model.GetTensorType(fNX), fShape);
    }
+
+   bool SupportsStridedInput() const override { return true; }
+
 
    std::string Generate(std::string OpName) override
    {
@@ -58,6 +62,12 @@ public:
           << "_beta = " << std::setprecision(std::numeric_limits<float>::max_digits10) << fBeta << ";\n";
 
       out << "\n//------ HardSigmoid\n";
+      if (fHasStridedInput) {
+         out << GenerateStridedUnaryLoop(OpName, fNX, fNY, ConvertShapeToDim(fShape), [&](const std::string &v) {
+            return "std::max(0.0f, std::min(1.0f, " + OpName + "_alpha * " + v + " + " + OpName + "_beta))";
+         });
+         return out.str();
+      }
       out << SP << "for (int id = 0; id < " << length << " ; id++){\n";
       out << SP << SP << "tensor_" << fNY << "[id] = std::max(0.0f, std::min(1.0f, " << OpName << "_alpha * tensor_"
           << fNX << "[id] + " << OpName << "_beta));\n";

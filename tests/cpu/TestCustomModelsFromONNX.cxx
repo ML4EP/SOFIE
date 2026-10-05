@@ -1441,6 +1441,45 @@ TEST(ONNX, WhereBroadcastEqualElementCount)
    expectEqual(output, correct);
 }
 
+// If operator (subgraphs): both branches read the outer-scope input X
+TEST(ONNX, IfSimpleThen)
+{
+   std::vector<uint8_t> cond = {true};
+   std::vector<float> x = {1, -2, 3, -4, 5, -6};
+   std::vector<float> correct = {1, 4, 9, 16, 25, 36};
+   ASSERT_RUN(std::vector<float>, IfSimple, cond, x);
+
+   expectEqual(output, correct);
+}
+TEST(ONNX, IfSimpleElse)
+{
+   std::vector<uint8_t> cond = {false};
+   std::vector<float> x = {1, -2, 3, -4, 5, -6};
+   std::vector<float> correct = {-1, 2, -3, 4, -5, 6};
+   ASSERT_RUN(std::vector<float>, IfSimple, cond, x);
+
+   expectEqual(output, correct);
+}
+// two outputs per branch, branch-local initializers and an operator reading the If outputs
+TEST(ONNX, IfTwoOutputsThen)
+{
+   std::vector<uint8_t> cond = {true};
+   std::vector<float> x = {1, -2, 3, -4};
+   std::vector<float> correct = {4, -3, 10, -6};
+   ASSERT_RUN(std::vector<float>, IfTwoOutputs, cond, x);
+
+   expectEqual(output, correct);
+}
+TEST(ONNX, IfTwoOutputsElse)
+{
+   std::vector<uint8_t> cond = {false};
+   std::vector<float> x = {1, -2, 3, -4};
+   std::vector<float> correct = {1, 0, 5, 0};
+   ASSERT_RUN(std::vector<float>, IfTwoOutputs, cond, x);
+
+   expectEqual(output, correct);
+}
+
 TEST(ONNX, Sin)
 {
    std::vector<float> input({

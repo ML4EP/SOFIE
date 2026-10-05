@@ -21,6 +21,10 @@ private:
    std::string fType;
    bool fHasMask = false;
 
+   // Q, K, V and the mask which are graph inputs read through their strides
+   bool fStridedQ = false, fStridedK = false, fStridedV = false, fStridedMask = false;
+   std::vector<Dim> fShapeK, fShapeV, fShapeMask;
+
    bool fFolded = false;
    std::string fQKBatchStride, fQKHeadStride, fQKSeqStride;
    std::string fVYBatchStride, fVYHeadStride, fVYSeqStride;
@@ -61,6 +65,16 @@ public:
 
       fShapeQ = model.GetDimTensorShape(fNQ);
       auto shapeV = model.GetDimTensorShape(fNV);
+      fShapeK = model.GetDimTensorShape(fNK);
+      fShapeV = shapeV;
+      fStridedQ = model.IsStridedInputTensor(fNQ);
+      fStridedK = model.IsStridedInputTensor(fNK);
+      fStridedV = model.IsStridedInputTensor(fNV);
+      if (!fNMask.empty() && model.CheckIfTensorAlreadyExist(fNMask)) {
+         fShapeMask = model.GetDimTensorShape(fNMask);
+         fStridedMask = model.IsStridedInputTensor(fNMask);
+      }
+      fHasStridedInput = fStridedQ || fStridedK || fStridedV || fStridedMask;
       fType = ConvertTypeToString(model.GetTensorType(fNQ));
 
       if (fShapeQ.size() == 4) {
@@ -121,6 +135,8 @@ public:
       model.AddNeededStdLib("limits");
    }
 
+   bool SupportsStridedInput() const override { return true; }
+
    std::string Generate(std::string opName) override {
       opName = "op_" + opName;
       std::stringstream out;
@@ -130,6 +146,11 @@ public:
          : ("static_cast<" + fType + ">(1) / std::sqrt(static_cast<" + fType + ">(" + fD + "))");
 
       out << "\n//---- SDPA " << opName << "\n";
+      // inputs read through the strides given to the Session, from the logical (contiguous) index of their elements
+      if (fStridedQ) out << GenerateStridedOffsetLambda(opName + "_Q", fNQ, fShapeQ);
+      if (fStridedK) out << GenerateStridedOffsetLambda(opName + "_K", fNK, fShapeK);
+      if (fStridedV) out << GenerateStridedOffsetLambda(opName + "_V", fNV, fShapeV);
+      if (fStridedMask) out << GenerateStridedOffsetLambda(opName + "_M", fNMask, fShapeMask);
       out << SP << "for (size_t b = 0; b < " << fB << "; ++b)\n";
       out << SP << "for (size_t h = 0; h < " << fH << "; ++h)\n";
       out << SP << "for (size_t s = 0; s < " << fS << "; ++s) {\n";
@@ -164,7 +185,18 @@ public:
           << "[b*(" << fVYBatchStride << ") + h*(" << fVYHeadStride << ") + s*(" << fVYSeqStride << ") + d] = acc;\n";
       out << SP << SP << "}\n";
       out << SP << "}\n";
-      return out.str();
+      std::string code = out.str();
+      auto rewrite = [&](bool strided, const std::string &tensor, const std::string &id) {
+         if (strided)
+            code = RewriteIndexedReads(code, "tensor_" + tensor, [&](const std::string &index) {
+               return "xoff_" + opName + "_" + id + "(" + index + ")";
+            });
+      };
+      rewrite(fStridedQ, fNQ, "Q");
+      rewrite(fStridedK, fNK, "K");
+      rewrite(fStridedV, fNV, "V");
+      rewrite(fStridedMask, fNMask, "M");
+      return code;
    }
 
    // Tile size (in K/V rows) for the shared-memory-tiled kernel below, chosen
@@ -179,6 +211,33 @@ public:
    }
 
    std::string Generate_GPU_Kernel_ALPAKA(std::string opName) override {
+      std::string code = GenerateSdpaKernel(std::move(opName));
+      if (!fHasStridedInput)
+         return code;
+      // the reads of the strided inputs go through their strides, from the logical (contiguous) index of the elements
+      auto rewrite = [&](bool strided, const std::string &name, const std::string &layout) {
+         if (strided)
+            code = RewriteIndexedReads(code, name, [&](const std::string &index) {
+               return "sofie_strided_offset(" + layout + ", " + index + ")";
+            });
+      };
+      rewrite(fStridedQ, "Q", "layoutQ");
+      rewrite(fStridedK, "K", "layoutK");
+      rewrite(fStridedV, "V", "layoutV");
+      rewrite(fStridedMask, "mask", "layoutMask");
+      std::string layouts;
+      if (fStridedQ) layouts += ",\n" + SP + SP + SP + "sofie_strided_layout<" + std::to_string(fShapeQ.size()) + "> const layoutQ";
+      if (fStridedK) layouts += ",\n" + SP + SP + SP + "sofie_strided_layout<" + std::to_string(fShapeK.size()) + "> const layoutK";
+      if (fStridedV) layouts += ",\n" + SP + SP + SP + "sofie_strided_layout<" + std::to_string(fShapeV.size()) + "> const layoutV";
+      if (fStridedMask) layouts += ",\n" + SP + SP + SP + "sofie_strided_layout<" + std::to_string(fShapeMask.size()) + "> const layoutMask";
+      const std::string signatureEnd = "T const scale) const {";
+      for (size_t pos = code.find(signatureEnd); pos != std::string::npos; pos = code.find(signatureEnd, pos + 1)) {
+         code.replace(pos, signatureEnd.size(), "T const scale" + layouts + ") const {");
+      }
+      return code;
+   }
+
+   std::string GenerateSdpaKernel(std::string opName) {
       opName = "op_" + opName;
       std::string kname = "SDPAKernel_" + opName;
 
@@ -421,6 +480,10 @@ public:
       std::stringstream out;
       out << "\n//------ SDPA_GPU_ALPAKA\n";
       out << SP << "{\n";
+      if (fStridedQ) out << GenerateStridedBroadcastLayout(opName + "_Q", fNQ, fShapeQ, fShapeQ.size(), fShapeQ);
+      if (fStridedK) out << GenerateStridedBroadcastLayout(opName + "_K", fNK, fShapeK, fShapeK.size(), fShapeK);
+      if (fStridedV) out << GenerateStridedBroadcastLayout(opName + "_V", fNV, fShapeV, fShapeV.size(), fShapeV);
+      if (fStridedMask) out << GenerateStridedBroadcastLayout(opName + "_M", fNMask, fShapeMask, fShapeMask.size(), fShapeMask);
       out << SP << SP << fType << " const sdpaScale_" << opName << " = " << scaleVal << ";\n";
       if (canTile) {
          // One block per (batch, head, query-tile) so the K/V shared-memory
@@ -454,7 +517,11 @@ public:
           << "static_cast<Idx>(" << fS << "), "
           << "static_cast<Idx>(" << fD << "), "
           << "static_cast<Idx>(" << fDv << "), "
-          << "sdpaScale_" << opName << ");\n";
+          << "sdpaScale_" << opName
+          << (fStridedQ ? ", layout_" + opName + "_Q" : std::string())
+          << (fStridedK ? ", layout_" + opName + "_K" : std::string())
+          << (fStridedV ? ", layout_" + opName + "_V" : std::string())
+          << (fStridedMask ? ", layout_" + opName + "_M" : std::string()) << ");\n";
       out << SP << SP << "alpaka::enqueue(queue, task_" << opName << ");\n";
       out << SP << "}\n";
       return out.str();

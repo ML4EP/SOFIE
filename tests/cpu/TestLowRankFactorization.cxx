@@ -1,6 +1,8 @@
 // Unit + benchmarking-condition tests for SOFIE's low rank factorization feature
 // (Options::kLowRankFactorize). LowRankModelGenerator.cxx emits the headers this
-// file #includes (see the "sofie-lowrank-emit" CTest fixture in CMakeLists.txt).
+// file includes.
+
+#include "common/lowrank_test_utils.h"
 
 #include "SOFIE/SOFIEHelpers.hxx"
 
@@ -18,17 +20,6 @@
 #include <vector>
 
 namespace {
-
-constexpr size_t kM = 4, kK = 64, kN = 32, kRank = 16;
-
-std::vector<float> MakeInput()
-{
-   std::mt19937 rng(7);
-   std::normal_distribution<float> dist(0.f, 1.f);
-   std::vector<float> x(kM * kK);
-   for (auto &v : x) v = dist(rng);
-   return x;
-}
 
 // sum of all "std::vector<float> fTensor_<weight> = std::vector<float>(<n>);" declared
 // sizes in a generated header - used to confirm low rank actually shrinks weight storage.

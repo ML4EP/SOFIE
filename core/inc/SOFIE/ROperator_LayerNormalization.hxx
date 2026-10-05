@@ -78,6 +78,9 @@ public:
       }
       bool isDynamic = model.IsDynamicTensor(fNX);
       fShapeX = model.GetDimTensorShape(fNX);
+      fHasStridedInput = model.IsStridedInputTensor(fNX) && !fShapeX.empty();
+      if (model.IsStridedInputTensor(fNScale) || (!fNB.empty() && model.IsStridedInputTensor(fNB)))
+         throw std::runtime_error("SOFIE LayerNormalization - strided input is only supported for the data tensor X");
       fShapeY = fShapeX;
       // Type of the output
       fType = ConvertTypeToString(model.GetTensorType(fNX));
@@ -174,6 +177,8 @@ public:
       return out.str();
    }
 
+   bool SupportsStridedInput() const override { return true; }
+
    std::string Generate(std::string opName) override
    {
       opName = "op_" + opName;
@@ -185,6 +190,13 @@ public:
       std::stringstream out;
 
       out << "//---- Layer Normalization  operator " << opName << "\n";
+      // a strided input is read through its strides, from the logical (contiguous) index of its elements
+      auto readX = [&](const std::string &index) {
+         return fHasStridedInput ? "tensor_" + fNX + "[xoff_" + opName + "(" + index + ")]"
+                                 : "tensor_" + fNX + "[" + index + "]";
+      };
+      if (fHasStridedInput)
+         out << GenerateStridedOffsetLambda(opName, fNX, fShapeX);
 
       // Loop over all the normalized axes i.e. [axis, ..., size)
       std::vector<std::string> inputShape(fSize);
@@ -245,7 +257,7 @@ public:
          out << SP << SP << "for (size_t " << jIdx << " = 0; " << jIdx << " < " << inputShape[j]
                          << "; " << jIdx << "++) {\n";
       }
-      out << SP << SP << SP << "mean += tensor_" << fNX << "[" << inputIndex << "];\n";
+      out << SP << SP << SP << "mean += " << readX(inputIndex) << ";\n";
       for (size_t j = fAxis; j < fSize; j++) {
          out << SP << SP << "}\n";
       }
@@ -262,7 +274,7 @@ public:
          out << SP << SP << "for (size_t " << jIdx << " = 0; " << jIdx << " < " << inputShape[j]
                           << "; " << jIdx << "++){\n";
       }
-      out << SP << SP << SP << "float tmp = tensor_" << fNX << "[" << inputIndex << "] - mean;\n";
+      out << SP << SP << SP << "float tmp = " << readX(inputIndex) << " - mean;\n";
       out << SP << SP << SP << "sum += tmp*tmp;\n";
       for (size_t j = fAxis; j < fSize; j++) {
          out << SP << SP << "}\n";
@@ -287,7 +299,7 @@ public:
              << "++){\n";
       }
       out << SP << SP << SP << "tensor_" << fNY << "[" << inputIndex << "] = tensor_" << fNScale;
-      out << "[" << scaleIndex << "] * invStdDev * (tensor_" << fNX << "[" << inputIndex << "] - mean)";
+      out << "[" << scaleIndex << "] * invStdDev * (" << readX(inputIndex) << " - mean)";
 
       // add bias if needed
       if (!fNB.empty())
@@ -372,6 +384,10 @@ public:
       // then loop over normalized dims inside the kernel.
 
       std::string kname = "LayerNormKernel_" + opName;
+      // a strided input is read through its strides, from the logical (contiguous) index of its elements
+      auto rdX = [&](const std::string &index) {
+         return fHasStridedInput ? StridedKernelRead("X", "layoutX", index) : "X[" + index + "]";
+      };
       std::string op;
       op  = "\n//------ LAYERNORM_KERNEL_ALPAKA\n";
       op += SP + "struct " + kname + " {\n";
@@ -393,6 +409,8 @@ public:
       // access to _infer_impl's local n_<param> variables otherwise.
       for (auto &p : dynParamNames)
          op += SP + SP + SP + "std::size_t const " + p + ",\n";
+      if (fHasStridedInput)
+         op += SP + SP + SP + "sofie_strided_layout<" + std::to_string(fShapeX.size()) + "> const layoutX,\n";
       op += SP + SP + SP + "std::size_t const axesLength) const {\n\n";
 
       // Sum of "axis_i * stride_i" over outer axes where the scale/bias tensor
@@ -504,7 +522,7 @@ public:
          op += SP + SP + SP + SP + "if (j < " + nl + "u) {\n";
          op += emitOffsets("j", SP + SP + SP + SP + SP);
          op += SP + SP + SP + SP + SP + "idxs[k] = row_base + norm_offset;\n";
-         op += SP + SP + SP + SP + SP + "vals[k] = X[idxs[k]];\n";
+         op += SP + SP + SP + SP + SP + "vals[k] = " + rdX("idxs[k]") + ";\n";
          op += SP + SP + SP + SP + SP + "local_sum += vals[k];\n";
          op += SP + SP + SP + SP + "} else {\n";
          op += SP + SP + SP + SP + SP + "idxs[k] = 0u;\n";
@@ -613,7 +631,7 @@ public:
          for (size_t j = fAxis; j < fSize; ++j)
             op += " + n_" + std::to_string(j) + " * " + dimLit(strides[j]);
          op += ";\n";
-         op += SP + SP + SP + SP + SP + "mean += X[norm_idx];\n";
+         op += SP + SP + SP + SP + SP + "mean += " + rdX("norm_idx") + ";\n";
          for (size_t j = fAxis; j < fSize; ++j) op += SP + SP + SP + SP + "}\n";
          op += SP + SP + SP + SP + "mean /= static_cast<T>(" + fNormalizedLength + ");\n\n";
 
@@ -626,7 +644,7 @@ public:
          for (size_t j = fAxis; j < fSize; ++j)
             op += " + n_" + std::to_string(j) + " * " + dimLit(strides[j]);
          op += ";\n";
-         op += SP + SP + SP + SP + SP + "T tmp = X[norm_idx] - mean;\n";
+         op += SP + SP + SP + SP + SP + "T tmp = " + rdX("norm_idx") + " - mean;\n";
          op += SP + SP + SP + SP + SP + "sum += tmp * tmp;\n";
          for (size_t j = fAxis; j < fSize; ++j) op += SP + SP + SP + SP + "}\n";
          op += SP + SP + SP + SP + "T const invStdDev = static_cast<T>(1) / "
@@ -653,7 +671,7 @@ public:
                op += " + n_" + std::to_string(j) + " * " + dimLit(scaleStrides[j]);
          }
          op += ";\n";
-         op += SP + SP + SP + SP + SP + "T val = scale[s_idx] * invStdDev * (X[norm_idx] - mean);\n";
+         op += SP + SP + SP + SP + SP + "T val = scale[s_idx] * invStdDev * (" + rdX("norm_idx") + " - mean);\n";
          if (!fNB.empty()) {
             op += SP + SP + SP + SP + SP + "std::size_t const b_idx = bias_base";
             for (size_t j = fAxis; j < fSize; ++j) {
@@ -708,10 +726,14 @@ public:
       args += ", alpaka::getPtrNative(deviceBuf_" + fNY + ")";
       for (auto &p : dynParamNames)
          args += ", static_cast<std::size_t>(" + p + ")";
+      if (fHasStridedInput)
+         args += ", layout_" + opName + "_X";
       args += ", static_cast<Idx>(" + axesLengthStr + ")";
 
       std::stringstream out;
       out << "\n//------ LAYERNORM_GPU_ALPAKA\n";
+      if (fHasStridedInput)
+         out << GenerateStridedBroadcastLayout(opName + "_X", fNX, fShapeX, fShapeX.size(), fShapeX);
       if (canParallel2) {
          // Parallel: one block per row, blockSize2 threads per block
          out << SP << "alpaka::WorkDivMembers<Dim, Idx> workDiv_" << opName << "(\n";

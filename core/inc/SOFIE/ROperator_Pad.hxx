@@ -58,6 +58,7 @@ public:
       }
 
       fInputShape = model.GetDimTensorShape(fNX);
+      fHasStridedInput = model.IsStridedInputTensor(fNX) && !fInputShape.empty();
 
       if (fMode != EMode::kConstant) {
          throw std::runtime_error("SOFIE Pad Op supports now only Constant mode");
@@ -150,6 +151,8 @@ public:
    }
 
 
+   bool SupportsStridedInput() const override { return true; }
+
    std::string Generate(std::string OpName) override {
       OpName = "op_" + OpName;
       if (fOutputShape.empty()){
@@ -159,6 +162,13 @@ public:
       auto inputStride = UTILITY::ComputeStrideFromShape(fInputShape);
       auto outStride = UTILITY::ComputeStrideFromShape(fOutputShape);
       out << "\n//------ Pad\n";
+      if (fHasStridedInput) {
+         // input read through the strides given to the Session
+         const std::string name = "strX_" + OpName;
+         out << GenerateInputStrideArray(name, fNX, fInputShape);
+         for (size_t k = 0; k < fInputShape.size(); k++)
+            inputStride[k] = Dim{name + "[" + std::to_string(k) + "]", static_cast<size_t>(-1)};
+      }
       // fill first output tensor with the constant values
       std::string length = ConvertDimShapeToLength(fOutputShape);
       int dims = fOutputShape.size();
@@ -185,6 +195,8 @@ public:
       for (int i = 0; i < dims; i++) {
          out << "id" << i;
          if (i < dims-1) out << " * (" << inputStride[i].GetVal() << ") + ";
+         // the last stride is only known at run time if the input is strided
+         else if (fHasStridedInput) out << " * (" << inputStride[i].GetVal() << ")";
       }
       out << "];\n";
       for (int i = dims-1; i >= 0; i--) {
@@ -203,6 +215,10 @@ public:
 
       auto inputStrides = UTILITY::ComputeStrideFromShape(fInputShape);
       auto outputStrides = UTILITY::ComputeStrideFromShape(fOutputShape);
+      // input read through the strides given to the Session: the kernel receives them in a layout
+      if (fHasStridedInput)
+         for (std::size_t d = 0; d < D; ++d)
+            inputStrides[d] = Dim{"layoutX.stride[" + std::to_string(d) + "]", static_cast<std::size_t>(-1)};
       opName = "op_" + opName;
       std::string kname = "PadKernel_" + opName;
 
@@ -219,6 +235,8 @@ public:
       op += SP + SP + SP + "T* __restrict__ output,\n";
       for (auto &p : dynParamNames)
          op += SP + SP + SP + "std::size_t const " + p + ",\n";
+      if (fHasStridedInput)
+         op += SP + SP + SP + "sofie_strided_layout<" + std::to_string(D) + "> const layoutX,\n";
       op += SP + SP + SP + "std::size_t const totalElements) const {\n\n";
 
       op += SP + SP + SP + "auto const global_thread_idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
@@ -290,6 +308,8 @@ public:
 
       std::stringstream out;
       out << "\n//------ PAD_GPU_ALPAKA\n";
+      if (fHasStridedInput)
+         out << GenerateStridedBroadcastLayout(opName + "_X", fNX, fInputShape, fInputShape.size(), fInputShape);
       out << SP << "auto const elementsPerThread_" << opName << " = Vec::all(static_cast<Idx>(1));\n";
       out << SP << "auto const elementsPerGrid_"   << opName << " = Vec::all(Idx{static_cast<Idx>(" << totalElements << ")});\n";
       out << SP << "auto const workDiv_" << opName << " = sofie_workdiv(elementsPerGrid_" << opName << ");\n";
@@ -299,6 +319,8 @@ public:
          << ", alpaka::getPtrNative(deviceBuf_" << fNY << ")";
       for (auto &p : dynParamNames)
          out << ", static_cast<std::size_t>(" << p << ")";
+      if (fHasStridedInput)
+         out << ", layout_" << opName << "_X";
       out << ", static_cast<Idx>(" << totalElements << "));\n";
       out << SP << "alpaka::enqueue(queue, task_" << opName << ");\n";
 

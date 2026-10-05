@@ -23,6 +23,9 @@ private:
    bool fLStatic = false;
    size_t fLValue = 0;
 
+   // u, delta, A, B, C and D_bias, read through their strides if they are graph inputs
+   std::vector<StridedInputInfo> fInputs;
+
    bool UseParallelGPUScan() const
    {
       return fNStatic && fNValue > 0 && fNValue <= 256;
@@ -94,6 +97,13 @@ public:
       fShapeU = model.GetDimTensorShape(fNU);
       if (fShapeU.size() != 3)
          throw std::runtime_error("SOFIE MambaScan: u must be rank-3 [B, D, L]");
+      fInputs.clear();
+      for (const auto &in : std::vector<std::pair<std::string, std::string>>{
+              {fNU, "u"}, {fNDelta, "delta"}, {fNA, "A"}, {fNB, "B"}, {fNC, "C"}, {fNDbias, "D_bias"}}) {
+         const bool strided = model.IsStridedInputTensor(in.first);
+         fInputs.push_back({in.first, in.second, model.GetDimTensorShape(in.first), strided});
+         fHasStridedInput |= strided;
+      }
 
       auto shapeA = model.GetDimTensorShape(fNA);
       if (shapeA.size() != 2)
@@ -119,6 +129,8 @@ public:
       model.AddNeededStdLib("cmath");
    }
 
+   bool SupportsStridedInput() const override { return true; }
+
    std::string Generate(std::string opName) override {
       opName = "op_" + opName;
       std::stringstream out;
@@ -140,10 +152,24 @@ public:
           << fNState << "[b*" << fD << "*" << fN << " + d*" << fN << " + n];\n";
       out << SP << SP << SP << SP << "tensor_" << fNY << "[b*" << fD << "*" << fL << " + d*" << fL << " + t] = y_val;\n";
       out << SP << SP << SP << "}\n" << SP << SP << "}\n" << SP << "}\n";
-      return out.str();
+      return RewriteCpuStridedReads(opName, fInputs, out.str());
    }
 
    std::string Generate_GPU_Kernel_ALPAKA(std::string opName) override {
+      return RewriteKernelStridedInputs(GenerateMambaKernel(std::move(opName)), fInputs, "std::size_t const N");
+   }
+
+   std::string Generate_GPU_ALPAKA(std::string opName) override {
+      // the layouts of the strided inputs are the last arguments of the kernel call
+      std::string code = GenerateMambaLaunch(opName);
+      const std::string last = "static_cast<Idx>(" + fN + "));";
+      const std::string layoutArgs = StridedLayoutArgs("op_" + opName, fInputs);
+      for (size_t pos = code.find(last); pos != std::string::npos; pos = code.find(last, pos + 1))
+         code.replace(pos, last.size(), "static_cast<Idx>(" + fN + ")" + layoutArgs + ");");
+      return StridedLaunchLayouts("op_" + opName, fInputs) + code;
+   }
+
+   std::string GenerateMambaKernel(std::string opName) {
       opName = "op_" + opName;
 
       if (UseSequenceParallelGPUScan()) {
@@ -421,7 +447,7 @@ public:
       return {fNState};
    }
 
-   std::string Generate_GPU_ALPAKA(std::string opName) override {
+   std::string GenerateMambaLaunch(std::string opName) {
       opName = "op_" + opName;
 
       if (UseSequenceParallelGPUScan()) {

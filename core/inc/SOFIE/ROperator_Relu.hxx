@@ -35,6 +35,7 @@ public:
       }
 
       fShape = model.GetDimTensorShape(fNX);
+      fHasStridedInput = model.IsStridedInputTensor(fNX) && !fShape.empty();
 
       model.AddIntermediateTensor(fNY, model.GetTensorType(fNX), fShape);
       if (model.Verbose()) {
@@ -51,13 +52,23 @@ public:
       std::stringstream out;
       auto length = ConvertDimShapeToLength(fShape);
       out << "\n//------ RELU\n";
+      if (fHasStridedInput) {
+         out << GenerateStridedUnaryLoop(OpName, fNX, fNY, fShape,
+                                         [](const std::string &v) { return "((" + v + " > 0 )? " + v + " : 0)"; });
+         return out.str();
+      }
       out << SP << "for (int id = 0; id < " << length << " ; id++){\n";
       out << SP << SP << "tensor_" << fNY << "[id] = ((tensor_" << fNX << "[id] > 0 )? tensor_" << fNX << "[id] : 0);\n";
       out << SP << "}\n";
       return out.str();
    }
 
+   bool SupportsStridedInput() const override { return true; }
+
    std::string Generate_GPU_Kernel_ALPAKA(std::string /*opName*/) {
+      if (fHasStridedInput)
+         return GenerateStridedUnaryKernel("ReluStridedKernel", "RELU",
+                                           [this](const std::string &v) { return GetElementwiseExpr(v); });
       std::string op;
       op = "\n//------ RELU_KERNEL_ALPAKA\n";
 
@@ -75,6 +86,8 @@ public:
    }
 
    std::string Generate_GPU_Kernel_Definitions_ALPAKA(std::string /*opName*/) override {
+      if (fHasStridedInput)
+         return SP + "ReluStridedKernel reluStridedKernel;\n";
       return SP + "ReluKernel reluKernel;\n";
    }
 
@@ -83,6 +96,9 @@ public:
       if (fShape.empty()) {
          throw std::runtime_error("SOFIE Operator Relu called to Generate without being initialized first");
       }
+
+      if (fHasStridedInput)
+         return GenerateStridedUnaryLaunch(OpName, "reluStridedKernel", "RELU", fNX, fNY, fShape);
 
       std::stringstream out;
       auto length = ConvertDimShapeToLength(fShape);
@@ -101,7 +117,7 @@ public:
          return fNY;
    }
 
-   bool IsElementwise() const override { return true; }
+   bool IsElementwise() const override { return !fHasStridedInput; }
    std::string GetElementwiseExpr(const std::string& v) const override {
       return "(" + v + ") >= T(0) ? (" + v + ") : T(0)";
    }

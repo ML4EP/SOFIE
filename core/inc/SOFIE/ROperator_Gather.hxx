@@ -32,6 +32,9 @@ private:
 
    std::string fType;
 
+   // data and indices tensors which are graph inputs read through their strides
+   bool fStridedX = false;
+   bool fStridedIndices = false;
 
 public:
    ROperator_Gather(){}
@@ -40,6 +43,8 @@ public:
          fInputTensorNames = { fNX, fNIndices };
          fOutputTensorNames = { fNY };
    }
+
+   bool SupportsStridedInput() const override { return true; }
 
    void Initialize(RModel& model) override {
       if (!model.CheckIfTensorAlreadyExist(fNX)) {
@@ -51,6 +56,9 @@ public:
                << ConvertDimShapeToString(model.GetDimTensorShape(fNIndices)) << std::endl;
       //  fShapeIndices can be  dynamic
       fShapeIndices = model.GetDimTensorShape(fNIndices);
+      fStridedX = model.IsStridedInputTensor(fNX) && !fShapeX.empty();
+      fStridedIndices = model.IsStridedInputTensor(fNIndices) && !fShapeIndices.empty();
+      fHasStridedInput = fStridedX || fStridedIndices;
       size_t q = fShapeIndices.size();
       // Axis in range [0, r) where r=rank(X)
       size_t r = fShapeX.size();
@@ -176,6 +184,20 @@ public:
       auto stridesY = UTILITY::ComputeStrideFromShape(fShapeY);
       auto stridesIndices = UTILITY::ComputeStrideFromShape(fShapeIndices);
 
+      // inputs read through the strides given to the Session
+      if (fStridedX) {
+         const std::string name = "strX_" + opName;
+         out << GenerateInputStrideArray(name, fNX, fShapeX);
+         for (size_t k = 0; k < r; k++)
+            stridesX[k] = Dim{name + "[" + std::to_string(k) + "]", static_cast<size_t>(-1)};
+      }
+      if (fStridedIndices) {
+         const std::string name = "strI_" + opName;
+         out << GenerateInputStrideArray(name, fNIndices, fShapeIndices);
+         for (size_t k = 0; k < q; k++)
+            stridesIndices[k] = Dim{name + "[" + std::to_string(k) + "]", static_cast<size_t>(-1)};
+      }
+
       // Fill the output Y[j_0, j_1, ..., j_{axis - 1}, i_0, i_1, ..., i_{q - 1}, j_{axis + 1}, ..., j_{r - 1}]
       // [0 ... axis) [axis ... axis + q) [axis + q ... q + r - 1)
       // iterate in [0 ... axis) [0 ... q) [axis ... r - 1)
@@ -294,6 +316,14 @@ std::string Generate_GPU_Kernel_ALPAKA(std::string opName, const std::vector<std
     auto stridesX       = UTILITY::ComputeStrideFromShape(fShapeX);
     auto stridesIndices = UTILITY::ComputeStrideFromShape(fShapeIndices);
 
+    // inputs read through the strides given to the Session: the kernel receives them in a layout
+    if (fStridedX)
+        for (std::size_t k = 0; k < r; k++)
+            stridesX[k] = Dim{"layoutX.stride[" + std::to_string(k) + "]", static_cast<std::size_t>(-1)};
+    if (fStridedIndices)
+        for (std::size_t k = 0; k < q; k++)
+            stridesIndices[k] = Dim{"layoutIndices.stride[" + std::to_string(k) + "]", static_cast<std::size_t>(-1)};
+
     std::string kname = "GatherKernel_" + opName;
 
     std::string op;
@@ -307,6 +337,10 @@ std::string Generate_GPU_Kernel_ALPAKA(std::string opName, const std::vector<std
     op += SP + SP + SP + "T* __restrict__ output,\n";
     for (auto &p : dynParamNames)
         op += SP + SP + SP + "std::size_t const " + p + ",\n";
+    if (fStridedX)
+        op += SP + SP + SP + "sofie_strided_layout<" + std::to_string(r) + "> const layoutX,\n";
+    if (fStridedIndices)
+        op += SP + SP + SP + "sofie_strided_layout<" + std::to_string(q) + "> const layoutIndices,\n";
     op += SP + SP + SP + "std::size_t const totalElements) const {\n\n";
 
     op += SP + SP + SP + "auto const global_thread_idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
@@ -393,6 +427,10 @@ std::string Generate_GPU_ALPAKA(std::string opName, const std::vector<std::strin
 
     std::stringstream out;
     out << "\n//------ GATHER_GPU_ALPAKA\n";
+    if (fStridedX)
+        out << GenerateStridedBroadcastLayout(opName + "_X", fNX, fShapeX, fShapeX.size(), fShapeX);
+    if (fStridedIndices)
+        out << GenerateStridedBroadcastLayout(opName + "_I", fNIndices, fShapeIndices, fShapeIndices.size(), fShapeIndices);
     out << SP << "auto const elementsPerThread_" << opName << " = Vec::all(static_cast<Idx>(1));\n";
     out << SP << "auto const elementsPerGrid_"   << opName << " = Vec::all(Idx{" << totalElements << "});\n";
     out << SP << "auto const workDiv_" << opName << " = sofie_workdiv(elementsPerGrid_" << opName << ");\n";
@@ -403,6 +441,10 @@ std::string Generate_GPU_ALPAKA(std::string opName, const std::vector<std::strin
         << ", alpaka::getPtrNative(deviceBuf_" << fNY << ")";
     for (auto &p : dynParamNames)
         out << ", static_cast<std::size_t>(" << p << ")";
+    if (fStridedX)
+        out << ", layout_" << opName << "_X";
+    if (fStridedIndices)
+        out << ", layout_" << opName << "_I";
     out << ", static_cast<Idx>(" << totalElements << "));\n";
     out << SP << "alpaka::enqueue(queue, task_" << opName << ");\n";
     return out.str();

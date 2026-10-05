@@ -133,6 +133,28 @@ void RModel_Base::GenerateHeaderInfo_GPU_ALPAKA(std::string& hgname) {
     fGC += "}\n";
     fGC += "#endif // SOFIE_ALPAKA_WORKDIV_DEFINED\n";
 
+    if (fStridedInput) {
+        // layout of an input tensor read through its strides: logical shape and strides (in elements)
+        fGC += "\n#ifndef SOFIE_ALPAKA_STRIDED_DEFINED\n";
+        fGC += "#define SOFIE_ALPAKA_STRIDED_DEFINED\n";
+        fGC += "template<std::size_t R>\n";
+        fGC += "struct sofie_strided_layout {\n";
+        fGC += "    std::size_t shape[R];\n";
+        fGC += "    std::size_t stride[R];\n";
+        fGC += "};\n";
+        fGC += "// offset in the input buffer of the element with row-major (contiguous) logical index idx\n";
+        fGC += "template<std::size_t R>\n";
+        fGC += "ALPAKA_FN_HOST_ACC inline std::size_t sofie_strided_offset(sofie_strided_layout<R> const& layout, std::size_t idx)\n{\n";
+        fGC += "    std::size_t offset = 0;\n";
+        fGC += "    for (std::size_t d = R; d-- > 0;) {\n";
+        fGC += "        offset += (idx % layout.shape[d]) * layout.stride[d];\n";
+        fGC += "        idx /= layout.shape[d];\n";
+        fGC += "    }\n";
+        fGC += "    return offset;\n";
+        fGC += "}\n";
+        fGC += "#endif // SOFIE_ALPAKA_STRIDED_DEFINED\n";
+    }
+
     // Macros that redirect alpaka two-argument device-math calls to direct C/C++ calls
     // when compiled by NVCC's device pass (__CUDA_ARCH__ defined).  The normal alpaka
     // form is used in host compilation and on non-CUDA backends.

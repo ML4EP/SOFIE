@@ -110,6 +110,10 @@ public:
     */
    void Initialize(RModel &) override;
 
+   /*! \brief The data input can be read through its strides
+    */
+   bool SupportsStridedInput() const override { return true; }
+
    /*! \brief Generate code for initializing the op
     */
    std::string GenerateInitCode() override;
@@ -207,6 +211,9 @@ void ROperator_ConvTranspose<T>::Initialize(RModel &model)
       throw std::runtime_error("SOFIE Conv Transpose op Input Tensor " + fNX + " is not found in model");
    }
    fShapeX = model.GetTensorShape(fNX);
+   fHasStridedInput = model.IsStridedInputTensor(fNX);
+   if (model.IsStridedInputTensor(fNW) || (!fNB.empty() && model.IsStridedInputTensor(fNB)))
+      throw std::runtime_error("SOFIE Conv Transpose op - strided input is only supported for the data tensor X");
    if (fShapeX.size() < 3 || fShapeX.size() > 5) {
       std::cout << fNX << " : " << ConvertShapeToString(fShapeX) << std::endl;
       throw std::runtime_error("SOFIE Conv Transpose Op input data tensor" + fNX +
@@ -397,6 +404,28 @@ std::string ROperator_ConvTranspose<T>::Generate(std::string OpName)
    out << SP << "float " << OpName << "_alpha = 1.0;\n";
    out << SP << "float " << OpName << "_beta = 0.0;\n";
 
+   // A strided input is a (spatial x channels) matrix of BLAS if its spatial dimensions are contiguous between
+   // them and either the spatial or the channel dimension has a unit stride: row-major data (leading dimension =
+   // channel stride) or channel-last data (the matrix is transposed, leading dimension = spatial stride)
+   const std::string strX = "strX_" + OpName;
+   const std::string ldx = OpName + "_ldx";
+   if (fHasStridedInput) {
+      const size_t r = fShapeX.size();
+      out << GenerateInputStrideArray(strX, fNX, std::vector<Dim>(fShapeX.begin(), fShapeX.end()));
+      out << SP << "int " << ldx << " = 0;\n";
+      out << SP << "const bool " << OpName << "_dense = " << (r == 3 ? std::string("true") : strX + "[2] == " + std::to_string(iWidth) + " * " + strX + "[3]") << ";\n";
+      out << SP << "if (" << OpName << "_dense && " << strX << "[" << r - 1 << "] == 1) {\n";
+      out << SP << SP << ldx << " = static_cast<int>(std::max<size_t>(" << strX << "[1], " << OpName << "_m));\n";
+      out << SP << "} else if (" << OpName << "_dense && " << strX << "[1] == 1) {\n";
+      out << SP << SP << OpName << "_transA = 'T';\n";
+      out << SP << SP << ldx << " = static_cast<int>(std::max<size_t>(" << strX << "[" << r - 1 << "], " << OpName << "_k));\n";
+      out << SP << "} else {\n";
+      out << SP << SP << "throw std::runtime_error(\"SOFIE ConvTranspose " << OpName << " - input tensor " << fNX
+          << " has strides which BLAS cannot handle: the spatial dimensions must be contiguous and either the channel "
+             "or the last dimension must have a unit stride\");\n";
+      out << SP << "}\n";
+   }
+
    if (!fUseSession) {
       out << SP << fType << " tensor_" << fImcol << "[" << fShapeW[1] * icstrideDil * iDepth * iHeight * iWidth
           << "] = {0};\n";
@@ -406,7 +435,10 @@ std::string ROperator_ConvTranspose<T>::Generate(std::string OpName)
 
 
    if (fAttrGroup == 1) {
-      out << SP << SP << "size_t x_offset = n * " << fShapeX[1] * iDepth * iHeight * iWidth << ";\n";
+      if (fHasStridedInput)
+         out << SP << SP << "size_t x_offset = n * " << strX << "[0];\n";
+      else
+         out << SP << SP << "size_t x_offset = n * " << fShapeX[1] * iDepth * iHeight * iWidth << ";\n";
       out << SP << SP << "size_t out_offset = n * " << fShapeY[1] * oDepth * oHeight * oWidth << ";\n";
 
       out << SP << SP << "BLAS::sgemm_(&" << OpName << "_transA, &" << OpName << "_transB, &" << OpName << "_m, &"
@@ -440,8 +472,12 @@ std::string ROperator_ConvTranspose<T>::Generate(std::string OpName)
       }
    } else {
       out << SP << SP << "for (size_t g = 0; g < " << fAttrGroup << "; g++) {\n";
-      out << SP << SP << "size_t x_offset = n * " << fShapeX[1] * iHeight * iWidth << " + g * "
-          << fShapeX[1] * iHeight * iWidth / fAttrGroup << ";\n ";
+      if (fHasStridedInput)
+         out << SP << SP << "size_t x_offset = n * " << strX << "[0] + g * " << fShapeX[1] / fAttrGroup << " * " << strX
+             << "[1];\n ";
+      else
+         out << SP << SP << "size_t x_offset = n * " << fShapeX[1] * iHeight * iWidth << " + g * "
+             << fShapeX[1] * iHeight * iWidth / fAttrGroup << ";\n ";
       out << SP << SP << "size_t out_offset = n * " << fShapeY[1] * oHeight * oWidth << " + g * "
           << fShapeY[1] * oHeight * oWidth / fAttrGroup << ";\n ";
 
@@ -490,6 +526,16 @@ std::string ROperator_ConvTranspose<T>::Generate(std::string OpName)
 
       out << SP << "BLAS::saxpy_(&" << OpName << "_size, &" << OpName << "_gamma, tensor_" << fNBroadcastedB << ", &"
           << OpName << "_incx, tensor_" << fNY << ", &" << OpName << "_incy);\n";
+   }
+
+   if (fHasStridedInput) {
+      // the leading dimension of the data input is the one deduced from its strides
+      std::string code = out.str();
+      const std::string plain = "tensor_" + fNX + " + x_offset, &" + OpName + "_m,";
+      const std::string strided = "tensor_" + fNX + " + x_offset, &" + OpName + "_ldx,";
+      for (size_t pos = code.find(plain); pos != std::string::npos; pos = code.find(plain, pos + strided.size()))
+         code.replace(pos, plain.size(), strided);
+      return code;
    }
 
    return out.str();

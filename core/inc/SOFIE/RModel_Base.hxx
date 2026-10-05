@@ -26,6 +26,7 @@ enum class Options {
    kLowRankFactorize = 0x40,
    kKernelOnly = 0x80,
    kSafetensorsWeightFile = 0x100,
+   kStridedInput = 0x200,
 };
 
 // Optimization levels inspired by ONNXRuntime.
@@ -71,6 +72,7 @@ protected:
    bool fUseWeightFile = true;
    bool fUseSession = true;
    bool fKernelOnly = false;
+   bool fStridedInput = false;
    bool fIsGNN = false;
    bool fIsGNNComponent = false;
 
@@ -114,10 +116,7 @@ protected:
    }
 
 public:
-   /**
-       Default constructor. Needed to allow serialization of ROOT objects. See
-       https://root.cern/manual/io_custom_classes/#restrictions-on-types-root-io-can-handle
-   */
+
    RModel_Base() = default;
 
    RModel_Base(std::string name, std::string parsedtime);
@@ -174,10 +173,6 @@ enum class FunctionRelation { INVALID = 0, NODES_EDGES = 1, NODES_GLOBALS = 2, E
 
 class RModel_GNNBase : public RModel_Base {
 public:
-   /**
-       Default constructor. Needed to allow serialization of ROOT objects. See
-       https://root.cern/manual/io_custom_classes/#restrictions-on-types-root-io-can-handle
-   */
    RModel_GNNBase() = default;
    virtual void Generate() = 0;
    virtual ~RModel_GNNBase() = default;

@@ -30,6 +30,12 @@ private:
 
    std::string fType;
 
+   // inputs which are graph inputs read through their strides
+   bool fStridedX = false;
+   bool fStridedI = false;
+   bool fStridedU = false;
+   std::vector<Dim> fShapeU;
+
    size_t fK = 0;
    std::string fSliceSizeExpr;
    std::string fNumOuterExpr;
@@ -63,7 +69,11 @@ public:
       fShapeX = model.GetDimTensorShape(fNX);
       fShapeI = model.GetDimTensorShape(fNI);
       auto shapeU = model.GetDimTensorShape(fNU);
-
+      fShapeU = shapeU;
+      fStridedX = model.IsStridedInputTensor(fNX) && !fShapeX.empty();
+      fStridedI = model.IsStridedInputTensor(fNI) && !fShapeI.empty();
+      fStridedU = model.IsStridedInputTensor(fNU) && !shapeU.empty();
+      fHasStridedInput = fStridedX || fStridedI || fStridedU;
 
       const size_t r = fShapeX.size();
       const size_t q = fShapeI.size();
@@ -98,6 +108,8 @@ public:
       }
    }
 
+   bool SupportsStridedInput() const override { return true; }
+
    std::string Generate(std::string opName) override {
       if (fIsOutputConstant) {
          return "//---------------------------------------\n";
@@ -105,6 +117,17 @@ public:
       opName = "op_" + opName;
       std::stringstream out;
       out << "//--------- ScatterND " << opName << " --> " << ConvertDimShapeToString(fShapeY) << "\n";
+      // inputs read through the strides given to the Session, from the logical (contiguous) index of their elements
+      if (fStridedI)
+         out << GenerateStridedOffsetLambda(opName + "_I", fNI, fShapeI);
+      if (fStridedU)
+         out << GenerateStridedOffsetLambda(opName + "_U", fNU, fShapeU);
+      auto readI = [&](const std::string &index) {
+         return fStridedI ? "tensor_" + fNI + "[xoff_" + opName + "_I(" + index + ")]" : "tensor_" + fNI + "[" + index + "]";
+      };
+      auto readU = [&](const std::string &index) {
+         return fStridedU ? "tensor_" + fNU + "[xoff_" + opName + "_U(" + index + ")]" : "tensor_" + fNU + "[" + index + "]";
+      };
 
       size_t r = fShapeX.size();
 
@@ -123,7 +146,10 @@ public:
       auto data_length = ConvertDimShapeToLength(fShapeX);
 
       out << SP << "// Step 1: copy input data to output\n";
-      out << SP << "std::copy(tensor_" << fNX << ", tensor_" << fNX << " + " << data_length << ", tensor_" << fNY << ");\n";
+      if (fStridedX)
+         out << GenerateStridedUnaryLoop(opName + "_cp", fNX, fNY, fShapeX, [](const std::string &v) { return v; });
+      else
+         out << SP << "std::copy(tensor_" << fNX << ", tensor_" << fNX << " + " << data_length << ", tensor_" << fNY << ");\n";
 
       out << SP << "// Step 2: data strides (row-major)\n";
       out << SP << "size_t " << opName << "_data_strides[" << r << "] = {";
@@ -137,8 +163,8 @@ public:
       out << SP << SP << "int64_t data_offset = 0;\n";
       for (size_t dim = 0; dim < k; ++dim) {
          out << SP << SP << "{\n";
-         out << SP << SP << SP << "int64_t coord = tensor_" << fNI
-             << "[idx * " << k << " + " << dim << "];\n";
+         out << SP << SP << SP << "int64_t coord = " << readI("idx * " + std::to_string(k) + " + " + std::to_string(dim))
+             << ";\n";
          out << SP << SP << SP << "if (coord < 0) coord += " << fShapeX[dim] << ";\n";
          out << SP << SP << SP << "data_offset += coord * "
                << opName << "_data_strides[" << dim << "];\n";
@@ -146,8 +172,7 @@ public:
       }
 
       out << SP << SP << "for (int64_t s = 0; s < " << slice_size << "; s++) {\n";
-      out << SP << SP << SP << "auto upd = tensor_" << fNU
-         << "[idx * " << slice_size << " + s];\n";
+      out << SP << SP << SP << "auto upd = " << readU("idx * " + slice_size + " + s") << ";\n";
 
       if (fReduction.empty() || fReduction == "none") {
          out << SP << SP << SP << "tensor_" << fNY << "[data_offset + s] = upd;\n";
@@ -182,7 +207,11 @@ public:
       auto stridesData = UTILITY::ComputeStrideFromShape(fShapeX);
 
       std::string op;
-      op  = "\n//------ SCATTERND_KERNEL_ALPAKA\n";
+      // the data input is copied in the output through its strides, before the updates are scattered
+      if (fStridedX)
+         op += GenerateStridedUnaryKernel("ScatterNDCopyKernel_" + opName, "SCATTERND_COPY",
+                                          [](const std::string &v) { return v; });
+      op += "\n//------ SCATTERND_KERNEL_ALPAKA\n";
       op += SP + "struct " + kname + " {\n";
       op += SP + SP + "template<typename TAcc, typename T>\n";
       op += SP + SP + "ALPAKA_FN_ACC void operator()(\n";
@@ -192,6 +221,10 @@ public:
       op += SP + SP + SP + "T const* updates,\n";
       for (auto &p : dynParamNames)
          op += SP + SP + SP + "std::size_t const " + p + ",\n";
+      if (fStridedI)
+         op += SP + SP + SP + "sofie_strided_layout<" + std::to_string(fShapeI.size()) + "> const layoutIndices,\n";
+      if (fStridedU)
+         op += SP + SP + SP + "sofie_strided_layout<" + std::to_string(fShapeU.size()) + "> const layoutUpdates,\n";
       op += SP + SP + SP + "std::size_t const numOuter,\n";
       op += SP + SP + SP + "std::size_t const sliceSize) const {\n\n";
 
@@ -205,7 +238,10 @@ public:
       for (size_t j = 0; j < fK; ++j) {
          op += SP + SP + SP + SP + "{\n";
          op += SP + SP + SP + SP + SP
-             + "int64_t idx = indices[i * " + std::to_string(fK) + "u + " + std::to_string(j) + "u];\n";
+             + "int64_t idx = "
+             + (fStridedI ? StridedKernelRead("indices", "layoutIndices", "i * " + std::to_string(fK) + "u + " + std::to_string(j) + "u")
+                          : "indices[i * " + std::to_string(fK) + "u + " + std::to_string(j) + "u]")
+             + ";\n";
          op += SP + SP + SP + SP + SP
              + "if (idx < 0) idx += " + fShapeX[j].GetVal() + ";\n";
          op += SP + SP + SP + SP + SP
@@ -215,7 +251,7 @@ public:
 
       op += SP + SP + SP + SP + "for (std::size_t s = 0; s < sliceSize; ++s) {\n";
       op += SP + SP + SP + SP + SP + "std::size_t const out_idx = out_base + s;\n";
-      op += SP + SP + SP + SP + SP + "std::size_t const upd_idx = i * sliceSize + s;\n";
+      op += SP + SP + SP + SP + SP + "std::size_t const upd_idx = " + std::string(fStridedU ? "sofie_strided_offset(layoutUpdates, i * sliceSize + s)" : "i * sliceSize + s") + ";\n";
 
       if (fReduction.empty() || fReduction == "none") {
          op += SP + SP + SP + SP + SP + "Y[out_idx] = updates[upd_idx];\n";
@@ -240,7 +276,10 @@ public:
    std::string Generate_GPU_Kernel_Definitions_ALPAKA(std::string opName) override {
       opName = "op_" + opName;
       std::string kname = "ScatterNDKernel_" + opName;
-      return SP + kname + " scatterNDKernel_" + opName + ";\n";
+      std::string defs = SP + kname + " scatterNDKernel_" + opName + ";\n";
+      if (fStridedX)
+         defs += SP + "ScatterNDCopyKernel_" + opName + " scatterNDCopyKernel_" + opName + ";\n";
+      return defs;
    }
 
    std::string Generate_GPU_ALPAKA(std::string opName, const std::vector<std::string> &dynParamNames) override {
@@ -251,7 +290,15 @@ public:
       std::stringstream out;
       out << "\n//------ SCATTERND_GPU_ALPAKA\n";
 
-      out << SP << "alpaka::memcpy(queue, deviceBuf_" << fNY << ", deviceBuf_" << fNX << ");\n";
+      if (fStridedI)
+         out << GenerateStridedBroadcastLayout(opName + "_I", fNI, fShapeI, fShapeI.size(), fShapeI);
+      if (fStridedU)
+         out << GenerateStridedBroadcastLayout(opName + "_U", fNU, fShapeU, fShapeU.size(), fShapeU);
+      if (fStridedX)
+         out << GenerateStridedUnaryLaunch(opName + "_copy", "scatterNDCopyKernel_" + opName, "SCATTERND_COPY", fNX, fNY,
+                                           fShapeX);
+      else
+         out << SP << "alpaka::memcpy(queue, deviceBuf_" << fNY << ", deviceBuf_" << fNX << ");\n";
 
       out << SP << "auto const elementsPerThread_" << opName << " = Vec::all(static_cast<Idx>(1));\n";
       out << SP << "auto const elementsPerGrid_"   << opName << " = Vec::all(static_cast<Idx>(" << fNumOuterExpr << "));\n";
@@ -263,6 +310,10 @@ public:
           << ", alpaka::getPtrNative(deviceBuf_" << fNU << ")";
       for (auto &p : dynParamNames)
          out << ", static_cast<std::size_t>(" << p << ")";
+      if (fStridedI)
+         out << ", layout_" << opName << "_I";
+      if (fStridedU)
+         out << ", layout_" << opName << "_U";
       out << ", static_cast<Idx>(" << fNumOuterExpr << ")"
           << ", static_cast<Idx>(" << fSliceSizeExpr << "));\n";
       out << SP << "alpaka::enqueue(queue, task_" << opName << ");\n";

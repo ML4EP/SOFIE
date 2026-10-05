@@ -134,6 +134,8 @@ SOFIE_GENERATE_EXECUTABLE(
   FIXTURES_SETUP sofie-lowrank-emit-build
 )
 
+target_include_directories(emitLowRankModels PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
 SOFIE_ADD_TEST(
   EmitLowRankModels
   COMMAND ./emitLowRankModels
@@ -150,11 +152,45 @@ SOFIE_GENERATE_EXECUTABLE(
 )
 
 target_include_directories(TestLowRankFactorization PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+target_include_directories(TestLowRankFactorization PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 SOFIE_ADD_TEST(
   TestLowRankFactorization
   EXEC ./TestLowRankFactorization
   FIXTURES_REQUIRED sofie-lowrank-emit;sofie-test-lowrank-build
+)
+
+SOFIE_GENERATE_EXECUTABLE(
+  emitStridedInputModels
+  models/StridedInputModelGenerator.cxx
+  LIBRARIES SOFIE_core
+  FIXTURES_SETUP sofie-strided-emit-build
+)
+
+target_include_directories(emitStridedInputModels PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+SOFIE_ADD_TEST(
+  EmitStridedInputModels
+  COMMAND ./emitStridedInputModels
+  FIXTURES_REQUIRED sofie-strided-emit-build
+  FIXTURES_SETUP sofie-strided-emit
+)
+
+SOFIE_GENERATE_EXECUTABLE(
+  TestStridedInput
+  cpu/TestStridedInput.cxx
+  LIBRARIES SOFIE_core GTest::gtest GTest::gtest_main BLAS::BLAS
+  FIXTURES_REQUIRED sofie-strided-emit
+  FIXTURES_SETUP sofie-test-strided-build
+)
+
+target_include_directories(TestStridedInput PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+target_include_directories(TestStridedInput PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+SOFIE_ADD_TEST(
+  TestStridedInput
+  EXEC ./TestStridedInput
+  FIXTURES_REQUIRED sofie-strided-emit;sofie-test-strided-build
 )
 
 ############################################################################
@@ -225,8 +261,10 @@ SOFIE_GENERATE_EXECUTABLE(
       alpaka/TestAlpakaPool.cxx
       alpaka/TestAlpakaLowRank.cxx
       alpaka/TestAlpakaKernelOnly.cxx
+      alpaka/TestAlpakaStridedInput.cxx
       alpaka/TestAlpakaNormReduction.cxx
       alpaka/TestAlpakaSequenceOps.cxx
+      alpaka/TestAlpakaSubGraph.cxx
     )
 
     set_source_files_properties(
@@ -238,7 +276,7 @@ SOFIE_GENERATE_EXECUTABLE(
       TestCustomModelsFromONNXForAlpakaCuda
       ${ALPAKA_CUDA_TEST_SOURCES}
       LIBRARIES SOFIE_core GTest::gtest GTest::gtest_main
-      FIXTURES_REQUIRED sofie-compile-models-onnx-alpaka;sofie-lowrank-emit
+      FIXTURES_REQUIRED sofie-compile-models-onnx-alpaka;sofie-lowrank-emit;sofie-strided-emit
       FIXTURES_SETUP sofie-test-models-onnx-alpaka-build
     )
 
@@ -419,6 +457,7 @@ SOFIE_GENERATE_EXECUTABLE(TestSofieParser cpu/TestSofieParser.cxx
   LIBRARIES SOFIE_core SOFIE_parsers GTest::gtest GTest::gtest_main
   FIXTURES_SETUP sofie-test-parser-build
 )
+target_include_directories(TestSofieParser PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 SOFIE_ADD_TEST(TestSofieParser
                   EXEC ./TestSofieParser
                   FIXTURES_REQUIRED sofie-test-parser-build)

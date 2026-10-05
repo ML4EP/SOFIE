@@ -15,9 +15,7 @@ include(FetchContent)
 #   ./bin/sofie_benchmark --onnxruntime
 #
 # Place .onnx models in benchmark/models/ and re-run cmake to register them.
-# sofie_benchmark lands in build/bin next to every other SOFIE binary (see
-# CMAKE_RUNTIME_OUTPUT_DIRECTORY in the top-level CMakeLists.txt) — there is
-# no separate benchmark/build tree to configure or hunt through.
+# sofie_benchmark lands in build/bin next to every other SOFIE binary
 ################################################################################
 
 option(SOFIE_BENCHMARK_ORT
@@ -126,8 +124,7 @@ file(GLOB BENCHMARK_ONNX_MODELS "${BENCHMARK_MODEL_DIR}/*.onnx")
 # runtime size_t arguments, so ONE generated/compiled model serves
 # every input size instead of a separately-generated-and-compiled model per
 # shape. sofie_benchmark_emitter therefore generates SOFIE code for each of
-# these base models exactly once (see EnsureBaseFamilyGenerated() in
-# src/BenchmarkEmitter.cxx.in) and every shape variant below reuses it,
+# these base models exactly once and every shape variant below reuses it,
 # supplying only its own concrete shape values at construction/inference time.
 
 set(SOFIE_BENCHMARK_DYNAMIC_FAMILY_STEMS
@@ -238,7 +235,7 @@ message(STATUS "SOFIE Benchmark: CUDA toolkit ${CUDAToolkit_VERSION}")
 
 ################################################################################
 # NVML — background GPU SM/memory occupancy sampling during the timed
-# inference loop (see src/GpuOccupancy.hxx). Ships as a stub library
+# inference loop. Ships as a stub library
 # alongside libcuda.so in the CUDA toolkit; the real libnvidia-ml.so.1 is
 # resolved at runtime from the NVIDIA driver install, same pattern as the
 # CUDA driver stub.
@@ -426,7 +423,7 @@ macro(sofie_benchmark_emit_entry _E_ONNX_FILE _E_MODEL_NAME _E_BASE_ONNX_FILE _E
 
     if(_E_BASE_ONNX_FILE)
         # Dynamic-shape variant: SOFIE code is shared, generated once from
-        # _E_BASE_ONNX_FILE (see sofie_benchmark_emitter / EnsureBaseFamilyGenerated).
+        # _E_BASE_ONNX_FILE.
         set(GEN_HXX "${CMAKE_CURRENT_BINARY_DIR}/${_E_BASE_MODEL_NAME}_GPU_ALPAKA.hxx")
         list(FIND GENERATED_HEADERS "${GEN_HXX}" _gen_hxx_idx)
         if(_gen_hxx_idx EQUAL -1)

@@ -46,8 +46,12 @@ public:
          throw std::runtime_error("SOFIE Leaky Relu Op Input Tensor is not found in model");
       }
       fShape = model.GetDimTensorShape(fNX);
+      fHasStridedInput = model.IsStridedInputTensor(fNX) && !fShape.empty();
       model.AddIntermediateTensor(fNY, model.GetTensorType(fNX), fShape);
    }
+
+   bool SupportsStridedInput() const override { return true; }
+
 
 
    std::string Generate(std::string OpName) override {
@@ -61,6 +65,12 @@ public:
       out << SP << "constexpr float " << OpName << "_alpha = " << std::setprecision(std::numeric_limits<float>::max_digits10) << falpha << ";\n";
 
       out << "\n//------ LEAKY RELU\n";
+      if (fHasStridedInput) {
+         out << GenerateStridedUnaryLoop(OpName, fNX, fNY, fShape, [&](const std::string &v) {
+            return "((" + v + " >= 0 )? " + v + " : " + OpName + "_alpha * " + v + ")";
+         });
+         return out.str();
+      }
       out << SP << "for (int id = 0; id < " << length << " ; id++){\n";
       out << SP << SP << "tensor_" << fNY << "[id] = ((tensor_" << fNX << "[id] >= 0 )? tensor_" << fNX << "[id] : "<< OpName << "_alpha * tensor_"<< fNX<<"[id]);\n";
       out << SP << "}\n";
@@ -68,6 +78,10 @@ public:
    }
 
    std::string Generate_GPU_Kernel_ALPAKA(std::string /*opName*/) override {
+      if (fHasStridedInput)
+         return GenerateStridedUnaryKernel(
+            "LeakyReluStridedKernel", "LEAKY_RELU",
+            [](const std::string &v) { return v + " >= T(0) ? " + v + " : alpha * " + v; }, ", T alpha");
       std::string op;
       op = "\n//------ LEAKY_RELU_KERNEL_ALPAKA\n";
       op += "struct LeakyReluKernel {\n";
@@ -83,6 +97,8 @@ public:
    }
 
    std::string Generate_GPU_Kernel_Definitions_ALPAKA(std::string /*opName*/) override {
+      if (fHasStridedInput)
+         return "LeakyReluStridedKernel leakyReluStridedKernel;\n";
       return "LeakyReluKernel leakyReluKernel;\n";
    }
 
@@ -96,6 +112,11 @@ public:
       std::string length = ConvertDimShapeToLength(fShape);
       out << "\n//------ LEAKY_RELU_GPU_ALPAKA\n";
       out << SP << "constexpr float " << OpName << "_alpha = " << std::setprecision(std::numeric_limits<float>::max_digits10) << falpha << ";\n";
+      if (fHasStridedInput) {
+         out << GenerateStridedUnaryLaunch(OpName, "leakyReluStridedKernel", "LEAKY_RELU", fNX, fNY, fShape,
+                                           ", " + OpName + "_alpha");
+         return out.str();
+      }
       out << SP << "auto const elementsPerThread_"<<fNX<<" = Vec::all(static_cast<Idx>(1));\n";
       out << SP << "auto const elementsPerGrid_"<<fNX<<" = Vec::all(Idx{"<< length << "});\n";
       out << SP << "auto const workDiv_" << fNX << " = sofie_workdiv(elementsPerGrid_" << fNX << ");\n";
@@ -109,7 +130,7 @@ public:
    /// Alpha accessor — used by the GEMM+LeakyReLU fusion pass.
    float GetAlpha() const { return falpha; }
 
-   bool IsElementwise() const override { return true; }
+   bool IsElementwise() const override { return !fHasStridedInput; }
    std::string GetElementwiseExpr(const std::string& v) const override {
       return "((" + v + " >= 0) ? " + v + " : " + std::to_string(falpha) + " * " + v + ")";
    }

@@ -86,6 +86,7 @@ public:
       fDataType = model.GetTensorType(fNData);
       fInputIsDynamic = model.IsDynamicTensor(fNData);
       fInputIsAlias = model.IsAliasTensor(fNData);
+      fHasStridedInput = model.IsStridedInputTensor(fNData) && !fShapeInput.empty();
       shapes.push_back(fShapeInput);
 
       std::vector<std::vector<IType>> itensors(4);
@@ -368,6 +369,7 @@ public:
          fIdentitySlice = fShapeOutput.size() == ndim;
          // check also if input data is not input to the model. In that case we copy the data since we cannot just copy from the input pointer
          fIdentitySlice &= (!model.IsReadyInputTensor(fNData) && !model.IsDimInputTensor(fNData));
+         fIdentitySlice &= !fHasStridedInput;
          for (size_t idim = 0; idim < ndim; idim++) {
             if (!fIdentitySlice) break;
             fIdentitySlice &= (fStart[idim].GetVal() == "0");
@@ -390,6 +392,8 @@ public:
          }
       }
    }
+
+   bool SupportsStridedInput() const override { return true; }
 
    std::string Generate(std::string opName) override {
 
@@ -427,9 +431,16 @@ public:
 
       // loop on the dimensions depending no the orders
       auto strides = UTILITY::ComputeStrideFromShape(fShapeInput);
-
+      // a strided input is read with the strides given to the Session
+      const std::string stridesName = "strX_" + opName;
+      if (fHasStridedInput) {
+         for (size_t idim = 0; idim < ndim; idim++)
+            strides[idim] = Dim{stridesName + "[" + std::to_string(idim) + "]", static_cast<size_t>(-1)};
+      }
 
       out << SP << "{\n"; // define operator scope
+      if (fHasStridedInput)
+         out << GenerateInputStrideArray(stridesName, fNData, fShapeInput);
       for (size_t i = 0; i < fStepDims.size(); i++) {
          if (fStepDims[i].isParam) {
             if (fIsStepUndef)
@@ -500,7 +511,10 @@ public:
       out << MSP << "size_t iInput = ";
       for (size_t idim = 0; idim < ndim-1; idim++) out << " stride" << idim << " + ";
       // here should be step size ?
-      out << "i" << ndim-1 << ";\n";
+      out << "i" << ndim-1;
+      if (fHasStridedInput)
+         out << " * " << strides[ndim-1].GetVal();
+      out << ";\n";
       out << MSP << "tensor_" << fNOutput << "[iOut++] = tensor_" <<fNData << "[iInput];\n";
       for (size_t idim = 0; idim < ndim; idim++) {
           MSP = MSP.replace(0,SP.length(),"");
@@ -540,6 +554,8 @@ public:
       op += SP + SP + SP + "T* __restrict__ output,\n";
       for (auto &p : dynParamNames)
          op += SP + SP + SP + "std::size_t const " + p + ",\n";
+      if (fHasStridedInput)
+         op += SP + SP + SP + "sofie_strided_layout<" + std::to_string(D) + "> const layoutX,\n";
       op += SP + SP + SP + "std::size_t const totalElements) const {\n\n";
 
       op += SP + SP + SP + "auto const global_thread_idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
@@ -559,7 +575,7 @@ public:
                + " * (" + fSteps[d].GetVal() + "))";
          op += SP + SP + SP + SP + SP
                + "static_cast<std::size_t>(" + input_coord + ")"
-               + " * (" + inputStrides[d].GetVal() + ")";
+               + " * (" + (fHasStridedInput ? "layoutX.stride[" + std::to_string(d) + "]" : inputStrides[d].GetVal()) + ")";
          op += (d + 1 < D) ? " +\n" : ";\n\n";
       }
 
@@ -598,6 +614,9 @@ public:
              << ", Idx>(devAcc, Ext1D::all(Idx{" << totalElements << "}));\n";
       }
 
+      if (fHasStridedInput)
+         out << GenerateStridedBroadcastLayout(opName + "_X", fNData, fShapeInput, fShapeInput.size(), fShapeInput);
+
       out << SP << "auto const elementsPerThread_" << opName << " = Vec::all(static_cast<Idx>(1));\n";
       out << SP << "auto const elementsPerGrid_"   << opName << " = Vec::all(Idx{" << totalElements << "});\n";
       out << SP << "auto const workDiv_" << opName << " = sofie_workdiv(elementsPerGrid_" << opName << ");\n";
@@ -607,6 +626,8 @@ public:
          << ", alpaka::getPtrNative(" << outputBuffer << ")";
       for (auto &p : dynParamNames)
          out << ", static_cast<std::size_t>(" << p << ")";
+      if (fHasStridedInput)
+         out << ", layout_" << opName << "_X";
       out << ", static_cast<Idx>(" << totalElements << "));\n";
 
       return out.str();
@@ -614,7 +635,7 @@ public:
 
       EFusionMappingType GetFusionMappingType() const override
    {
-      if (fIsOutputConstant || fIsOutputParamShape || fShapeInput.empty() || fShapeOutput.empty())
+      if (fIsOutputConstant || fIsOutputParamShape || fHasStridedInput || fShapeInput.empty() || fShapeOutput.empty())
          return EFusionMappingType::Unsupported;
 
       const auto isStatic = [](const std::vector<Dim> &values) {
