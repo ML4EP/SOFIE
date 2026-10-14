@@ -67,7 +67,7 @@ struct UnaryOpTraits<T, EBasicUnaryOperator::kSoftplus> {
    static std::string Name() { return "Softplus"; }
    static std::string Op(const std::string &X)
    {
-      return "((" + X + " >= 0x1.4000000000000p+4f) ? " + X + " : std::log1p(std::exp(" + X + ")))";
+      return "((float(" + X + ") >= 0x1.4000000000000p+4f) ? float(" + X + ") : std::log1p(std::exp(float(" + X + "))))";
    }
 };
 

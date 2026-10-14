@@ -30,6 +30,9 @@ std::unique_ptr<ROperator> ParseComparison(RModelParser_ONNX &parser, const onnx
 
    std::unique_ptr<ROperator> op;
    switch (input_type) {
+   case ETensorType::FLOAT16:
+      op.reset(new ROperator_Comparison<Float16, Op>(nodeproto.input(0), nodeproto.input(1), output_name));
+      break;
    case ETensorType::FLOAT:
       op.reset(new ROperator_Comparison<float, Op>(nodeproto.input(0), nodeproto.input(1), output_name));
       break;

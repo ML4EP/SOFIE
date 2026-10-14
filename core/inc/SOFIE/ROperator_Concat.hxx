@@ -475,6 +475,8 @@
       auto length = ConvertDimShapeToLength(fOutputShape);
       out << "\n//------ CONCAT_GPU_ALPAKA\n";
       switch (fInputType){
+         case ETensorType::FLOAT16:
+            out << SP << "std::array<const SOFIE::Float16 *, " << fInputs.size() << "> input_ptrs_" << OpName << " = {"; break;
          case ETensorType::FLOAT:
             out << SP << "std::array<const float *, " << fInputs.size() << "> input_ptrs_" << OpName << " = {"; break;
          case ETensorType::INT64:

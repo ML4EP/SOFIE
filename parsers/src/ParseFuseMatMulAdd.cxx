@@ -34,7 +34,11 @@ ParserFuseFuncSignature ParseFuseMatMulAdd = [](RModelParser_ONNX &parser, const
    const float attrBeta = 1.0;
 
    switch (inputType) {
-      case ETensorType::FLOAT:
+      case ETensorType::FLOAT16:
+         op.reset(new ROperator_Gemm<Float16>(attrAlpha, attrBeta, inputA.transpose, inputB.transpose,
+                                           inputA.tensorName, inputB.tensorName, biasName, addnode.output(0)));
+         break;
+   case ETensorType::FLOAT:
          op.reset(new ROperator_Gemm<float>(attrAlpha, attrBeta, inputA.transpose, inputB.transpose,
                                            inputA.tensorName, inputB.tensorName, biasName, addnode.output(0)));
          break;

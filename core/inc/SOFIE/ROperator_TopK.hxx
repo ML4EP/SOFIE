@@ -317,7 +317,7 @@ public:
       op += SP + SP + SP + "std::size_t const xbase = i * strideXBefore + j;\n";
       op += SP + SP + SP + "std::size_t const ybase = i * strideYBefore + j;\n\n";
 
-      op += SP + SP + SP + "auto& sVals  = alpaka::declareSharedVar<T[" + K + "], __COUNTER__>(acc);\n";
+      op += SP + SP + SP + "auto& sVals  = alpaka::declareSharedVar<SOFIE::AccumulationType<T>[" + K + "], __COUNTER__>(acc);\n";
       op += SP + SP + SP + "auto& sInds  = alpaka::declareSharedVar<int64_t[" + K + "], __COUNTER__>(acc);\n";
       op += SP + SP + SP + "auto& sCount = alpaka::declareSharedVar<int, __COUNTER__>(acc);\n";
       op += SP + SP + SP + "auto& sLock  = alpaka::declareSharedVar<int, __COUNTER__>(acc);\n\n";
@@ -325,13 +325,13 @@ public:
       op += SP + SP + SP + "if (tid == 0) { sCount = 0; sLock = 0; }\n";
       op += SP + SP + SP + "alpaka::syncBlockThreads(acc);\n\n";
 
-      op += SP + SP + SP + "T const volatile* vSVals = sVals;\n";
+      op += SP + SP + SP + "SOFIE::AccumulationType<T> const volatile* vSVals = sVals;\n";
       op += SP + SP + SP + "int const volatile* vSCount = &sCount;\n\n";
 
-      op += SP + SP + SP + "T rsV[" + B + "]; int64_t rsI[" + B + "]; int rsN = 0;\n\n";
+      op += SP + SP + SP + "SOFIE::AccumulationType<T> rsV[" + B + "]; int64_t rsI[" + B + "]; int rsN = 0;\n\n";
 
       op += SP + SP + SP + "for (std::size_t idx = tid; idx < nElAxis; idx += " + P + "u) {\n";
-      op += SP + SP + SP + SP + "T v = x[xbase + strideXAxis * idx];\n";
+      op += SP + SP + SP + SP + "SOFIE::AccumulationType<T> v = x[xbase + strideXAxis * idx];\n";
       op += SP + SP + SP + SP + "bool admit;\n";
       op += SP + SP + SP + SP + "if ((std::size_t)*vSCount < topKCount) admit = true;\n";
       op += SP + SP + SP + SP + "else admit = " + beatsWorstVolatile + ";\n";
@@ -343,7 +343,7 @@ public:
       op += emitLockAcquire(SP + SP + SP + SP + SP + SP);
       op += SP + SP + SP + SP + SP + SP + "alpaka::mem_fence(acc, alpaka::memory_scope::Device{});\n";
       op += SP + SP + SP + SP + SP + SP + "for (int r = 0; r < " + B + "; ++r) {\n";
-      op += SP + SP + SP + SP + SP + SP + SP + "T v = rsV[r]; int64_t idx = rsI[r];\n";
+      op += SP + SP + SP + SP + SP + SP + SP + "SOFIE::AccumulationType<T> v = rsV[r]; int64_t idx = rsI[r];\n";
       op += emitInsert(SP + SP + SP + SP + SP + SP + SP);
       op += SP + SP + SP + SP + SP + SP + "}\n";
       op += SP + SP + SP + SP + SP + SP + "alpaka::mem_fence(acc, alpaka::memory_scope::Device{});\n";
@@ -359,7 +359,7 @@ public:
       op += emitLockAcquire(SP + SP + SP + SP);
       op += SP + SP + SP + SP + "alpaka::mem_fence(acc, alpaka::memory_scope::Device{});\n";
       op += SP + SP + SP + SP + "for (int r = 0; r < rsN; ++r) {\n";
-      op += SP + SP + SP + SP + SP + "T v = rsV[r]; int64_t idx = rsI[r];\n";
+      op += SP + SP + SP + SP + SP + "SOFIE::AccumulationType<T> v = rsV[r]; int64_t idx = rsI[r];\n";
       op += emitInsert(SP + SP + SP + SP + SP + SP);
       op += SP + SP + SP + SP + "}\n";
       op += SP + SP + SP + SP + "alpaka::mem_fence(acc, alpaka::memory_scope::Device{});\n";

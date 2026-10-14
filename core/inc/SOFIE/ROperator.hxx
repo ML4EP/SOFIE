@@ -108,6 +108,7 @@ inline std::set<OperatorKind> FusableKinds = { OperatorKind::RELU, OperatorKind:
 class ROperator {
 
 public:
+   virtual bool UsesNativeBlas() const { return false; }
    virtual std::vector<std::string> GetBlasRoutines() { return {}; }
    virtual std::vector<std::string> GetStdLibs() { return {}; }
    virtual void Initialize(RModel&) = 0;

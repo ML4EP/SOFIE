@@ -80,6 +80,25 @@ ParserFuncSignature ParseConstant = [](RModelParser_ONNX &parser, const onnx::No
             op.reset(new ROperator_Constant<int64_t>("int64_t", values, shape, input_name, output_name));
             break;
          }
+         case ETensorType::FLOAT16: {
+            std::vector<Float16> values(length);
+            if (t.raw_data().size() == length * 2) {
+               const auto *bytes = reinterpret_cast<const unsigned char *>(t.raw_data().data());
+               for (std::size_t index = 0; index < length; ++index)
+                  values[index] = Float16::FromBits(bytes[2 * index] | (std::uint16_t(bytes[2 * index + 1]) << 8));
+            } else if (t.raw_data().empty() && t.int32_data_size() == static_cast<int>(length)) {
+               for (std::size_t index = 0; index < length; ++index) {
+                  const auto bits = t.int32_data(index);
+                  if (bits < 0 || bits > 65535)
+                     throw std::runtime_error("SOFIE Constant has invalid FLOAT16 bits");
+                  values[index] = Float16::FromBits(static_cast<std::uint16_t>(bits));
+               }
+            } else {
+               throw std::runtime_error("SOFIE Constant has invalid FLOAT16 payload size");
+            }
+            op.reset(new ROperator_Constant<Float16>("SOFIE::Float16", values, shape, input_name, output_name));
+            break;
+         }
          case ETensorType::FLOAT: {
             std::vector<float> values(length);
              if (t.float_data_size() == int(length)) {

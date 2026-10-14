@@ -76,6 +76,7 @@ std::size_t ConvertShapeToLength(const std::vector<Dim> & shape){
 
 std::string ConvertTypeToString(ETensorType type){
    switch(type){
+      case ETensorType::FLOAT16: return "SOFIE::Float16";
       case ETensorType::FLOAT : {
          return "float";
       }
@@ -116,6 +117,7 @@ std::string ConvertTypeToString(ETensorType type){
 }
 
 ETensorType ConvertStringToType(std::string type){
+   if (type == "float16" || type == "SOFIE::Float16") return ETensorType::FLOAT16;
    if(type == "float32" || type == "float" || type == "Float"){
      return ETensorType::FLOAT;
    }

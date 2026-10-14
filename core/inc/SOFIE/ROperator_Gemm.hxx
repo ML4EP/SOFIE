@@ -61,8 +61,8 @@ namespace SOFIE{
          fNB(UTILITY::Clean_name(nameB)), fNY(UTILITY::Clean_name(nameY))
       {
          fActivation = activation;
-         fType = "float";
-         static_assert(std::is_same_v<T, float>,
+         fType = TensorType<T>::Name();
+         static_assert(std::is_same_v<T, float> || std::is_same_v<T, Float16>,
                   "SOFIE - Unsupported type parsing a Gemm operator");
          fInputTensorNames = { fNA, fNB };
          fOutputTensorNames = { fNY };
@@ -74,7 +74,9 @@ namespace SOFIE{
          fNB(UTILITY::Clean_name(nameB)), fNC(UTILITY::Clean_name(nameC)), fNY(UTILITY::Clean_name(nameY)), fActivation(activation)
       {
          fActivation = activation;
-         fType = "float";
+         fType = TensorType<T>::Name();
+         static_assert(std::is_same_v<T, float> || std::is_same_v<T, Float16>,
+                  "SOFIE - Unsupported type parsing a Gemm operator");
 
          fInputTensorNames = {fNA, fNB, fNC};
          fOutputTensorNames = { fNY };
@@ -161,6 +163,9 @@ namespace SOFIE{
       void Initialize(RModel& model) override {
          //TODO: propagate A or B as specified by ONNX standard
          fModel = &model;
+         if (model.GetTensorType(fNA) != GetTemplatedType(T{}) || model.GetTensorType(fNB) != model.GetTensorType(fNA) ||
+             (!fNC.empty() && model.GetTensorType(fNC) != model.GetTensorType(fNA)))
+            throw std::runtime_error("SOFIE Gemm requires matching operand and bias types");
 
          if ((model.CheckIfTensorAlreadyExist(fNA) == false) || (model.CheckIfTensorAlreadyExist(fNB) == false) ){   //input must be a graph input, or already initialized intermediate tensor
             throw std::runtime_error("SOFIE Gemm Op Input Tensor " + fNA + " or " + fNB + " is not found in model");
@@ -312,7 +317,7 @@ namespace SOFIE{
                shapeY.erase(shapeY.end()-1);
          }
 
-         bool canFold = !fIsDynamic
+         bool canFold = !std::is_same_v<T, Float16> && !fIsDynamic
             && model.IsInitializedTensor(fNA)
             && model.IsInitializedTensor(fNB)
             && (fNC.empty() || model.IsInitializedTensor(fNC))
@@ -397,6 +402,8 @@ namespace SOFIE{
       }
 
       std::string Generate(std::string opName) override {
+         if constexpr (std::is_same_v<T, Float16>)
+            throw std::runtime_error("SOFIE FLOAT16 Gemm requires Alpaka generation");
          if (fIsOutputConstant)
             return "";
 
@@ -709,7 +716,106 @@ namespace SOFIE{
          return "GemmBiasAddKernel gemmBiasAddKernel;\n";
       }
 
+      bool UsesNativeBlas() const override { return !fLowRank; }
+
+      std::string GenerateNativeGemm()
+      {
+         if (fIsOutputConstant) return "";
+         const auto matrixShape = DynamicShapeInference({fShapeA, fShapeB});
+         const auto rank = matrixShape.size();
+         const auto rows = matrixShape[rank - 2].GetVal();
+         const auto columns = matrixShape[rank - 1].GetVal();
+         const auto inner = fShapeA[fShapeA.size() - (fAttrTransA ? 2 : 1)].GetVal();
+         const auto rightInner = fShapeB[fShapeB.size() - (fAttrTransB ? 1 : 2)].GetVal();
+         const auto batchShape = std::vector<Dim>(matrixShape.begin(), matrixShape.end() - 2);
+         const auto batchCount = ConvertDimShapeToLength(batchShape);
+         auto offset = [&](const std::vector<Dim> &shape) {
+            std::string expression = "0";
+            for (std::size_t dimension = 0; dimension + 2 < rank; ++dimension) {
+               const auto outputStride = ConvertDimShapeToLength(std::vector<Dim>(
+                  matrixShape.begin() + dimension + 1, matrixShape.end() - 2));
+               const auto inputStride = ConvertDimShapeToLength(std::vector<Dim>(
+                  shape.begin() + dimension + 1, shape.end()));
+               expression += " + ((batchIndex / (" + outputStride + ")) % (" +
+                  matrixShape[dimension].GetVal() + ") % (" + shape[dimension].GetVal() +
+                  ")) * (" + inputStride + ")";
+            }
+            return expression;
+         };
+         std::ostringstream out;
+         out << std::setprecision(std::numeric_limits<float>::max_digits10);
+         out << "{\n";
+         out << "if ((" << inner << ") != (" << rightInner
+             << ")) throw std::runtime_error(\"SOFIE Gemm contraction dimensions differ\");\n";
+         for (std::size_t dimension = 0; dimension + 2 < rank; ++dimension) {
+            const auto left = fShapeA[dimension].GetVal(), right = fShapeB[dimension].GetVal();
+            out << "if ((" << left << ") != 1 && (" << right << ") != 1 && (" << left << ") != (" << right
+                << ")) throw std::runtime_error(\"SOFIE MatMul batch dimensions do not broadcast\");\n";
+         }
+         const auto allShared = [](const std::vector<Dim> &shape) {
+            return std::all_of(shape.begin(), shape.end() - 2, [](const Dim &dimension) {
+               return !dimension.isParam && dimension.dim == 1;
+            });
+         };
+         const auto allMatch = [&](const std::vector<Dim> &shape) {
+            return std::equal(shape.begin(), shape.end() - 2, matrixShape.begin());
+         };
+         const bool sharedLeft = allShared(fShapeA), sharedRight = allShared(fShapeB);
+         const bool uniformLeft = sharedLeft || allMatch(fShapeA);
+         const bool uniformRight = sharedRight || allMatch(fShapeB);
+         if (uniformLeft && uniformRight) {
+            const bool collapse = !fAttrTransA && sharedRight && !sharedLeft;
+            out << "nativeBlas." << (collapse ? "Gemm(" : "GemmBatched(")
+                << (fAttrTransA ? "true" : "false") << ", " << (fAttrTransB ? "true" : "false") << ", ";
+            if (collapse) out << "(" << batchCount << ") * (" << rows << ")";
+            else out << rows;
+            out << ", " << columns << ", " << inner << ", static_cast<float>(" << fAttrAlpha << "), "
+                << "alpaka::getPtrNative(deviceBuf_" << fNA << "), alpaka::getPtrNative(deviceBuf_" << fNB
+                << "), alpaka::getPtrNative(deviceBuf_" << fNY << ")";
+            if (!collapse)
+               out << ", " << (sharedLeft ? "0" : "(" + rows + ") * (" + inner + ")")
+                   << ", " << (sharedRight ? "0" : "(" + columns + ") * (" + inner + ")") << ", " << batchCount;
+            out << ");\n";
+         } else {
+         out << "for (std::size_t batchIndex = 0; batchIndex < (" << batchCount << "); ++batchIndex) {\n";
+         out << "nativeBlas.Gemm(" << (fAttrTransA ? "true" : "false") << ", "
+             << (fAttrTransB ? "true" : "false") << ", " << rows << ", " << columns << ", " << inner
+             << ", static_cast<float>(" << fAttrAlpha << "), alpaka::getPtrNative(deviceBuf_" << fNA
+             << ") + (" << offset(fShapeA) << "), alpaka::getPtrNative(deviceBuf_" << fNB
+             << ") + (" << offset(fShapeB) << "), alpaka::getPtrNative(deviceBuf_" << fNY
+             << ") + batchIndex * (" << rows << ") * (" << columns << "));\n}\n";
+         }
+         if (!fNC.empty() || fActivation != EActivationType::UNDEFINED) {
+            const auto shape = fModel->GetDimTensorShape(fNY);
+            auto biasShape = fDimShapeC;
+            if (biasShape.size() > shape.size())
+               throw std::runtime_error("SOFIE Gemm bias rank exceeds output rank");
+            biasShape.insert(biasShape.begin(), shape.size() - biasShape.size(), Dim(1));
+            for (std::size_t dimension = 0; dimension < shape.size(); ++dimension)
+               out << "if ((" << biasShape[dimension].GetVal() << ") != 1 && ("
+                   << biasShape[dimension].GetVal() << ") != (" << shape[dimension].GetVal()
+                   << ")) throw std::runtime_error(\"SOFIE Gemm bias dimensions do not broadcast\");\n";
+            const auto length = ConvertDimShapeToLength(shape);
+            out << "auto nativeWorkDiv = sofie_workdiv(Vec::all(Idx{" << length << "}));\n";
+            out << "alpaka::enqueue(queue, alpaka::createTaskKernel<Acc>(nativeWorkDiv, SOFIE::NativeGemmEpilogue{}, "
+                << "alpaka::getPtrNative(deviceBuf_" << fNY << "), ";
+            if (fNC.empty()) out << "static_cast<const " << fType << "*>(nullptr)";
+            else out << "static_cast<const " << fType << "*>(alpaka::getPtrNative(deviceBuf_" << fNC << "))";
+            out << ", static_cast<std::size_t>(" << length << "), std::array<std::size_t, " << shape.size() << ">{";
+            for (std::size_t dimension = 0; dimension < shape.size(); ++dimension)
+               out << (dimension ? ", " : "") << shape[dimension].GetVal();
+            out << "}, std::array<std::size_t, " << shape.size() << ">{";
+            for (std::size_t dimension = 0; dimension < shape.size(); ++dimension)
+               out << (dimension ? ", " : "") << biasShape[dimension].GetVal();
+            out << "}, static_cast<float>(" << fAttrBeta << "), " << static_cast<int>(fActivation)
+                << ", static_cast<float>(" << fLeakyReluAlpha << ")));\n";
+         }
+         out << "}\n";
+         return out.str();
+      }
+
       std::string Generate_GPU_ALPAKA(std::string opName) override {
+         if (UsesNativeBlas()) return GenerateNativeGemm();
          opName = "op_" + opName;
 
          if (fShapeA.empty() || fShapeB.empty() || fShapeY.empty() || (fNC != "" && fDimShapeC.empty())) {

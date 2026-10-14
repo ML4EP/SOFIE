@@ -44,6 +44,10 @@ ParserFuncSignature ParseClip = [](RModelParser_ONNX &parser,
    std::string output_name = nodeproto.output(0);
 
    switch (input_type) {
+   case ETensorType::FLOAT16:
+      op.reset(new ROperator_Clip<Float16>(
+         nodeproto.input(0), output_name, minName, maxName));
+      break;
    case ETensorType::FLOAT:
       op.reset(new ROperator_Clip<float>(
          nodeproto.input(0), output_name, minName, maxName));

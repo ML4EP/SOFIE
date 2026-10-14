@@ -35,12 +35,14 @@ private:
     std::string fType;
 
     // GPU kernel launch tuning parameters
+    const RModel *fModel = nullptr;
+    bool UseSingleBlock() const { return fType == "SOFIE::Float16" || (fModel && fModel->UsesExternalWorkspace()); }
     struct GpuLaunchParams { std::size_t blockSize = 256; std::size_t groups = 1; };
 
 
     GpuLaunchParams ComputeGpuLaunchParams() const {
        GpuLaunchParams p;
-       if (fInputDimShape || fShapeX.empty() || fShapeY.empty())
+       if (UseSingleBlock() || fInputDimShape || fShapeX.empty() || fShapeY.empty())
           return p;
        std::size_t inLen  = std::stoul(ConvertDimShapeToLength(fShapeX));
        std::size_t outLen = std::stoul(ConvertDimShapeToLength(fShapeY));
@@ -124,6 +126,7 @@ public:
    }
 
    void Initialize(RModel& model) override {
+      fModel = &model;
 
       if (!model.CheckIfTensorAlreadyExist(fNX)) {
          // input must be a graph input, or already initialized intermediate tensor
@@ -171,7 +174,7 @@ public:
 
    EFusionMappingType GetFusionMappingType() const override
    {
-      if (fInputDimShape || fShapeX.empty() || fShapeY.empty())
+      if (fType == "SOFIE::Float16" || fInputDimShape || fShapeX.empty() || fShapeY.empty())
          return EFusionMappingType::Unsupported;
       return EFusionMappingType::ManyToMany;
    }
@@ -181,7 +184,7 @@ public:
       return {0};
    }
 
-   bool IsFusionReduction() const override { return !fInputDimShape && !fShapeX.empty() && !fShapeY.empty(); }
+   bool IsFusionReduction() const override { return fType != "SOFIE::Float16" && !fInputDimShape && !fShapeX.empty() && !fShapeY.empty(); }
 
    std::string GetFusionReductionInitExpr() const override
    {
@@ -485,7 +488,7 @@ public:
       for (int ri = (int)redAxes.size() - 2; ri >= 0; --ri)
          redStrides[ri] = "(" + redStrides[ri + 1] + " * " + fShapeX[redAxes[ri + 1]].GetVal() + ")";
 
-      bool dyn = fInputDimShape;
+      bool dyn = fInputDimShape && !UseSingleBlock();
       GpuLaunchParams lp = ComputeGpuLaunchParams();
       // Dynamic shapes always take the groups-capable, symbolic-block-size
       // form since the split decision can only be made at runtime.
@@ -513,7 +516,7 @@ public:
       op += ") const {\n\n";
 
       // ---- shared memory ----
-      op += SP + SP + SP + "auto& shmem = alpaka::declareSharedVar<T[" + shmemCap + "], __COUNTER__>(acc);\n\n";
+      op += SP + SP + SP + "auto& shmem = alpaka::declareSharedVar<SOFIE::AccumulationType<T>[" + shmemCap + "], __COUNTER__>(acc);\n\n";
 
       // ---- block/thread addressing ----
       op += SP + SP + SP + "auto const thread_id = alpaka::getIdx<alpaka::Block, alpaka::Threads >(acc)[0];\n";
@@ -546,10 +549,10 @@ public:
       // ---- thread-stride partial accumulation over reduction axis ----
       std::string startVal;
       if (Op == ReduceProd)       startVal = "static_cast<T>(1)";
-      else if (Op == ReduceMax)   startVal = "std::numeric_limits<T>::lowest()";
-      else if (Op == ReduceMin)   startVal = "std::numeric_limits<T>::max()";
+      else if (Op == ReduceMax)   startVal = fType == "SOFIE::Float16" ? "-std::numeric_limits<float>::infinity()" : "std::numeric_limits<T>::lowest()";
+      else if (Op == ReduceMin)   startVal = fType == "SOFIE::Float16" ? "std::numeric_limits<float>::infinity()" : "std::numeric_limits<T>::max()";
       else                        startVal = "static_cast<T>(0)";
-      op += SP + SP + SP + "T partial = " + startVal + ";\n";
+      op += SP + SP + SP + "SOFIE::AccumulationType<T> partial = " + startVal + ";\n";
       if (useGroupsDecomp)
          op += SP + SP + SP + "for (std::size_t r = thread_id + group_id * " + bsExpr + "; r < reducedLength; r += "
                + bsExpr + " * groups) {\n";
@@ -620,10 +623,10 @@ public:
       op += SP + SP + SP + "}\n\n";
 
       op += SP + SP + SP + "if (thread_id < static_cast<std::size_t>(warpSize)) {\n";
-      op += SP + SP + SP + SP + "T val = shmem[thread_id];\n";
+      op += SP + SP + SP + SP + "SOFIE::AccumulationType<T> val = shmem[thread_id];\n";
       op += SP + SP + SP + SP + "for (std::int32_t offset = warpSize / 2; offset > 0; offset >>= 1) {\n";
       op += SP + SP + SP + SP + SP
-            + "T const other = alpaka::warp::shfl_down(acc, val, static_cast<std::uint32_t>(offset));\n";
+            + "SOFIE::AccumulationType<T> const other = alpaka::warp::shfl_down(acc, val, static_cast<std::uint32_t>(offset));\n";
       if (Op == ReduceProd)
          op += SP + SP + SP + SP + SP + "val *= other;\n";
       else if (Op == ReduceMax)
@@ -636,10 +639,10 @@ public:
 
       op += SP + SP + SP + SP + "if (thread_id == 0u) {\n";
       if (dyn) {
-         op += SP + SP + SP + SP + SP + "T result = val;\n";
+         op += SP + SP + SP + SP + SP + "SOFIE::AccumulationType<T> result = val;\n";
          op += SP + SP + SP + SP + SP + "if (groups == 1u) {\n";
          if (Op == ReduceMean)
-            op += SP + SP + SP + SP + SP + SP + "result /= static_cast<T>(reducedLength);\n";
+            op += SP + SP + SP + SP + SP + SP + "result /= static_cast<SOFIE::AccumulationType<T>>(reducedLength);\n";
          else if (Op == ReduceL2)
             op += SP + SP + SP + SP + SP + SP + "result = std::sqrt(result);\n";
          op += SP + SP + SP + SP + SP + "}\n";
@@ -647,9 +650,9 @@ public:
       } else if (lp.groups > 1) {
          op += SP + SP + SP + SP + SP + "output[flat_block] = val;\n";
       } else {
-         op += SP + SP + SP + SP + SP + "T result = val;\n";
+         op += SP + SP + SP + SP + SP + "SOFIE::AccumulationType<T> result = val;\n";
          if (Op == ReduceMean)
-            op += SP + SP + SP + SP + SP + "result /= static_cast<T>(reducedLength);\n";
+            op += SP + SP + SP + SP + SP + "result /= static_cast<SOFIE::AccumulationType<T>>(reducedLength);\n";
          else if (Op == ReduceL2)
             op += SP + SP + SP + SP + SP + "result = std::sqrt(result);\n";
          op += SP + SP + SP + SP + SP + "output[out_idx] = result;\n";
@@ -676,9 +679,9 @@ public:
          op += SP + SP + SP + "std::size_t const groups) const {\n\n";
          op += SP + SP + SP + "auto const out_idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
          op += SP + SP + SP + "if (out_idx >= outputLength) return;\n\n";
-         op += SP + SP + SP + "T result = " + startVal + ";\n";
+         op += SP + SP + SP + "SOFIE::AccumulationType<T> result = " + startVal + ";\n";
          op += SP + SP + SP + "for (std::size_t g = 0; g < groups; ++g) {\n";
-         op += SP + SP + SP + SP + "T const v = partial[g * outputLength + out_idx];\n";
+         op += SP + SP + SP + SP + "SOFIE::AccumulationType<T> const v = partial[g * outputLength + out_idx];\n";
          if (Op == ReduceProd)
             op += SP + SP + SP + SP + "result *= v;\n";
          else if (Op == ReduceMax)
@@ -689,7 +692,7 @@ public:
             op += SP + SP + SP + SP + "result += v;\n";
          op += SP + SP + SP + "}\n\n";
          if (Op == ReduceMean)
-            op += SP + SP + SP + "result /= static_cast<T>(reducedLength);\n";
+            op += SP + SP + SP + "result /= static_cast<SOFIE::AccumulationType<T>>(reducedLength);\n";
          else if (Op == ReduceL2)
             op += SP + SP + SP + "result = std::sqrt(result);\n";
          op += SP + SP + SP + "output[out_idx] = result;\n";
@@ -701,7 +704,7 @@ public:
    }
 
    std::string Generate_GPU_Kernel_Definitions_ALPAKA(std::string /*opName*/) override {
-      bool dyn = fInputDimShape;
+      bool dyn = fInputDimShape && !UseSingleBlock();
       GpuLaunchParams lp = ComputeGpuLaunchParams();
       bool needsScratch = dyn || lp.groups > 1;
       std::string kname = "ReduceKernel_" + Name() + "_" + fNY;
@@ -727,7 +730,7 @@ public:
       std::string reducedLength = ReducedLengthExpr();
       std::string kname = "reduceKernel_" + Name() + "_" + fNY;
 
-      bool dyn = fInputDimShape;
+      bool dyn = fInputDimShape && !UseSingleBlock();
       GpuLaunchParams lp = ComputeGpuLaunchParams();
       std::string bs = std::to_string(lp.blockSize);
 
@@ -863,4 +866,3 @@ public:
 
 
 #endif //SOFIE_ROPERATOR_Reduce
-

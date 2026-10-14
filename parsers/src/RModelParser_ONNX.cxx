@@ -203,6 +203,19 @@ std::shared_ptr<void> RModelParser_ONNX::GetInitializedTensorData(onnx::TensorPr
          CopyLEToHost(data.get(), tensorproto->raw_data().c_str(), tensor_size, tensor_type);
       } else {
          switch (tensor_type) {
+            case ETensorType::FLOAT16: {
+               const auto length = tensor_size / sizeof(Float16);
+               if (static_cast<std::size_t>(tensorproto->int32_data_size()) != length)
+                  throw std::runtime_error("SOFIE - Invalid FLOAT16 int32_data length");
+               auto *values = static_cast<Float16 *>(data.get());
+               for (std::size_t index = 0; index < length; ++index) {
+                  const auto bits = tensorproto->int32_data(index);
+                  if (bits < 0 || bits > 65535)
+                     throw std::runtime_error("SOFIE - FLOAT16 int32_data is not a 16-bit bit pattern");
+                  values[index] = Float16::FromBits(static_cast<std::uint16_t>(bits));
+               }
+               break;
+            }
             case ETensorType::FLOAT: {
                ExtractDataFromTP<float>::Copy(tensorproto, data.get(), tensor_size/ 4);
                break;
@@ -1189,7 +1202,7 @@ RModelParser_ONNX::ParseOperator(const size_t i, const onnx::GraphProto &graphpr
          const bool validMatMulInputs = childIsMatMul && childNode.input_size() == 2;
          const bool outputIsVisible = validNodeShape && IsGraphOutput(graphproto, nodeproto.output(0));
          const bool validPermutation = validNodeShape && IsLastTwoAxesTranspose(nodeproto, graphproto);
-         const bool supportedType = validNodeShape && IsRegisteredTensorType(nodeproto.input(0)) && GetTensorType(nodeproto.input(0)) == ETensorType::FLOAT;
+         const bool supportedType = validNodeShape && IsRegisteredTensorType(nodeproto.input(0)) && (GetTensorType(nodeproto.input(0)) == ETensorType::FLOAT || GetTensorType(nodeproto.input(0)) == ETensorType::FLOAT16);
 
          if (validMatMulInputs && !outputIsVisible && validPermutation && supportedType) {
             RegisterFusedTransposeInput(nodeproto.output(0), nodeproto.input(0));

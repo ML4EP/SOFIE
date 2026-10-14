@@ -228,8 +228,8 @@ public:
       op += SP + SP + SP + "std::size_t const numRows) const {\n\n";
 
       // declared before the early return so every thread reaches the collective declaration
-      op += SP + SP + SP + "auto& smax = alpaka::declareSharedVar<T[" + bs + "], __COUNTER__>(acc);\n";
-      op += SP + SP + SP + "auto& ssum = alpaka::declareSharedVar<T[" + bs + "], __COUNTER__>(acc);\n";
+      op += SP + SP + SP + "auto& smax = alpaka::declareSharedVar<SOFIE::AccumulationType<T>[" + bs + "], __COUNTER__>(acc);\n";
+      op += SP + SP + SP + "auto& ssum = alpaka::declareSharedVar<SOFIE::AccumulationType<T>[" + bs + "], __COUNTER__>(acc);\n";
       op += SP + SP + SP + "auto const row = alpaka::getIdx<alpaka::Grid, alpaka::Blocks>(acc)[0];\n";
       op += SP + SP + SP + "auto const tid = alpaka::getIdx<alpaka::Block, alpaka::Threads>(acc)[0];\n";
       op += SP + SP + SP + "if (row >= numRows) return;\n\n";
@@ -240,11 +240,11 @@ public:
       op += SP + SP + SP + "std::size_t const row_base = (row / inner_stride) * row_block + (row % inner_stride);\n\n";
 
       op += SP + SP + SP + "// fused pass: running (max, sum) per thread\n";
-      op += SP + SP + SP + "T m = X[row_base];\n";
-      op += SP + SP + SP + "T d = static_cast<T>(0);\n";
+      op += SP + SP + SP + "SOFIE::AccumulationType<T> m = X[row_base];\n";
+      op += SP + SP + SP + "SOFIE::AccumulationType<T> d = static_cast<SOFIE::AccumulationType<T>>(0);\n";
       op += SP + SP + SP + "for (std::size_t l = tid; l < axis_size; l += " + bs + "u) {\n";
-      op += SP + SP + SP + SP + "T x = X[row_base + l * inner_stride];\n";
-      op += SP + SP + SP + SP + "T m_new = (x > m) ? x : m;\n";
+      op += SP + SP + SP + SP + "SOFIE::AccumulationType<T> x = X[row_base + l * inner_stride];\n";
+      op += SP + SP + SP + SP + "SOFIE::AccumulationType<T> m_new = (x > m) ? x : m;\n";
       op += SP + SP + SP + SP + "d = d * exp(acc, m - m_new) + exp(acc, x - m_new);\n";
       op += SP + SP + SP + SP + "m = m_new;\n";
       op += SP + SP + SP + "}\n";
@@ -256,26 +256,26 @@ public:
       op += SP + SP + SP + "// combined (max, sum) tree reduction\n";
       op += SP + SP + SP + "for (std::size_t s = " + bs + "u / 2u; s >= 1u; s /= 2u) {\n";
       op += SP + SP + SP + SP + "if (tid < s) {\n";
-      op += SP + SP + SP + SP + SP + "T m_a = smax[tid];\n";
-      op += SP + SP + SP + SP + SP + "T m_b = smax[tid + s];\n";
-      op += SP + SP + SP + SP + SP + "T m_r = (m_b > m_a) ? m_b : m_a;\n";
+      op += SP + SP + SP + SP + SP + "SOFIE::AccumulationType<T> m_a = smax[tid];\n";
+      op += SP + SP + SP + SP + SP + "SOFIE::AccumulationType<T> m_b = smax[tid + s];\n";
+      op += SP + SP + SP + SP + SP + "SOFIE::AccumulationType<T> m_r = (m_b > m_a) ? m_b : m_a;\n";
       op += SP + SP + SP + SP + SP + "ssum[tid] = ssum[tid] * exp(acc, m_a - m_r) + ssum[tid + s] * exp(acc, m_b - m_r);\n";
       op += SP + SP + SP + SP + SP + "smax[tid] = m_r;\n";
       op += SP + SP + SP + SP + "}\n";
       op += SP + SP + SP + SP + "alpaka::syncBlockThreads(acc);\n";
       op += SP + SP + SP + "}\n";
-      op += SP + SP + SP + "T const vmax = smax[0];\n";
-      op += SP + SP + SP + "T const sum = ssum[0];\n";
+      op += SP + SP + SP + "SOFIE::AccumulationType<T> const vmax = smax[0];\n";
+      op += SP + SP + SP + "SOFIE::AccumulationType<T> const sum = ssum[0];\n";
       op += SP + SP + SP + "alpaka::syncBlockThreads(acc);\n\n";
 
       op += SP + SP + SP + "// normalize pass\n";
-      op += SP + SP + SP + "T const inv = static_cast<T>(1) / sum;\n";
+      op += SP + SP + SP + "SOFIE::AccumulationType<T> const inv = static_cast<SOFIE::AccumulationType<T>>(1) / sum;\n";
       op += SP + SP + SP + "for (std::size_t l = tid; l < axis_size; l += " + bs + "u) {\n";
       op += SP + SP + SP + SP + "std::size_t const idx = row_base + l * inner_stride;\n";
       if (fLogSoftmax) {
          op += SP + SP + SP + SP + "Y[idx] = X[idx] - vmax - log(acc, sum);\n";
       } else {
-         op += SP + SP + SP + SP + "T e = exp(acc, X[idx] - vmax) * inv;\n";
+         op += SP + SP + SP + SP + "SOFIE::AccumulationType<T> e = exp(acc, X[idx] - vmax) * inv;\n";
          op += SP + SP + SP + SP + "Y[idx] = e;\n";
       }
       op += SP + SP + SP + "}\n";

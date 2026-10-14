@@ -2,6 +2,7 @@
 #define SOFIE_SOFIE_COMMON
 
 #include "SOFIE/RTensor.hxx"
+#include "SOFIE/RFloat16.hxx"
 
 #include <span>
 
@@ -36,6 +37,7 @@ enum class EActivationType{
 
 constexpr size_t GetTypeSize(ETensorType type) {
     switch (type) {
+        case ETensorType::FLOAT16:   return sizeof(Float16);
         case ETensorType::FLOAT:     return sizeof(float);
         case ETensorType::DOUBLE:    return sizeof(double);
         case ETensorType::UINT8:     return sizeof(uint8_t);
@@ -137,6 +139,10 @@ struct TensorShape<size_t> {
 template <typename T>
 struct TensorType {};
 template<>
+struct TensorType<Float16> {
+   static std::string Name() { return "SOFIE::Float16"; }
+};
+template <>
 struct TensorType<float> {
    static const std::string Name() { return "float"; }
 };
@@ -258,6 +264,11 @@ std::string ConvertValToString(T value) {
 }
 // float specialization
 template<>
+inline std::string ConvertValToString<Float16>(Float16 value) {
+   return "SOFIE::Float16::FromBits(" + std::to_string(value.bits) + ")";
+}
+
+template<>
 inline std::string ConvertValToString<float>(float value) {
    std::stringstream ret;
    // special case for infinity and Nan
@@ -360,6 +371,7 @@ private:
 
 template <typename T>
 ETensorType GetTemplatedType(T /*obj*/ ){
+   if (std::is_same<T, Float16>::value) return ETensorType::FLOAT16;
    if (std::is_same<T, float>::value) return ETensorType::FLOAT;
    if (std::is_same<T, uint8_t>::value) return ETensorType::UINT8;
    if (std::is_same<T, int8_t>::value) return ETensorType::INT8;

@@ -67,7 +67,7 @@ public:
       op += SP + "ALPAKA_FN_ACC void operator()(TAcc const & acc, T const* __restrict__ data, T* __restrict__ out, std::size_t numElements) const {\n";
       op += SP + SP + SP + "auto idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
       op += SP + SP + SP + "if (idx < numElements) {\n";
-      op += SP + SP + SP + "out[idx] = data[idx] >= T(0) ? data[idx] : 0;\n";
+      op += SP + SP + SP + "out[idx] = data[idx] >= T(0) ? data[idx] : T(0);\n";
       op += SP + SP + "}\n";
       op += SP + "}\n";
       op += "};\n";

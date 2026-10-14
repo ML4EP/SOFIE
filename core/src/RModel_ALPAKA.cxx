@@ -12,6 +12,7 @@
 #include "../inc/SOFIE/SOFIE_common.hxx"
 
 #include "SOFIE/RModel.hxx"
+#include "SOFIE/RWorkspace.hxx"
 #include "SOFIE/RModelFusion_ALPAKA.hxx"
 #include "SOFIE/RModelProfilerGPU.hxx"
 #include "SOFIE/SOFIE_common.hxx"
@@ -22,6 +23,7 @@ namespace SOFIE {
 // aliases emitted into the generated Session
 static std::string GetBufType(ETensorType t) {
    switch (t) {
+      case ETensorType::FLOAT16: return "BufH1D";
       case ETensorType::FLOAT:  return "BufF1D";
       case ETensorType::DOUBLE: return "BufD1D";
       case ETensorType::INT32:  return "BufI321D";
@@ -36,6 +38,7 @@ static std::string GetBufType(ETensorType t) {
 
 static std::string GetViewConstType(ETensorType t) {
    switch (t) {
+      case ETensorType::FLOAT16: return "ViewConstH1D";
       case ETensorType::FLOAT:  return "ViewConstF1D";
       case ETensorType::DOUBLE: return "ViewConstD1D";
       case ETensorType::INT32:  return "ViewConstI321D";
@@ -56,6 +59,7 @@ static std::string AllocBufLine(const std::string &name, ETensorType t, const st
 
 static std::string GetViewType(ETensorType t) {
    switch (t) {
+      case ETensorType::FLOAT16: return "ViewH1D";
       case ETensorType::FLOAT:  return "ViewF1D";
       case ETensorType::DOUBLE: return "ViewD1D";
       case ETensorType::INT32:  return "ViewI321D";
@@ -80,8 +84,16 @@ void RModel::GenerateInitializedTensorInfo_GPU_ALPAKA() {
    }
 
    for (auto &i : fInitializedTensors) {
-      if (!fUseWeightFile || i.second.IsConstantTensor()) {
-         if (i.second.type() == ETensorType::FLOAT)
+      if (!fUseWeightFile || i.second.IsConstantTensor() || i.second.type() == ETensorType::FLOAT16) {
+         if (i.second.type() == ETensorType::FLOAT16) {
+            fGC += "std::vector<SOFIE::Float16> tensor_" + i.first + " = {";
+            const auto length = ConvertShapeToLength(i.second.shape());
+            for (std::size_t index = 0; index < length; ++index) {
+               if (index) fGC += ", ";
+               fGC += "SOFIE::Float16::FromBits(" + std::to_string(i.second.data<Float16>()[index].bits) + ")";
+            }
+            fGC += "};\n";
+         } else if (i.second.type() == ETensorType::FLOAT)
             fGC += GenerateConstantTensorCode<float>(i);
          else if (i.second.type() == ETensorType::INT64)
             fGC += GenerateConstantTensorCode<int64_t>(i);
@@ -119,7 +131,9 @@ void RModel::GeneratePersistentTensorInfo_GPU_ALPAKA()
       const ETensorType type = GetTensorType(name);
       const size_t length = ConvertShapeToLength(GetTensorShape(name));
 
-      if (type == ETensorType::FLOAT)
+      if (type == ETensorType::FLOAT16)
+         fGC += AllocBufLine(name, type, std::to_string(length));
+      else if (type == ETensorType::FLOAT)
          fGC += "BufF1D deviceBuf_" + name + " = alpaka::allocBuf<float, Idx>(devAcc, Ext1D::all(Idx{" + std::to_string(length) + "}));\n";
       else if (type == ETensorType::DOUBLE)
          fGC += "BufD1D deviceBuf_" + name + " = alpaka::allocBuf<double, Idx>(devAcc, Ext1D::all(Idx{" + std::to_string(length) + "}));\n";
@@ -140,7 +154,7 @@ void RModel::GenerateTemporaryInitializedTensorContainers_GPU_ALPAKA()
       fGC += "// temporary initialized tensors for loading weights\n";
 
    for (auto &i : fInitializedTensors) {
-      if (fUseWeightFile && !i.second.IsConstantTensor()) {
+      if (fUseWeightFile && !i.second.IsConstantTensor() && i.second.type() != ETensorType::FLOAT16) {
          // case of tensors which are read from a file
          size_t length = ConvertShapeToLength(i.second.shape());
          fGC += "std::vector<" + ConvertOutputTypeToString(i.second.type()) + "> tensor_" + i.first + "(" +
@@ -233,7 +247,17 @@ void RModel::GenerateDynamicTensorInfo_GPU_ALPAKA() {
    std::stringstream out;
 
    constexpr std::size_t kPoolAlign = 256;
-   auto alignUp = [](std::size_t v, std::size_t a) -> std::size_t { return (v + a - 1) & ~(a - 1); };
+   auto alignUp = [](std::size_t value, std::size_t alignment) -> std::size_t {
+      if (value > std::numeric_limits<std::size_t>::max() - alignment + 1)
+         throw std::overflow_error("SOFIE workspace size overflow");
+      return (value + alignment - 1) & ~(alignment - 1);
+   };
+   auto checkedLength = [](const std::vector<size_t> &shape) {
+      size_t length = 1;
+      for (auto dimension : shape)
+         length = WorkspaceProduct({length, dimension});
+      return length;
+   };
 
    // --- Unified pool: lifetime-aware packing of all pooled intermediates ---
    if (!fUnifiedPoolTensorNames.empty()) {
@@ -273,22 +297,26 @@ void RModel::GenerateDynamicTensorInfo_GPU_ALPAKA() {
          if (dynIt != fDynamicTensorInfos.end()) {
             type = dynIt->second.type;
             typeSize = GetTypeSize(type);
-            lengthExpr = ConvertDimShapeToLength(dynIt->second.shape);
+            lengthExpr = "SOFIE::WorkspaceProduct({";
+            for (const auto &dimension : dynIt->second.shape)
+               lengthExpr += "static_cast<std::size_t>(" + dimension.GetVal() + "),";
+            lengthExpr += "})";
             isConst = std::none_of(dynIt->second.shape.begin(), dynIt->second.shape.end(),
                                     [](const Dim &d) { return d.isParam; });
             if (isConst)
-               constBytes = alignUp(ConvertShapeToLength(dynIt->second.shape) * typeSize, kPoolAlign);
+               constBytes = alignUp(WorkspaceProduct({checkedLength(ConvertShapeToInt(dynIt->second.shape)), typeSize}), kPoolAlign);
          } else if (statIt != fIntermediateTensorInfos.end()) {
             type = statIt->second.type;
             typeSize = GetTypeSize(type);
-            lengthExpr = std::to_string(ConvertShapeToLength(statIt->second.shape));
+            const auto length = checkedLength(statIt->second.shape);
+            lengthExpr = std::to_string(length);
             isConst = true;
-            constBytes = alignUp(ConvertShapeToLength(statIt->second.shape) * typeSize, kPoolAlign);
+            constBytes = alignUp(WorkspaceProduct({length, typeSize}), kPoolAlign);
          } else {
-            continue;
+            throw std::logic_error("SOFIE workspace tensor is missing: " + tname);
          }
 
-         std::string sizeExpr = "(" + lengthExpr + ") * " + std::to_string(typeSize);
+         std::string sizeExpr = "SOFIE::WorkspaceProduct({" + lengthExpr + ", " + std::to_string(typeSize) + "})";
 
          size_t producer = 0;
          auto pIt = producerMap.find(tname);
@@ -297,6 +325,17 @@ void RModel::GenerateDynamicTensorInfo_GPU_ALPAKA() {
          size_t lastUse = producer;
          auto fIt = fIntermediateTensorFrequencyLookup.find(tname);
          if (fIt != fIntermediateTensorFrequencyLookup.end()) lastUse = fIt->second;
+         for (size_t opIndex = 0; opIndex < fOperators.size(); ++opIndex) {
+            for (const auto &input : fOperators[opIndex]->GetOpInputTensors()) {
+               if (ResolveAliasTensor(std::string(input)) == tname)
+                  lastUse = std::max(lastUse, opIndex);
+            }
+         }
+         if (std::any_of(fOutputTensorNames.begin(), fOutputTensorNames.end(), [&](const std::string &output) {
+                return ResolveAliasTensor(output) == tname;
+             }) || producerMap.count(tname) == 0) {
+            lastUse = fOperators.size();
+         }
 
          entries.push_back({tname, type, sizeExpr, lengthExpr, producer, lastUse, isConst, constBytes});
       }
@@ -316,7 +355,7 @@ void RModel::GenerateDynamicTensorInfo_GPU_ALPAKA() {
                int end = (int)(std::max(e.lastUseOp, e.producerOp) + 1);
                lifeInfos.push_back({(int)e.producerOp, end, e.constBytes});
             }
-            auto result = OrganizeMemory(lifeInfos);
+            auto result = PlanWorkspace(lifeInfos);
             constOffsets = result.offsets;
             constTotalBytes = result.total_bytes;
          }
@@ -332,6 +371,7 @@ void RModel::GenerateDynamicTensorInfo_GPU_ALPAKA() {
          if (!runtimeIdx.empty()) {
             out << SP << SP << "constexpr std::size_t kPoolAlign = 256;\n";
             out << SP << SP << "auto alignUp = [](std::size_t v, std::size_t a) -> std::size_t {\n";
+            out << SP << SP << SP << "if (v > std::numeric_limits<std::size_t>::max() - a + 1) throw std::overflow_error(\"SOFIE workspace size overflow\");\n";
             out << SP << SP << SP << "return (v + a - 1) & ~(a - 1);\n";
             out << SP << SP << "};\n";
             out << SP << SP << "std::vector<SOFIE::TensorLifeInfo> runtimePoolInfos;\n";
@@ -342,34 +382,31 @@ void RModel::GenerateDynamicTensorInfo_GPU_ALPAKA() {
                out << SP << SP << "runtimePoolInfos.push_back({" << e.producerOp << ", " << end
                    << ", alignUp(" << e.sizeExpr << ", kPoolAlign)});\n";
             }
-            out << SP << SP << "auto runtimePoolResult = OrganizeMemory(runtimePoolInfos);\n";
+            out << SP << SP << "auto runtimePoolResult = SOFIE::PlanWorkspace(runtimePoolInfos);\n";
+            out << SP << SP << "if (runtimePoolResult.total_bytes > std::numeric_limits<std::size_t>::max() - kConstPoolBytes) throw std::overflow_error(\"SOFIE workspace size overflow\");\n";
             out << SP << SP << "std::size_t poolTotalBytes = kConstPoolBytes + runtimePoolResult.total_bytes;\n";
          } else {
             out << SP << SP << "std::size_t poolTotalBytes = kConstPoolBytes;\n";
          }
 
          out << "\n" << SP << SP << "// Allocate unified pool buffer\n";
-         out << SP << SP << "if (poolTotalBytes > 0)\n";
-         out << SP << SP << SP << "fUnifiedPool = alpaka::allocBuf<uint8_t, Idx>(devAcc, Ext1D::all(Idx{poolTotalBytes}));\n";
-         out << SP << SP << "auto* poolBase = (poolTotalBytes > 0) ? alpaka::getPtrNative(fUnifiedPool) : nullptr;\n";
          out << SP << SP << "fUnifiedPoolSize = poolTotalBytes;\n\n";
 
          out << SP << SP << "// Assign tensor views into unified pool\n";
          for (size_t i = 0; i < constIdx.size(); ++i) {
             auto &e = entries[constIdx[i]];
-            std::string typeName = ConvertOutputTypeToString(e.type);
-            std::string viewType = GetViewType(e.type);
-            out << SP << SP << "deviceBuf_" << e.name << " = " << viewType
-                << "{reinterpret_cast<" << typeName << "*>(poolBase + " << constOffsets[i]
-                << "), devAcc, Ext1D::all(Idx{" << e.lengthExpr << "})};\n";
+            out << SP << SP << "fWorkspaceOffsets[" << constIdx[i] << "] = " << constOffsets[i] << ";\n";
+            out << SP << SP << "fWorkspaceLengths[" << constIdx[i] << "] = " << e.lengthExpr << ";\n";
          }
          for (size_t i = 0; i < runtimeIdx.size(); ++i) {
             auto &e = entries[runtimeIdx[i]];
-            std::string typeName = ConvertOutputTypeToString(e.type);
-            std::string viewType = GetViewType(e.type);
-            out << SP << SP << "deviceBuf_" << e.name << " = " << viewType
-                << "{reinterpret_cast<" << typeName << "*>(poolBase + kConstPoolBytes + runtimePoolResult.offsets["
-                << i << "]), devAcc, Ext1D::all(Idx{" << e.lengthExpr << "})};\n";
+            out << SP << SP << "fWorkspaceOffsets[" << runtimeIdx[i] << "] = kConstPoolBytes + runtimePoolResult.offsets[" << i << "];\n";
+            out << SP << SP << "fWorkspaceLengths[" << runtimeIdx[i] << "] = " << e.lengthExpr << ";\n";
+         }
+         if (!fExternalWorkspace) {
+            out << SP << SP << "if (poolTotalBytes) {\n";
+            out << SP << SP << "fUnifiedPool = std::make_shared<BufUI81D>(alpaka::allocBuf<uint8_t, Idx>(devAcc, Ext1D::all(Idx{poolTotalBytes})));\n";
+            out << SP << SP << "SetWorkspace(alpaka::getPtrNative(*fUnifiedPool), poolTotalBytes);\n}\n";
          }
 
          out << SP << "}\n";
@@ -492,10 +529,7 @@ void RModel::GenerateOutput_GPU_ALPAKA() {
    }
 
    auto IsPooledIntermediate = [this](const std::string &name) -> bool {
-      return fIntermediateTensorInfos.count(name) > 0 &&
-             fInitializedTensors.count(name) == 0 &&
-             fDynamicTensorInfos.count(name) == 0 &&
-             fFusion.internal.count(name) == 0;
+      return std::find(fUnifiedPoolTensorNames.begin(), fUnifiedPoolTensorNames.end(), name) != fUnifiedPoolTensorNames.end();
    };
 
    auto GetOutputReturnType = [&](const std::string &name) -> std::string {
@@ -503,13 +537,15 @@ void RModel::GenerateOutput_GPU_ALPAKA() {
       const std::string storageName = ResolveAliasTensor(name);
 
       if (IsPooledIntermediate(storageName)) {
-         if (type == ETensorType::FLOAT)  return "ViewF1D";
+         if (type == ETensorType::FLOAT16) return "ViewH1D";
+      if (type == ETensorType::FLOAT)  return "ViewF1D";
          if (type == ETensorType::DOUBLE) return "ViewD1D";
          if (type == ETensorType::INT32)  return "ViewI321D";
          if (type == ETensorType::INT64)  return "ViewI641D";
          if (type == ETensorType::BOOL)   return "ViewUI81D";
       }
 
+      if (type == ETensorType::FLOAT16) return "BufH1D";
       if (type == ETensorType::FLOAT)  return "BufF1D";
       if (type == ETensorType::DOUBLE) return "BufD1D";
       if (type == ETensorType::INT32)  return "BufI321D";
@@ -573,6 +609,7 @@ void RModel::GenerateOutput_GPU_ALPAKA() {
    fGC += "void _infer_impl(";
    fGC += GenerateImplSignature_GPU_ALPAKA();
    fGC += "){\n";
+   fGC += SP + "if (GetWorkspaceSize() && !fWorkspaceBound) throw std::runtime_error(\"SOFIE workspace is not bound\");\n";
    // device buffers were sized in the ctor from its shape params; refuse larger ones
    // (same check and message as the CPU session)
    ForEachInferArg_GPU_ALPAKA(
@@ -590,6 +627,7 @@ void RModel::GenerateOutput_GPU_ALPAKA() {
       fGC += RModelProfilerGPU::GenerateBeginInferCode();
    }
 
+   const auto inferBodyStart = fGC.size();
    for (size_t op_idx = 0; op_idx < fOperators.size(); ++op_idx) {
       if (fVerbose)
          std::cout << "Generating code for operator .... " << op_idx << std::endl;
@@ -622,6 +660,8 @@ void RModel::GenerateOutput_GPU_ALPAKA() {
       }
    }
 
+   if (fExternalWorkspace && fGC.find("alpaka::allocBuf", inferBodyStart) != std::string::npos)
+      throw std::runtime_error("SOFIE external workspace does not support operators with inference-time allocations");
    if (fProfile) {
       fGC += RModelProfilerGPU::GenerateEndInferCode();
    }
@@ -633,7 +673,13 @@ void RModel::GenerateOutput_GPU_ALPAKA() {
    for (auto &p : dynParamNames)
       spanDynDecl += ", size_t " + p;
 
-   fGC += "void infer(std::span<ViewConstF1D const> inputs, std::span<ViewF1D> outputs" + spanDynDecl + "){\n";
+   const bool homogeneousInputs = !fInputTensorNames.empty() && std::all_of(
+      fInputTensorNames.begin(), fInputTensorNames.end(), [&](const std::string &name) {
+         return GetTensorType(name) == GetTensorType(fInputTensorNames.front());
+      });
+   if (homogeneousInputs && sameOutputTypes) {
+   fGC += "void infer(std::span<" + GetViewConstType(GetTensorType(fInputTensorNames.front())) +
+          " const> inputs, std::span<" + GetViewType(eFirstOutputType) + "> outputs" + spanDynDecl + "){\n";
 
    {
       // each symbol goes just before the first input whose shape introduces it
@@ -659,6 +705,8 @@ void RModel::GenerateOutput_GPU_ALPAKA() {
    fGC += SP + "alpaka::wait(queue);\n";
    fGC += "}\n\n";
 
+
+   }
 
    std::string returnType;
 
@@ -788,10 +836,13 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
    };
 
    bool OpNeedsBlas = false;
+   bool OpNeedsNativeBlas = false;
 
    fGC += "\n//--- ALPAKA Kernels\n";
    for (size_t id = 0; id < fOperators.size(); id++) {
-      if(fOperators[id]->GetKind() == OperatorKind::GEMM || fOperators[id]->GetKind() == OperatorKind::CONV) {
+      if (fOperators[id]->UsesNativeBlas()) {
+         OpNeedsNativeBlas = true;
+      } else if(fOperators[id]->GetKind() == OperatorKind::GEMM || fOperators[id]->GetKind() == OperatorKind::CONV) {
          OpNeedsBlas = true;
       }
 
@@ -838,6 +889,9 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
     fGC += "using DevAcc = alpaka::Dev<Acc>;\n\n";
     fGC += "using QueueProperty = alpaka::NonBlocking;\n";
     fGC += "using QueueAcc = alpaka::Queue<Acc, QueueProperty>;\n\n";
+    fGC += "using BufH1D = alpaka::Buf<Acc, SOFIE::Float16, Dim, Idx>;\n";
+    fGC += "using ViewH1D = alpaka::ViewPlainPtr<DevAcc, SOFIE::Float16, Dim, Idx>;\n";
+    fGC += "using ViewConstH1D = alpaka::ViewPlainPtr<DevAcc, const SOFIE::Float16, Dim, Idx>;\n";
     fGC += "using BufF1D = alpaka::Buf<Acc, float, Dim, Idx>;\n";
     fGC += "using BufD1D = alpaka::Buf<Acc, double, Dim, Idx>;\n";
     fGC += "using BufI321D = alpaka::Buf<Acc, int32_t, Dim, Idx>;\n";
@@ -867,6 +921,9 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
          fGC += "\n\n// BLAS declarations\n";
          fGC += "sofieBLAS<tagAcc> blas{queue};\n";
     }
+
+   if (OpNeedsNativeBlas)
+      fGC += "SOFIE::NativeBlas<QueueAcc> nativeBlas{queue};\n";
 
    /// Allocate memory efficiently
    GenerateInitializedTensorInfo_GPU_ALPAKA();
@@ -899,7 +956,7 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
          if (persistentTensors.count(i.first)) continue;
 
          bool isOpOutput = opOutputTensors.count(i.first) > 0;
-         if (isOpOutput) {
+         if (isOpOutput || fExternalWorkspace) {
             // Poolable static intermediate → null view, assigned from pool in constructor
             tensorDecls += DeclareViewLine(i.first, i.second.type);
             unifiedPoolTensors.push_back(i.first);
@@ -913,7 +970,7 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
       // 2. Dynamic intermediates
       for (auto &i : fDynamicTensorInfos) {
          if (fFusion.internal.count(i.first)) continue;
-
+         if (IsAliasTensor(i.first) || persistentTensors.count(i.first)) continue;
          bool runtimeShape = false;
          for (const auto &dim : i.second.shape) {
             if (dim.isParam && !AllShapeExprTokensKnown(dim.param, fShapeParams)) {
@@ -922,7 +979,9 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
             }
          }
          bool isOutput = outputSet.count(i.first) > 0;
-         if (runtimeShape || isOutput) {
+         if (fExternalWorkspace && runtimeShape)
+            throw std::runtime_error("SOFIE external workspace requires shapes known at session construction: " + i.first);
+         if (runtimeShape || (isOutput && !fExternalWorkspace)) {
             tensorDecls += AllocBufLine(i.first, i.second.type, "1");
          } else {
             tensorDecls += DeclareViewLine(i.first, i.second.type);
@@ -948,8 +1007,7 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
       // Unified pool buffer (allocated to final size in constructor)
       if (!unifiedPoolTensors.empty()) {
          fGC += "\n//--- unified memory pool buffer (allocated in constructor)\n";
-         fGC += "BufUI81D fUnifiedPool = alpaka::allocBuf<uint8_t, Idx>(devAcc, Ext1D::all(Idx{1}));\n";
-         fGC += "std::size_t fUnifiedPoolSize = 0;\n";
+         fGC += "std::shared_ptr<BufUI81D> fUnifiedPool;\n";
          fGC += "std::size_t GetIntermediateMemoryPoolSize() const { return fUnifiedPoolSize; }\n";
          // The unified pool is packed once, in the constructor, into a single
          // fixed-size buffer with no further runtime alloc/free churn, so
@@ -960,6 +1018,22 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
       }
 
       fUnifiedPoolTensorNames = std::move(unifiedPoolTensors);
+      fGC += "std::size_t fUnifiedPoolSize = 0;\n";
+      fGC += "bool fWorkspaceBound = false;\n";
+      fGC += "std::vector<std::size_t> fWorkspaceOffsets = std::vector<std::size_t>(" + std::to_string(fUnifiedPoolTensorNames.size()) + ");\n";
+      fGC += "std::vector<std::size_t> fWorkspaceLengths = std::vector<std::size_t>(" + std::to_string(fUnifiedPoolTensorNames.size()) + ");\n";
+      fGC += "std::size_t GetWorkspaceSize() const { return fUnifiedPoolSize; }\n";
+      fGC += "void SetWorkspace(void* memory, std::size_t bytes) {\n";
+      fGC += "if (bytes < fUnifiedPoolSize || (fUnifiedPoolSize && !memory) || reinterpret_cast<std::uintptr_t>(memory) % 256) throw std::invalid_argument(\"SOFIE workspace must be sufficiently large and 256-byte aligned\");\n";
+      fGC += "auto* poolBase = static_cast<uint8_t*>(memory);\n";
+      for (size_t index = 0; index < fUnifiedPoolTensorNames.size(); ++index) {
+         const auto &name = fUnifiedPoolTensorNames[index];
+         const auto type = GetTensorType(name);
+         const auto slot = std::to_string(index);
+         fGC += "deviceBuf_" + name + " = " + GetViewType(type) + "{reinterpret_cast<" + ConvertOutputTypeToString(type) +
+                "*>(poolBase ? poolBase + fWorkspaceOffsets[" + slot + "] : nullptr), devAcc, Ext1D::all(Idx{fWorkspaceLengths[" + slot + "]})};\n";
+      }
+      fGC += "fWorkspaceBound = true;\n}\n";
    }
 
    GenerateOperatorDeclarations();
@@ -1003,7 +1077,7 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
          for (size_t id = 0; id < fOperators.size(); id++) {
             if (fFusion.skip.count(id)) continue;
             fGC += fOperators[id]->GenerateInitCode_GPU_ALPAKA();
-            if (fOperators[id]->GetKind() == OperatorKind::GEMM || fOperators[id]->GetKind() == OperatorKind::CONV) {
+            if (!fOperators[id]->UsesNativeBlas() && (fOperators[id]->GetKind() == OperatorKind::GEMM || fOperators[id]->GetKind() == OperatorKind::CONV)) {
                for (auto &blasCfg : fOperators[id]->GetBlasConfigs()) {
                   if (!blasCfg.empty())
                      fGC += "\nblas.addOperationConfig(" + blasCfg + ");\n";
@@ -1076,9 +1150,11 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
          else
             fGC += sessionName + "(QueueAcc& extQueue, std::string filename = \"\"";
          fGC += ctorParams;
-         fGC += ")\n    : queue(extQueue)";
+         fGC += ")\n    : devAcc(alpaka::getDev(extQueue)), queue(extQueue)";
          if (OpNeedsBlas)
             fGC += ", blas(queue)";
+         if (OpNeedsNativeBlas)
+            fGC += ", nativeBlas(queue)";
          fGC += "\n{\n";
          fGC += SP + "InitSession(filename" + initArgs + ");\n";
          fGC += "}\n\n";
@@ -1185,6 +1261,8 @@ void RModel::GenerateGPU_ALPAKA(std::underlying_type_t<Options> options, int bat
       throw std::runtime_error(
           "sofie: RModel::Generate: cannot use a separate weight file without generating a Session class");
    }
+   if (fExternalWorkspace && !fUseSession)
+      throw std::invalid_argument("SOFIE external workspace requires a generated session");
 
    if (static_cast<std::underlying_type_t<Options>>(Options::kGNN) & options ||
        static_cast<std::underlying_type_t<Options>>(Options::kGNNComponent) & options)

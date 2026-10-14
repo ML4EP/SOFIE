@@ -21,6 +21,9 @@ std::unique_ptr<ROperator> ParseBasicUnary(RModelParser_ONNX &parser, const onnx
    std::string output_name = nodeproto.output(0);
 
    switch (input_type) {
+   case ETensorType::FLOAT16:
+      op.reset(new ROperator_BasicUnary<Float16, Op>(input_name, output_name));
+      break;
    case ETensorType::FLOAT:
       op.reset(new ROperator_BasicUnary<float, Op>(input_name, output_name));
       break;
@@ -56,4 +59,3 @@ void RegisterBasicUnaryParsers(RModelParser_ONNX &parser)
 }
 
 } // namespace SOFIE
-

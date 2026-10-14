@@ -18,6 +18,7 @@ ParserFuncSignature ParseSigmoid = [](RModelParser_ONNX &parser, const onnx::Nod
    std::string output_name = nodeproto.output(0);
 
    switch (input_type) {
+   case ETensorType::FLOAT16: op.reset(new ROperator_Sigmoid<Float16>(input_name, output_name)); break;
    case ETensorType::FLOAT: op.reset(new ROperator_Sigmoid<float>(input_name, output_name)); break;
    default:
       throw std::runtime_error("SOFIE - Unsupported - Operator Sigmoid does not yet support input type " +

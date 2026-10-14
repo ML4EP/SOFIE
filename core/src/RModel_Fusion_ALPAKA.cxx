@@ -288,7 +288,7 @@ private:
       }
    }
 
-   void FuseGemmActivations()
+   template<class Value> void FuseTypedGemmActivations()
    {
       std::unordered_map<std::string, size_t> consumerCount;
 
@@ -303,13 +303,13 @@ private:
          if (plan.skip.count(opIdx) || plan.skip.count(activationOpIdx))
             continue;
 
-         auto *gemm = dynamic_cast<ROperator_Gemm<float> *>(m.fOperators[opIdx].get());
+         auto *gemm = dynamic_cast<ROperator_Gemm<Value> *>(m.fOperators[opIdx].get());
 
          if (!gemm || gemm->GetActivationType() != EActivationType::UNDEFINED)
             continue;
 
-         auto *leakyRelu = dynamic_cast<ROperator_LeakyRelu<float> *>(m.fOperators[activationOpIdx].get());
-         auto *relu = dynamic_cast<ROperator_Relu<float> *>(m.fOperators[activationOpIdx].get());
+         auto *leakyRelu = dynamic_cast<ROperator_LeakyRelu<Value> *>(m.fOperators[activationOpIdx].get());
+         auto *relu = dynamic_cast<ROperator_Relu<Value> *>(m.fOperators[activationOpIdx].get());
 
          if (!leakyRelu && !relu)
             continue;
@@ -337,6 +337,12 @@ private:
          gemm->UpdateFusableTensorName(std::string(activationOutputs[0]), [](const std::string &) {});
          plan.skip.insert(activationOpIdx);
       }
+   }
+
+   void FuseGemmActivations()
+   {
+      FuseTypedGemmActivations<float>();
+      FuseTypedGemmActivations<Float16>();
    }
 
    void BuildUses()
@@ -1910,7 +1916,8 @@ public:
                throw std::runtime_error("Horizontally fused operator " + std::to_string(opIdx) + " must have exactly one output");
 
             const std::string localName = "v_op_" + std::to_string(opIdx);
-            code += SP + SP + SP + "auto " + localName + " = " + expression + ";\n";
+            code += SP + SP + SP + (m.GetTensorType(std::string(outputs[0])) == ETensorType::FLOAT16 ?
+               std::string("SOFIE::Float16 ") : std::string("auto ")) + localName + " = " + expression + ";\n";
             values[std::string(outputs[0])] = localName;
          }
 
@@ -2144,7 +2151,8 @@ private:
          throw std::runtime_error("Operator " + std::to_string(opIdx) + " does not provide a fused expression");
 
       const std::string localName = "v_op_" + std::to_string(opIdx) + "_" + std::to_string(ctx.counter++);
-      code += SP + SP + SP + "auto " + localName + " = " + expression + ";\n";
+      code += SP + SP + SP + (m.GetTensorType(tensorName) == ETensorType::FLOAT16 ?
+         std::string("SOFIE::Float16 ") : std::string("auto ")) + localName + " = " + expression + ";\n";
       cache[cacheKey] = localName;
 
       return localName;

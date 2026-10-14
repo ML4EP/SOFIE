@@ -54,7 +54,9 @@ public:
          if (fType == ETensorType::INT64) {
             size_t length = ConvertShapeToLength(ConvertShapeToInt(fShape));
             std::vector<int64_t> convertedData;
-            if (inputType == ETensorType::FLOAT) {
+            if (inputType == ETensorType::FLOAT16) {
+               convertedData = convertToInt64(static_cast<const Float16*>(inputData.get()), length);
+            } else if (inputType == ETensorType::FLOAT) {
                convertedData = convertToInt64(static_cast<const float*>(inputData.get()), length);
             } else if (inputType == ETensorType::DOUBLE) {
                convertedData = convertToInt64(static_cast<const double*>(inputData.get()), length);

@@ -93,6 +93,9 @@ public:
       if (model.IsInitializedTensor(fNX) ) {
          auto type = model.GetTensorType(fNX);
          switch(type) {
+            case ETensorType::FLOAT16:
+               ProcessInitializedTensor<Float16>(model);
+               break;
             case ETensorType::FLOAT:
                ProcessInitializedTensor<float>(model);
                break;

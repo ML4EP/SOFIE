@@ -31,6 +31,7 @@ void RModel_Base::GenerateHeaderInfo(std::string& hgname) {
     for (auto& i: fCustomOpHeaders) {
         fGC += "#include \"" + i + "\"\n";
     }
+    fGC += "#include <SOFIE/RFloat16.hxx>\n";
     fGC += kHelperIncludesMarker;
     if (fUseWeightFile)
         fGC += "#include <fstream>\n";
@@ -106,6 +107,9 @@ void RModel_Base::GenerateHeaderInfo_GPU_ALPAKA(std::string& hgname) {
     fGC += "#include <alpaka/alpaka.hpp>\n";
     fGC += "#include <sofieBLAS/sofieBLAS.hpp>\n";
     fGC += "#include <span>\n";
+    fGC += "#include <memory>\n#include <limits>\n#include <cstdint>\n#include <stdexcept>\n";
+    fGC += "#include <SOFIE/RWorkspace.hxx>\n";
+    fGC += "#include <SOFIE/RNativeBlas.hxx>\n";
 
     // for the session we need to include SOFIE_Common functions
     //needed for convolution operator (need to add a flag)

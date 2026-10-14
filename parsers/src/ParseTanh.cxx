@@ -18,6 +18,7 @@ ParserFuncSignature ParseTanh = [](RModelParser_ONNX &parser, const onnx::NodePr
    std::string output_name = nodeproto.output(0);
 
    switch (input_type) {
+   case ETensorType::FLOAT16: op.reset(new ROperator_Tanh<Float16>(input_name, output_name)); break;
    case ETensorType::FLOAT: op.reset(new ROperator_Tanh<float>(input_name, output_name)); break;
    default:
       throw std::runtime_error("SOFIE - Unsupported - Operator Tanh does not yet support input type " +

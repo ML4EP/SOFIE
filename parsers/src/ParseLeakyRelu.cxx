@@ -26,6 +26,7 @@ ParserFuncSignature ParseLeakyRelu = [](RModelParser_ONNX &parser, const onnx::N
 
    std::string output_name = nodeproto.output(0);
    switch (input_type) {
+   case ETensorType::FLOAT16: op.reset(new ROperator_LeakyRelu<Float16>(attr_alpha, input_name, output_name)); break;
    case ETensorType::FLOAT: op.reset(new ROperator_LeakyRelu<float>(attr_alpha, input_name, output_name)); break;
    default:
       throw std::runtime_error("SOFIE - Unsupported - Operator Leaky Relu does not yet support input type " +
@@ -40,4 +41,3 @@ ParserFuncSignature ParseLeakyRelu = [](RModelParser_ONNX &parser, const onnx::N
 };
 
 } // namespace SOFIE
-

@@ -33,6 +33,9 @@ std::unique_ptr<ROperator> ParseBasicBinary(RModelParser_ONNX &parser, const onn
    std::string output_name = nodeproto.output(0);
 
    switch (input_type) {
+   case ETensorType::FLOAT16:
+      op.reset(new ROperator_BasicBinary<Float16, Op>(nodeproto.input(0), nodeproto.input(1), output_name));
+      break;
    case ETensorType::FLOAT:
       op.reset(new ROperator_BasicBinary<float, Op>(nodeproto.input(0), nodeproto.input(1), output_name));
       break;
@@ -91,6 +94,9 @@ ParserFuncSignature ParseMod = [] (RModelParser_ONNX &parser, const onnx::NodePr
    std::string output_name = nodeproto.output(0);
 
    switch (input_type) {
+   case ETensorType::FLOAT16:
+      op.reset(new ROperator_BasicBinary<Float16,EBasicBinaryOperator::FMod >(nodeproto.input(0), nodeproto.input(1), output_name));
+      break;
    case ETensorType::FLOAT:
       op.reset(new ROperator_BasicBinary<float,EBasicBinaryOperator::FMod >(nodeproto.input(0), nodeproto.input(1), output_name));
       break;
@@ -133,4 +139,3 @@ void RegisterBasicBinaryParsers(RModelParser_ONNX &parser)
 }
 
 } // namespace SOFIE
-

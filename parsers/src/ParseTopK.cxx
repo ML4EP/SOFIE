@@ -36,7 +36,12 @@ ParserFuncSignature ParseTopK = [](RModelParser_ONNX &parser, const onnx::NodePr
       if (attribute_name == "sorted")
          attr_sorted = nodeproto.attribute(i).i();
    }
-   op.reset(new ROperator_TopK<float>(attr_axis, attr_largest, attr_sorted, k_name, input_name, outputVal_name, outputInd_name));
+   if (input_type == ETensorType::FLOAT16)
+      op.reset(new ROperator_TopK<Float16>(attr_axis, attr_largest, attr_sorted, k_name, input_name, outputVal_name, outputInd_name));
+   else if (input_type == ETensorType::FLOAT)
+      op.reset(new ROperator_TopK<float>(attr_axis, attr_largest, attr_sorted, k_name, input_name, outputVal_name, outputInd_name));
+   else
+      throw std::runtime_error("SOFIE TopK requires FLOAT or FLOAT16 input");
 
    if (!parser.IsRegisteredTensorType(outputVal_name)) {
       parser.RegisterTensorType(outputVal_name, input_type);

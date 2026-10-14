@@ -43,6 +43,15 @@ ParserFuseFuncSignature ParseFuseGemmRelu = [](RModelParser_ONNX &parser, const 
       }
    }
    switch (input_type) {
+   case ETensorType::FLOAT16:
+      if (gemmnode.input_size() == 2) {
+         op.reset(new ROperator_Gemm<Float16>(attr_alpha, attr_beta, attr_transA, attr_transB, gemmnode.input(0),
+                                            gemmnode.input(1), relunode.output(0), EActivationType::RELU));
+      } else {
+         op.reset(new ROperator_Gemm<Float16>(attr_alpha, attr_beta, attr_transA, attr_transB, gemmnode.input(0),
+                                            gemmnode.input(1), gemmnode.input(2), relunode.output(0), EActivationType::RELU));
+      }
+      break;
    case ETensorType::FLOAT:
       if (gemmnode.input_size() == 2) {
          op.reset(new ROperator_Gemm<float>(attr_alpha, attr_beta, attr_transA, attr_transB, gemmnode.input(0),
@@ -66,4 +75,3 @@ ParserFuseFuncSignature ParseFuseGemmRelu = [](RModelParser_ONNX &parser, const 
 };
 
 } // namespace SOFIE
-

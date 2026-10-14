@@ -16,6 +16,8 @@ set(sources_headers
    SOFIE/OperatorList.hxx
    SOFIE/RModel_Base.hxx
    SOFIE/RModel.hxx
+   SOFIE/RFloat16.hxx
+   SOFIE/RNativeBlas.hxx
    SOFIE/RModelFusion_ALPAKA.hxx
    SOFIE/RModelProfiler.hxx
    SOFIE/RModelProfilerGPU.hxx
@@ -94,6 +96,17 @@ set(sources_cxx
 )
 
 target_sources(SOFIE_core PRIVATE ${sources_headers} ${sources_cxx})
+if(UNIX)
+  target_sources(SOFIE_core PRIVATE src/RGPUModel.cxx)
+  set(SOFIE_ALPAKA_INCLUDE_DIR "" CACHE PATH "Alpaka headers for runtime compilation")
+  set(SOFIE_BLAS_INCLUDE_DIR "" CACHE PATH "sofieBLAS headers for runtime compilation")
+  target_compile_definitions(SOFIE_core PRIVATE
+    SOFIE_RUNTIME_INCLUDE_DIR="${CMAKE_INSTALL_FULL_INCLUDEDIR}"
+    SOFIE_ALPAKA_INCLUDE_DIR="${SOFIE_ALPAKA_INCLUDE_DIR}"
+    SOFIE_BLAS_INCLUDE_DIR="${SOFIE_BLAS_INCLUDE_DIR}")
+  target_link_libraries(SOFIE_core PRIVATE ${CMAKE_DL_LIBS})
+endif()
+target_compile_features(SOFIE_core PUBLIC cxx_std_20)
 target_include_directories(SOFIE_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/inc>
   $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
@@ -106,4 +119,3 @@ install(TARGETS SOFIE_core
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/inc/"
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
-

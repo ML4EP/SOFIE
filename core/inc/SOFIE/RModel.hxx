@@ -22,6 +22,7 @@ class RModel final : public RModel_Base {
 
 private:
    bool fIsInitialized = false;
+   bool fExternalWorkspace = false;
    bool fIsSubGraph = false;
    bool fUseVDT = false;
    bool fProfile = false;
@@ -88,6 +89,8 @@ public:
    RModel(std::string function_name) : RModel_Base(function_name) {}
 
    int Verbose() const { return fVerbose;}
+   bool UsesExternalWorkspace() const { return fExternalWorkspace; }
+   void SetExternalWorkspace(bool enabled = true) { fExternalWorkspace = enabled; }
 
    std::vector<size_t> GetTensorShape(const std::string & name) const;
    std::vector<Dim> GetDimTensorShape(const std::string & name) const;

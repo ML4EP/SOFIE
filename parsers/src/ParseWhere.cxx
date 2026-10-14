@@ -32,6 +32,9 @@ ParserFuncSignature ParseWhere = [](RModelParser_ONNX &parser, const onnx::NodeP
    std::string output_name = nodeproto.output(0);
 
    switch (input_type) {
+   case ETensorType::FLOAT16:
+      op.reset(new ROperator_Where<Float16>(nodeproto.input(0), nodeproto.input(1), nodeproto.input(2), output_name));
+      break;
    case ETensorType::FLOAT:
       op.reset(new ROperator_Where<float>(nodeproto.input(0), nodeproto.input(1), nodeproto.input(2), output_name));
       break;
@@ -53,4 +56,3 @@ ParserFuncSignature ParseWhere = [](RModelParser_ONNX &parser, const onnx::NodeP
 
 
 } // namespace SOFIE
-

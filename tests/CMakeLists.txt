@@ -10,6 +10,37 @@ include_directories(${CMAKE_SOURCE_DIR}/parsers/inc)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+SOFIE_GENERATE_EXECUTABLE(TestWorkspace cpu/TestWorkspace.cxx
+  LIBRARIES SOFIE_core GTest::gtest_main
+  FIXTURES_SETUP sofie-workspace-build)
+SOFIE_ADD_TEST(SOFIEWorkspace EXEC ./TestWorkspace FIXTURES_REQUIRED sofie-workspace-build)
+
+SOFIE_GENERATE_EXECUTABLE(TestFloat16 cpu/TestFloat16.cxx
+  LIBRARIES SOFIE_core GTest::gtest_main
+  FIXTURES_SETUP sofie-float16-build)
+SOFIE_ADD_TEST(SOFIEFloat16 EXEC ./TestFloat16 FIXTURES_REQUIRED sofie-float16-build)
+
+set(SOFIE_RUNTIME_TEST_ARCH "" CACHE STRING "Enable runtime workspace tests for this GPU architecture (sm_80 or gfx90a)")
+set(SOFIE_RUNTIME_TEST_BACKEND "CUDA" CACHE STRING "Runtime workspace test backend: CUDA or HIP")
+if(SOFIE_RUNTIME_TEST_ARCH)
+  SOFIE_GENERATE_EXECUTABLE(TestRuntimeWorkspace alpaka/TestRuntimeWorkspace.cxx
+    LIBRARIES SOFIE_core GTest::gtest_main
+    FIXTURES_SETUP sofie-runtime-workspace-build)
+  target_compile_definitions(TestRuntimeWorkspace PRIVATE SOFIE_TEST_GPU_ARCH="${SOFIE_RUNTIME_TEST_ARCH}")
+  if(SOFIE_RUNTIME_TEST_BACKEND STREQUAL "HIP")
+    find_package(hip CONFIG REQUIRED)
+    target_link_libraries(TestRuntimeWorkspace PRIVATE hip::host)
+    target_compile_definitions(TestRuntimeWorkspace PRIVATE SOFIE_TEST_HIP)
+  elseif(SOFIE_RUNTIME_TEST_BACKEND STREQUAL "CUDA")
+    find_package(CUDAToolkit REQUIRED)
+    target_link_libraries(TestRuntimeWorkspace PRIVATE CUDA::cudart)
+  else()
+    message(FATAL_ERROR "SOFIE_RUNTIME_TEST_BACKEND must be CUDA or HIP")
+  endif()
+  SOFIE_ADD_TEST(SOFIERuntimeWorkspace EXEC ./TestRuntimeWorkspace
+    FIXTURES_REQUIRED sofie-runtime-workspace-build)
+endif()
+
 find_package(Python3 COMPONENTS Interpreter QUIET)
 
 function(sofie_find_python_module module)
@@ -43,6 +74,28 @@ endif()
 set(SOFIE_ONNX_USABLE FALSE)
 if (SOFIE_ONNX_FOUND AND SOFIE_NUMPY_FOUND AND NOT broken_onnx)
   set(SOFIE_ONNX_USABLE TRUE)
+endif()
+
+if(SOFIE_ONNX_USABLE)
+  SOFIE_ADD_TEST(SOFIEGenerateFloat16Models
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/models/generators/generate_fp16_models.py
+      --outdir ${CMAKE_CURRENT_BINARY_DIR}/fp16-models
+    FIXTURES_SETUP sofie-float16-models)
+  SOFIE_GENERATE_EXECUTABLE(TestFloat16Onnx cpu/TestFloat16Onnx.cxx
+    LIBRARIES SOFIE_core SOFIE_parsers GTest::gtest_main
+    FIXTURES_SETUP sofie-float16-onnx-build)
+  target_compile_definitions(TestFloat16Onnx PRIVATE SOFIE_FP16_MODELS_DIR="${CMAKE_CURRENT_BINARY_DIR}/fp16-models")
+  if(SOFIE_RUNTIME_TEST_ARCH)
+    target_compile_definitions(TestFloat16Onnx PRIVATE SOFIE_TEST_GPU_ARCH="${SOFIE_RUNTIME_TEST_ARCH}")
+    if(SOFIE_RUNTIME_TEST_BACKEND STREQUAL "HIP")
+      target_link_libraries(TestFloat16Onnx PRIVATE hip::host)
+      target_compile_definitions(TestFloat16Onnx PRIVATE SOFIE_TEST_HIP)
+    else()
+      target_link_libraries(TestFloat16Onnx PRIVATE CUDA::cudart)
+    endif()
+  endif()
+  SOFIE_ADD_TEST(SOFIEFloat16Onnx EXEC ./TestFloat16Onnx
+    FIXTURES_REQUIRED sofie-float16-onnx-build;sofie-float16-models)
 endif()
 
 function(sofie_write_model_includes testsource outfile suffix)

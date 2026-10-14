@@ -389,6 +389,7 @@ private:
 
    // Helper: convert a T value to string with enough precision
    std::string ToStringHighPrec(T val) const {
+      if constexpr (std::is_same_v<T, Float16>) return ConvertValToString(val);
       std::ostringstream ss;
       ss << std::setprecision(std::numeric_limits<T>::max_digits10) << val;
       if constexpr (std::is_floating_point_v<T>) {

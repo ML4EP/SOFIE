@@ -29,6 +29,8 @@ private:
 
    std::string ValueLiteral(T v) const {
       std::ostringstream s;
+      if constexpr (std::is_same_v<T, Float16>)
+         return "SOFIE::Float16::FromBits(" + std::to_string(v.bits) + ")";
       if (fAttrType == "float" || fAttrType == "double") {
          s << std::setprecision(fAttrType == "float" ? std::numeric_limits<float>::max_digits10
                                                        : std::numeric_limits<double>::max_digits10)

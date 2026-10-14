@@ -18,6 +18,7 @@ ParserFuncSignature ParseRelu = [](RModelParser_ONNX &parser, const onnx::NodePr
    std::string output_name = nodeproto.output(0);
 
    switch (input_type) {
+   case ETensorType::FLOAT16: op.reset(new ROperator_Relu<Float16>(input_name, output_name)); break;
    case ETensorType::FLOAT: op.reset(new ROperator_Relu<float>(input_name, output_name)); break;
    default:
       throw std::runtime_error("SOFIE - Unsupported - Operator Relu does not yet support input type " +

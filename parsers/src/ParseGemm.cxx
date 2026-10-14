@@ -43,6 +43,15 @@ ParserFuncSignature ParseGemm = [](RModelParser_ONNX &parser, const onnx::NodePr
 
    std::string output_name = nodeproto.output(0);
    switch (input_type) {
+   case ETensorType::FLOAT16:
+      if (nodeproto.input_size() == 2) {
+         op.reset(new ROperator_Gemm<Float16>(attr_alpha, attr_beta, attr_transA, attr_transB, nodeproto.input(0),
+                                            nodeproto.input(1), output_name));
+      } else {
+         op.reset(new ROperator_Gemm<Float16>(attr_alpha, attr_beta, attr_transA, attr_transB, nodeproto.input(0),
+                                            nodeproto.input(1), nodeproto.input(2), output_name));
+      }
+      break;
    case ETensorType::FLOAT:
       if (nodeproto.input_size() == 2) {
          op.reset(new ROperator_Gemm<float>(attr_alpha, attr_beta, attr_transA, attr_transB, nodeproto.input(0),
