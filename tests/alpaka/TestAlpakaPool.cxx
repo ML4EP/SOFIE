@@ -28,9 +28,8 @@ TEST_F(SofieAlpakaTest, DynamicMaxPool)
         auto input_d = makeDeviceBuf<float>(host, device, queue, input.data(), input.size());
         auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{N * 4}));
         {
-            SOFIE_DynamicMaxPool::Session<alpaka::TagGpuCudaRt> session("DynamicMaxPool_FromONNX_GPU_ALPAKA.dat", N);
+            SOFIE_DynamicMaxPool::Session<TestTag> session("DynamicMaxPool_FromONNX_GPU_ALPAKA.dat", N);
             auto result = session.infer(N, input_d);
-            cudaDeviceSynchronize();
             alpaka::memcpy(queue, result_h, result);
             alpaka::wait(queue);
         }
@@ -79,9 +78,8 @@ TEST_F(SofieAlpakaTest, DynamicPad)
         auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{outSize}));
 
         {
-            SOFIE_DynamicPad::Session<alpaka::TagGpuCudaRt> session("DynamicPad_FromONNX_GPU_ALPAKA.dat", N, P);
+            SOFIE_DynamicPad::Session<TestTag> session("DynamicPad_FromONNX_GPU_ALPAKA.dat", N, P);
             auto result = session.infer(N, P, input_d);
-            cudaDeviceSynchronize();
             alpaka::memcpy(queue, result_h, result);
             alpaka::wait(queue);
         }
@@ -131,7 +129,6 @@ TEST_F(SofieAlpakaTest, MaxPool2d)
       SOFIE_MaxPool2d::Session<TestTag> session("MaxPool2d_FromONNX_GPU_ALPAKA.dat");
       auto result = session.infer(input_d);
       alpaka::wait(queue);
-      alpaka::wait(device);
       alpaka::memcpy(queue, result_h, result);
       alpaka::wait(queue);
    }
@@ -171,7 +168,6 @@ TEST_F(SofieAlpakaTest, MaxPool1d)
       SOFIE_MaxPool1d::Session<TestTag> session("MaxPool1d_FromONNX_GPU_ALPAKA.dat");
       auto result = session.infer(input_d);
       alpaka::wait(queue);
-      alpaka::wait(device);
       alpaka::memcpy(queue, result_h, result);
       alpaka::wait(queue);
    }
@@ -207,7 +203,6 @@ TEST_F(SofieAlpakaTest, MaxPool3d)
       SOFIE_MaxPool3d::Session<TestTag> session("MaxPool3d_FromONNX_GPU_ALPAKA.dat");
       auto result = session.infer(input_d);
       alpaka::wait(queue);
-      alpaka::wait(device);
       alpaka::memcpy(queue, result_h, result);
       alpaka::wait(queue);
    }
@@ -253,7 +248,6 @@ TEST_F(SofieAlpakaTest, AvgPool)
       SOFIE_AvgPool::Session<TestTag> session("AvgPool_FromONNX_GPU_ALPAKA.dat");
       auto result = session.infer(input_d);
       alpaka::wait(queue);
-      alpaka::wait(device);
       alpaka::memcpy(queue, result_h, result);
       alpaka::wait(queue);
    }
@@ -289,7 +283,6 @@ TEST_F(SofieAlpakaTest, AvgPoolPad)
       SOFIE_AvgPoolPad::Session<TestTag> session("AvgPoolPad_FromONNX_GPU_ALPAKA.dat");
       auto result = session.infer(input_d);
       alpaka::wait(queue);
-      alpaka::wait(device);
       alpaka::memcpy(queue, result_h, result);
       alpaka::wait(queue);
    }
@@ -326,7 +319,6 @@ TEST_F(SofieAlpakaTest, AvgPoolCountIncludePad)
       SOFIE_AvgPoolCountIncludePad::Session<TestTag> session("AvgPoolCountIncludePad_FromONNX_GPU_ALPAKA.dat");
       auto result = session.infer(input_d);
       alpaka::wait(queue);
-      alpaka::wait(device);
       alpaka::memcpy(queue, result_h, result);
       alpaka::wait(queue);
    }
@@ -361,7 +353,6 @@ TEST_F(SofieAlpakaTest, GlobalAvgPool2d)
       SOFIE_GlobalAvgPool2d::Session<TestTag> session("GlobalAvgPool2d_FromONNX_GPU_ALPAKA.dat");
       auto result = session.infer(input_d);
       alpaka::wait(queue);
-      alpaka::wait(device);
       alpaka::memcpy(queue, result_h, result);
       alpaka::wait(queue);
    }

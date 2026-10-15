@@ -44,17 +44,8 @@ protected:
     {
     }
 
-    void SetUp() override {
-        alpaka::wait(device);
-    }
-
     void TearDown() override {
         alpaka::wait(queue);
-        alpaka::wait(device);
-    }
-
-    ~SofieAlpakaTest() override {
-        alpaka::wait(device);
     }
 };
 

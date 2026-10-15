@@ -33,7 +33,6 @@ TEST_F(SofieAlpakaTest, SDPA)
         SOFIE_SDPA::Session<TestTag> session("SDPA_FromONNX_GPU_ALPAKA.dat");
         auto result = session.infer(q_d, k_d, v_d);
         alpaka::wait(queue);
-        alpaka::wait(device);
         alpaka::memcpy(queue, result_h, result);
         alpaka::wait(queue);
     }
@@ -74,10 +73,9 @@ TEST_F(SofieAlpakaTest, SDPABig)
     auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{qkvSize}));
 
     {
-        SOFIE_SDPABig::Session<alpaka::TagGpuCudaRt> session;
+        SOFIE_SDPABig::Session<TestTag> session;
         auto result = session.infer(q_d, k_d, v_d, mask_d);
         alpaka::wait(queue);
-        cudaDeviceSynchronize();
         alpaka::memcpy(queue, result_h, result);
         alpaka::wait(queue);
     }
@@ -134,7 +132,6 @@ TEST_F(SofieAlpakaTest, MambaScan)
         SOFIE_MambaScan::Session<TestTag> session("MambaScan_FromONNX_GPU_ALPAKA.dat");
         auto result = session.infer(u_d, delta_d, B_d, C_d);
         alpaka::wait(queue);
-        alpaka::wait(device);
         alpaka::memcpy(queue, result_h, result);
         alpaka::wait(queue);
     }
@@ -171,7 +168,6 @@ TEST_F(SofieAlpakaTest, RWKV_WKV6)
         SOFIE_RWKV_WKV6::Session<TestTag> session("RWKV_WKV6_FromONNX_GPU_ALPAKA.dat");
         auto result = session.infer(r_d, k_d, v_d, w_d);
         alpaka::wait(queue);
-        alpaka::wait(device);
         alpaka::memcpy(queue, result_h, result);
         alpaka::wait(queue);
     }
@@ -206,7 +202,6 @@ TEST_F(SofieAlpakaTest, GriffinRGLRU)
         SOFIE_GriffinRGLRU::Session<TestTag> session("GriffinRGLRU_FromONNX_GPU_ALPAKA.dat");
         auto result = session.infer(x_d, a_d);
         alpaka::wait(queue);
-        alpaka::wait(device);
         alpaka::memcpy(queue, result_h, result);
         alpaka::wait(queue);
     }

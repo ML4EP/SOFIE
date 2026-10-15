@@ -54,11 +54,11 @@ cmake --build . -j$(nproc)
 ctest --output-on-failure
 ```
 
-### GPU tests (Alpaka/CUDA)
+### GPU tests (Alpaka, CUDA or HIP)
 
-Alpaka-based GPU tests compile SOFIE-generated inference code as CUDA and verify
-correctness against reference outputs.  They require the CUDA Toolkit and a
-compatible NVIDIA GPU.
+Alpaka-based GPU tests compile SOFIE-generated inference code for an NVIDIA (CUDA)
+or AMD (HIP) GPU and verify correctness against reference outputs.  They require
+the CUDA Toolkit or ROCm, and a matching GPU.
 
 ```bash
 cmake -DSOFIE_BUILD_TESTS=ON \
@@ -75,8 +75,11 @@ ctest --output-on-failure
 | `-DSOFIE_USE_CCACHE=ON` | `OFF` | Use ccache as compiler launcher |
 | `-DENABLE_ALPAKA_TESTS=ON` | `OFF` | Enable Alpaka GPU tests |
 | `-DALPAKA_BACKEND=<val>` | `cuda` | Alpaka backend: `cuda`, `hip`, `cpu`, `sycl` |
+| `-DROCM_BASE=<path>` | `/opt/rocm` | ROCm installation prefix (`hip` backend only) |
 
-The test executable is `TestCustomModelsFromONNXForAlpakaCuda`.  ONNX model files
+The test executable is `TestCustomModelsFromONNXForAlpakaCuda` with
+`-DALPAKA_BACKEND=cuda` (the default), or `TestCustomModelsFromONNXForAlpakaHip`
+with `-DALPAKA_BACKEND=hip`.  ONNX model files
 used as test inputs are located in `tests/models/onnx/`.  Models with symbolic
 (dynamic) input dimensions are specialised by the emitter before testing.
 

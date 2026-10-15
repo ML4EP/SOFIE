@@ -21,7 +21,6 @@ TEST_F(SofieAlpakaTest, KernelOnlyLeakyRelu)
                                                n, alpha);
     alpaka::enqueue(queue, task);
     alpaka::wait(queue);
-    alpaka::wait(device);
 
     auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{n}));
     alpaka::memcpy(queue, result_h, output_d);

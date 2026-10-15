@@ -33,7 +33,6 @@ TEST_F(SofieAlpakaTest, LowRankMatchesFactorReconstruction)
    SOFIE_LowRankGemmLRGpu::Session<TestTag> session("LowRankGemm_LowRank_GPU_ALPAKA.dat");
    auto result = session.infer(A_d);
    alpaka::wait(queue);
-   alpaka::wait(device);
 
    auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{kM * kN}));
    alpaka::memcpy(queue, result_h, result);
@@ -85,7 +84,6 @@ TEST_F(SofieAlpakaTest, DenseGpuUnaffectedByFeature)
    SOFIE_LowRankGemmDenseGpu::Session<TestTag> session("LowRankGemm_Dense_GPU_ALPAKA.dat");
    auto result = session.infer(A_d);
    alpaka::wait(queue);
-   alpaka::wait(device);
 
    auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{kM * kN}));
    alpaka::memcpy(queue, result_h, result);

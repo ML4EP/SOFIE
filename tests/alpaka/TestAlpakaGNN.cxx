@@ -39,7 +39,6 @@ TEST_F(SofieAlpakaTest, GNN_model)
         SOFIE_GNN_model::Session<TestTag> session("GNN_model_FromONNX_GPU_ALPAKA.dat");
         auto result = session.infer(x_d, ef_d, ei_d);
         alpaka::wait(session.queue);
-        alpaka::wait(device);
         alpaka::memcpy(queue, result_h, result);
         alpaka::wait(queue);
     }
