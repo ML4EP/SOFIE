@@ -1,14 +1,6 @@
-# Copyright (C) 1995-2021, Rene Brun and Fons Rademakers.
-# All rights reserved.
-#
-# For the licensing terms see $ROOTSYS/LICENSE.
-# For the list of contributors see $ROOTSYS/README/CREDITS.
-
 ############################################################################
 # CMakeLists.txt file for building SOFIE standalone package
 ############################################################################
-#Author: Sitong An, Lorenzo Moneta 10/03/2021
-
 
 add_library(SOFIE_core SHARED)
 

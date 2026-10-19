@@ -66,6 +66,10 @@ private:
    ETensorType fTensorType1 = ETensorType::UNDEFINED;
    ETensorType fTensorType2 = ETensorType::UNDEFINED;
    int fBroadcastFlag = 0;
+   bool fStridedX1 = false; ///< input X1 is a graph input read through its strides
+   bool fStridedX2 = false;
+   size_t fOrigRankX1 = 0; ///< rank of the inputs, before the padding to the rank of the output
+   size_t fOrigRankX2 = 0;
 
 
 public:
@@ -86,6 +90,11 @@ public:
       if (!model.CheckIfTensorAlreadyExist(fNX2)) {
          throw std::runtime_error(std::string("SOFIE Comparison Op Input Tensor ") + fNX2 + "is not found in model");
       }
+      fOrigRankX1 = model.GetDimTensorShape(fNX1).size();
+      fOrigRankX2 = model.GetDimTensorShape(fNX2).size();
+      fStridedX1 = model.IsStridedInputTensor(fNX1) && fOrigRankX1 > 0;
+      fStridedX2 = model.IsStridedInputTensor(fNX2) && fOrigRankX2 > 0;
+      fHasStridedInput = fStridedX1 || fStridedX2;
       if (model.IsDynamicTensor(fNX1))
          fDimShapeX1 = model.GetDynamicTensorShape(fNX1);
       else {
@@ -275,6 +284,8 @@ public:
       }
    }
 
+   bool SupportsStridedInput() const override { return true; }
+
    std::string Generate(std::string opName) override {
       if (fIsOutputConstant) return "";
       opName = "op_" + opName;
@@ -292,6 +303,14 @@ public:
       auto stridesA = UTILITY::ComputeStrideFromShape(fDimShapeX1);
       auto stridesB = UTILITY::ComputeStrideFromShape(fDimShapeX2);
       auto stridesY = UTILITY::ComputeStrideFromShape(fDimShapeY);
+
+      // inputs read through the strides given to the Session
+      if (fStridedX1)
+         out << GenerateInputStrideCode(opName + "_X1", fNX1,
+                                        std::vector<Dim>(fDimShapeX1.end() - fOrigRankX1, fDimShapeX1.end()));
+      if (fStridedX2)
+         out << GenerateInputStrideCode(opName + "_X2", fNX2,
+                                        std::vector<Dim>(fDimShapeX2.end() - fOrigRankX2, fDimShapeX2.end()));
 
       std::string compute_idx_X1, compute_idx_X2, compute_idx_Y;
       if (fDimShapeX1.empty() ||
@@ -326,6 +345,10 @@ public:
          for (int j = 0; j < 3; j++)
             compute_idx_X2.pop_back();
       }
+      if (fStridedX1 && compute_idx_X1 != "0")
+         compute_idx_X1 = GenerateStridedBroadcastIndex("stride_" + opName + "_X1", fDimShapeX1, fOrigRankX1, fDimShapeY.size());
+      if (fStridedX2 && compute_idx_X2 != "0")
+         compute_idx_X2 = GenerateStridedBroadcastIndex("stride_" + opName + "_X2", fDimShapeX2, fOrigRankX2, fDimShapeY.size());
       int nloop = 0;
       if (fDimShapeY.empty() ||
           std::all_of(fDimShapeY.begin(), fDimShapeY.end(), [](Dim d) { return d.dim == 1 || d.GetVal() == "1"; })) {
@@ -377,6 +400,10 @@ public:
 
       auto isOne = [](const Dim &d){ return d.GetVal() == "1"; };
 
+      // inputs read through the strides given to the Session (a scalar input has no strides to apply)
+      const bool stridedX1 = fStridedX1 && ConvertDimShapeToLength(fDimShapeX1) != "1";
+      const bool stridedX2 = fStridedX2 && ConvertDimShapeToLength(fDimShapeX2) != "1";
+
       std::string type1  = ConvertTypeToString(fTensorType1);
       std::string type2  = ConvertTypeToString(fTensorType2);
       std::string kname  = "ComparisonKernel_" + opName;
@@ -393,6 +420,10 @@ public:
       op += SP + SP + SP + "uint8_t* __restrict__ output,\n";
       for (auto &p : dynParamNames)
          op += SP + SP + SP + "std::size_t const " + p + ",\n";
+      if (stridedX1)
+         op += SP + SP + SP + "sofie_strided_layout<" + std::to_string(D) + "> const layoutX1,\n";
+      if (stridedX2)
+         op += SP + SP + SP + "sofie_strided_layout<" + std::to_string(D) + "> const layoutX2,\n";
       op += SP + SP + SP + "std::size_t const totalElements) const {\n\n";
 
       op += SP + SP + SP + "auto const global_thread_idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
@@ -426,7 +457,11 @@ public:
          op += (d + 1 < D) ? " +\n" : ";\n\n";
       }
 
-      op += SP + SP + SP + SP + "output[elem_idx] = "+ ComparisonTrait<T,Op>::Op("x1[x1_idx]" , "x2[x2_idx]") + " ;\n";
+      if (stridedX1)
+         op += SP + SP + SP + SP + "std::size_t const x1_src = sofie_strided_offset(layoutX1, elem_idx);\n";
+      if (stridedX2)
+         op += SP + SP + SP + SP + "std::size_t const x2_src = sofie_strided_offset(layoutX2, elem_idx);\n";
+      op += SP + SP + SP + SP + "output[elem_idx] = "+ ComparisonTrait<T,Op>::Op(stridedX1 ? "x1[x1_src]" : "x1[x1_idx]" , stridedX2 ? "x2[x2_src]" : "x2[x2_idx]") + " ;\n";
       op += SP + SP + SP + "}\n";
       op += SP + SP + "}\n";
       op += SP + "};\n";
@@ -452,6 +487,12 @@ public:
 
       std::stringstream out;
       out << "\n//------ " << ComparisonTrait<T,Op>::Name() << "_GPU_ALPAKA\n";
+      const bool stridedX1 = fStridedX1 && ConvertDimShapeToLength(fDimShapeX1) != "1";
+      const bool stridedX2 = fStridedX2 && ConvertDimShapeToLength(fDimShapeX2) != "1";
+      if (stridedX1)
+         out << GenerateStridedBroadcastLayout(opName + "_X1", fNX1, fDimShapeX1, fOrigRankX1, fDimShapeY);
+      if (stridedX2)
+         out << GenerateStridedBroadcastLayout(opName + "_X2", fNX2, fDimShapeX2, fOrigRankX2, fDimShapeY);
       out << SP << "auto const elementsPerThread_" << opName << " = Vec::all(static_cast<Idx>(1));\n";
       out << SP << "auto const elementsPerGrid_"   << opName << " = Vec::all(Idx{" << totalElements << "});\n";
       out << SP << "auto const workDiv_" << opName << " = sofie_workdiv(elementsPerGrid_" << opName << ");\n";
@@ -462,6 +503,10 @@ public:
          << ", alpaka::getPtrNative(deviceBuf_" << fNY << ")";
       for (auto &p : dynParamNames)
          out << ", static_cast<std::size_t>(" << p << ")";
+      if (stridedX1)
+         out << ", layout_" << opName << "_X1";
+      if (stridedX2)
+         out << ", layout_" << opName << "_X2";
       out << ", static_cast<Idx>(" << totalElements << "));\n";
       out << SP << "alpaka::enqueue(queue, task_" << opName << ");\n";
 
@@ -470,7 +515,7 @@ public:
 
    EFusionMappingType GetFusionMappingType() const override
    {
-      if (fIsOutputConstant || fDimShapeY.empty())
+      if (fIsOutputConstant || fHasStridedInput || fDimShapeY.empty())
          return EFusionMappingType::Unsupported;
 
       if (fDimShapeX1 == fDimShapeY && fDimShapeX2 == fDimShapeY)

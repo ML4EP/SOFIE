@@ -22,6 +22,7 @@
          std::string fOutput;
          std::vector<Dim>fOutputShape;
          std::vector<Dim> fOutputShapeData; // in case output is a shape tensor we store here the output shape value data (can be parametric)
+         std::vector<bool> fStrided; // inputs which are graph inputs read through their strides
          std::vector<std::vector<Dim>> fInputShapes;
          ETensorType fInputType = ETensorType::UNDEFINED;
 
@@ -286,12 +287,21 @@
             }
             if (!fIsOutputConstant && !fIsOutputParamShape) {
                fInputType = model.GetTensorType(fInputs[0]);
+               fStrided.assign(fInputs.size(), false);
+               for (size_t i = 0; i < fInputs.size(); i++) {
+                  fStrided[i] = model.IsStridedInputTensor(fInputs[i]) && !fInputShapes[i].empty();
+                  fHasStridedInput |= fStrided[i];
+               }
+               if (fHasStridedInput && fnewAxis != 0)
+                  throw std::runtime_error("SOFIE Concat Op - strided input is not supported with a new axis");
                model.AddIntermediateTensor(fOutput, fInputType, fOutputShape);
                if (model.Verbose()) {
                   std::cout << "Concat ---> " << fOutput << " " <<  ConvertDimShapeToString(fOutputShape) << std::endl;
                }
             }
          }
+
+         bool SupportsStridedInput() const override { return true; }
 
          std::string Generate(std::string opName) override {
             opName = "op_" + opName;
@@ -309,6 +319,46 @@
                }
                return out.str();
             }
+            if (fHasStridedInput) {
+               // general copy of each input, read through its strides , along the concat axis
+               const size_t D = fOutputShape.size();
+               const auto outStride = UTILITY::ComputeStrideFromShape(fOutputShape);
+               out << SP << "{\n";
+               out << SP << "size_t axisOffset_" << opName << " = 0;\n";
+               for (size_t j = 0; j < fInputs.size(); j++) {
+                  const std::string id = opName + "_" + std::to_string(j);
+                  const std::string strides = "stride_" + id;
+                  out << SP << "{\n";
+                  if (fStrided[j]) {
+                     out << GenerateInputStrideCode(id, fInputs[j], fInputShapes[j]);
+                  } else {
+                     out << SP << "size_t " << strides << "[" << D << "];\n";
+                     out << SP << strides << "[" << D - 1 << "] = 1;\n";
+                     for (size_t d = D - 1; d > 0; d--)
+                        out << SP << strides << "[" << d - 1 << "] = " << strides << "[" << d << "] * ("
+                            << fInputShapes[j][d].GetVal() << ");\n";
+                  }
+                  std::string inOffset, outOffset;
+                  for (size_t d = 0; d < D; d++) {
+                     out << SP << "for (size_t i" << d << "_" << id << " = 0; i" << d << "_" << id << " < ("
+                         << fInputShapes[j][d].GetVal() << "); i" << d << "_" << id << "++) {\n";
+                     inOffset += (d ? " + " : "") + std::string("i") + std::to_string(d) + "_" + id + " * " + strides +
+                                 "[" + std::to_string(d) + "]";
+                     outOffset += (d ? " + " : "") + std::string("(") +
+                                  (static_cast<int>(d) == fAxis ? "axisOffset_" + opName + " + " : std::string()) + "i" +
+                                  std::to_string(d) + "_" + id + ") * (" + outStride[d].GetVal() + ")";
+                  }
+                  out << SP << "tensor_" << fOutput << "[" << outOffset << "] = tensor_" << fInputs[j] << "["
+                      << inOffset << "];\n";
+                  for (size_t d = 0; d < D; d++)
+                     out << SP << "}\n";
+                  out << SP << "}\n";
+                  out << SP << "axisOffset_" << opName << " += " << fInputShapes[j][fAxis].GetVal() << ";\n";
+               }
+               out << SP << "}\n";
+               return out.str();
+            }
+
             // special case when memory is contiguous
             bool hasShapeOnes = true;
             for(int i = 0; i<fAxis; ++i){
@@ -389,8 +439,14 @@
          prefix[k] = prefix[k - 1] + " + (" + fInputShapes[k - 1][fAxis].GetVal() + ")";
 
       std::vector<std::vector<Dim>> inStrides(Nin);
-      for (std::size_t k = 0; k < Nin; ++k)
+      for (std::size_t k = 0; k < Nin; ++k) {
          inStrides[k] = UTILITY::ComputeStrideFromShape(fInputShapes[k]);
+         // inputs read through the strides given to the Session: the kernel receives them in a layout
+         if (fStrided[k])
+            for (std::size_t d = 0; d < D; ++d)
+               inStrides[k][d] = Dim{"layout" + std::to_string(k) + ".stride[" + std::to_string(d) + "]",
+                                     static_cast<std::size_t>(-1)};
+      }
 
       std::string op;
       op  = "\n//------ CONCAT_KERNEL_ALPAKA\n";
@@ -402,6 +458,9 @@
       op += SP + SP + SP + "T* output,\n";
       for (auto &p : dynParamNames)
          op += SP + SP + SP + "std::size_t const " + p + ",\n";
+      for (std::size_t k = 0; k < Nin; ++k)
+         if (fStrided[k])
+            op += SP + SP + SP + "sofie_strided_layout<" + std::to_string(D) + "> const layout" + std::to_string(k) + ",\n";
       op += SP + SP + SP + "std::size_t const totalElements) const {\n\n";
 
       op += SP + SP + SP + "auto const global_thread_idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
@@ -491,6 +550,11 @@
       }
       out << "};\n";
 
+      for (size_t i = 0; i < fInputs.size(); ++i)
+         if (fStrided[i])
+            out << GenerateStridedBroadcastLayout(OpName + "_" + std::to_string(i), fInputs[i], fInputShapes[i],
+                                                  fInputShapes[i].size(), fInputShapes[i]);
+
       out << SP << "auto const elementsPerThread_"<<OpName<<" = Vec::all(static_cast<Idx>(1));\n";
       out << SP << "auto const elementsPerGrid_"<<OpName<<" = Vec::all(Idx{"<< length << "});\n";
       out << SP << "auto const workDiv_" << OpName << " = sofie_workdiv(elementsPerGrid_" << OpName << ");\n";
@@ -498,6 +562,9 @@
          << ", concatKernel_" << OpName << ", input_ptrs_" << OpName << ", alpaka::getPtrNative(deviceBuf_" << fOutput << ")";
       for (auto &p : dynParamNames)
          out << ", static_cast<std::size_t>(" << p << ")";
+      for (size_t i = 0; i < fInputs.size(); ++i)
+         if (fStrided[i])
+            out << ", layout_" << OpName << "_" << i;
       out << ", static_cast<Idx>(" << length << "));\n";
       out << SP << "alpaka::enqueue(queue, task_" << OpName << ");\n";
       return out.str();
@@ -505,7 +572,7 @@
 
 EFusionMappingType GetFusionMappingType() const override
 {
-   if (fIsOutputConstant || fIsOutputParamShape || fnewAxis != 0 || fInputs.size() < 2 || fInputShapes.empty() || fOutputShape.empty())
+   if (fIsOutputConstant || fIsOutputParamShape || fHasStridedInput || fnewAxis != 0 || fInputs.size() < 2 || fInputShapes.empty() || fOutputShape.empty())
       return EFusionMappingType::Unsupported;
 
    const auto isStatic = [](const std::vector<Dim> &shape) {

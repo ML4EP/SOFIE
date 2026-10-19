@@ -33,6 +33,7 @@ public:
       }
       fShapeX = model.GetDimTensorShape(fNX);
       fShapeY = fShapeX;
+      fHasStridedInput = model.IsStridedInputTensor(fNX) && !fShapeX.empty();
       model.AddIntermediateTensor(fNY, model.GetTensorType(fNX), fShapeY);
    }
 
@@ -42,6 +43,10 @@ public:
       std::stringstream out;
 
       out << SP << "\n//---- Operator Not  " << opName << "\n";
+      if (fHasStridedInput) {
+         out << GenerateStridedUnaryLoop(opName, fNX, fNY, fShapeX, [](const std::string &v) { return "!" + v; });
+         return out.str();
+      }
       auto length = ConvertDimShapeToLength(fShapeX);
       out << SP << "for (size_t i = 0; i < " << length << "; i++) {\n";
       out << SP << SP << "tensor_" << fNY << "[i] = !tensor_" + fNX + "[i];\n";
@@ -49,10 +54,14 @@ public:
       return out.str();
    }
 
+   bool SupportsStridedInput() const override { return true; }
+
    std::string Generate_GPU_Kernel_ALPAKA(std::string /*opName*/) override
    {
       if (fIsOutputConstant)
          return "";
+      if (fHasStridedInput)
+         return GenerateStridedUnaryKernel("NotStridedKernel", "NOT", [](const std::string &v) { return "!" + v; });
 
       std::string op;
       op  = "\n//------  NOT_KERNEL_ALPAKA\n";
@@ -75,6 +84,8 @@ public:
 
    std::string Generate_GPU_Kernel_Definitions_ALPAKA(std::string /*opName*/) override
    {
+      if (fHasStridedInput)
+         return SP + "NotStridedKernel notStridedKernel;\n";
       return SP + "NotKernel notKernel;\n";
    }
 
@@ -83,6 +94,9 @@ public:
       opName = "op_" + opName;
       std::stringstream out;
       auto length = ConvertDimShapeToLength(fShapeX);
+
+      if (fHasStridedInput)
+         return GenerateStridedUnaryLaunch(opName, "notStridedKernel", "NOT", fNX, fNY, fShapeX);
 
       out << "\n//------ " << opName << "_ALPAKA\n";
       out << SP << "auto const elementsPerThread_" << fNY << " = Vec::all(static_cast<Idx>(1));\n";
@@ -98,7 +112,7 @@ public:
       return out.str();
    }
 
-   bool IsElementwise() const override { return !fIsOutputConstant; }
+   bool IsElementwise() const override { return !fIsOutputConstant && !fHasStridedInput; }
    std::string GetElementwiseExpr(const std::string& v) const override {
       return "!" + v;
    }

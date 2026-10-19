@@ -75,6 +75,30 @@ and can be inspected with the standard Python and Rust safetensors tooling:
 model.Generate(Options::kSafetensorsWeightFile);
 ```
 
+### Strided inputs
+
+With `Options::kStridedInput` the generated `Session` constructor takes an
+extra argument: one stride array in elements per input tensor, in the order of the model inputs.
+The operators reading the inputs access them through these strides, without copying them into contiguous memory for any transformation,
+so a transposed, padded or sliced view can be passed directly to `infer`. An empty argument (the default) means
+contiguous inputs, and so does an empty array for a single input.
+
+```c++
+model.Generate(Options::kStridedInput);
+// ...
+SOFIE_Model::Session session("model.dat", /*inputStrides=*/{{8, 1}}); // 2D input with leading dimension 8
+auto y = session.infer(x_ptr);
+```
+
+When the shape is dynamic, the strides are used as given for every call, while contiguous (default) strides follow
+the shape of each call. An operator reading a graph input must implement `ROperator::SupportsStridedInput()`, otherwise
+generation fails with an error naming it.
+
+With `Options::kKernelOnly`  combined with `Options::kStridedInput`, the generated header contains the heterogeneous alpaka kernels, `sofie_strided_layout` (the logical shape and the strides, in elements, of an input) and `sofie_strided_offset`
+(the offset in the input buffer of the element with a given row-major logical index). The kernels reading a graph input
+take its `sofie_strided_layout` as an argument, so there is no stride storage: the caller builds the layouts. A broadcast
+input has the shape of the output and a zero stride for the broadcast dimensions.
+
 SOFIE also supports generating inference code with RDataFrame as inputs, refer to the tutorials below for examples.
 
 ## Supported ONNX operators

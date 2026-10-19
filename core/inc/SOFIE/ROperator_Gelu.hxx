@@ -32,8 +32,12 @@ public:
          throw std::runtime_error("SOFIE Gelu Op Input Tensor is not found in model");
       }
       fShape = model.GetTensorShape(fNX);
+      fHasStridedInput = model.IsStridedInputTensor(fNX) && !fShape.empty();
       model.AddIntermediateTensor(fNY, model.GetTensorType(fNX), fShape);
    }
+
+   bool SupportsStridedInput() const override { return true; }
+
 
    std::string Generate(std::string OpName) override {
       OpName = "op_" + OpName;
@@ -44,6 +48,16 @@ public:
       int length = 1;
       for(auto& i: fShape){
          length *= i;
+      }
+      if (fHasStridedInput) {
+         const bool tanhApprox = fApproximate == "tanh";
+         out << GenerateStridedUnaryLoop(OpName, fNX, fNY, ConvertShapeToDim(fShape), [&](const std::string &v) {
+            if (tanhApprox)
+               return "0.5f * " + v + " * (1.0f + std::tanh(0.7978845608028654f * (" + v + " + 0.044715f * " + v + " * " + v +
+                      " * " + v + ")))";
+            return "0.5f * " + v + " * (1.0f + std::erf(" + v + " * 0.7071067811865475f))";
+         });
+         return out.str();
       }
       out << SP << "for (int id = 0; id < " << length << " ; id++){\n";
       if (fApproximate == "tanh") {

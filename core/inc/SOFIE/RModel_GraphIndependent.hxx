@@ -78,10 +78,7 @@ private:
    std::size_t num_global_features;
 
 public:
-   /**
-       Default constructor. Needed to allow serialization of ROOT objects. See
-       https://root.cern/manual/io_custom_classes/#restrictions-on-types-root-io-can-handle
-   */
+
    RModel_GraphIndependent() = default;
    RModel_GraphIndependent(GraphIndependent_Init &graph_input_struct);
 

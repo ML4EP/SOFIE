@@ -35,9 +35,12 @@ public:
         throw std::runtime_error("SOFIE Tanh Op Input Tensor is not found in model");
       }
       fShape = model.GetDimTensorShape(fNX);
+      fHasStridedInput = model.IsStridedInputTensor(fNX) && !fShape.empty();
       model.AddIntermediateTensor(fNY, model.GetTensorType(fNX), fShape);
 
    }
+
+   bool SupportsStridedInput() const override { return true; }
 
 
    std::string Generate(std::string OpName) override {
@@ -48,6 +51,11 @@ public:
       std::stringstream out;
       auto length = ConvertDimShapeToLength(fShape);
       out << "\n//------ TANH\n";
+      if (fHasStridedInput) {
+         out << GenerateStridedUnaryLoop(OpName, fNX, fNY, fShape,
+                                         [](const std::string &v) { return "std::tanh(" + v + ")"; });
+         return out.str();
+      }
       out << SP << "for (size_t id = 0; id < " << length << " ; id++){\n";
       out << SP << SP << "tensor_" << fNY << "[id] = std::tanh(tensor_" << fNX << "[id]);\n";
       out << SP << "}\n";
@@ -56,12 +64,15 @@ public:
 
    std::vector<std::string> GetStdLibs() override { return { std::string("cmath") };}
 
-   bool IsElementwise() const override { return true; }
+   bool IsElementwise() const override { return !fHasStridedInput; }
    std::string GetElementwiseExpr(const std::string& v) const override {
       return "tanh(" + v + ")";
    }
 
    std::string Generate_GPU_Kernel_ALPAKA(std::string /*opName*/) override {
+      if (fHasStridedInput)
+         return GenerateStridedUnaryKernel("TanhStridedKernel", "TANH",
+                                           [this](const std::string &v) { return GetElementwiseExpr(v); });
       std::string op;
       op = "\n//------ TANH_KERNEL_ALPAKA\n";
       op += "struct TanhKernel {\n";
@@ -75,6 +86,8 @@ public:
    }
 
    std::string Generate_GPU_Kernel_Definitions_ALPAKA(std::string /*opName*/) override {
+      if (fHasStridedInput)
+         return SP + "TanhStridedKernel tanhStridedKernel;\n";
       return SP + "TanhKernel tanhKernel;\n";
    }
 
@@ -83,6 +96,9 @@ public:
       if (fShape.empty()) {
          throw std::runtime_error("SOFIE Tanh called to Generate_GPU_ALPAKA without being initialized");
       }
+      if (fHasStridedInput)
+         return GenerateStridedUnaryLaunch(OpName, "tanhStridedKernel", "TANH", fNX, fNY, fShape);
+
       std::stringstream out;
       std::string length = ConvertDimShapeToLength(fShape);
       out << "\n//------ TANH_GPU_ALPAKA\n";

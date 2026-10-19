@@ -5790,6 +5790,77 @@ def make_AliasDynShapeAcrossNewTensor():
     return _model(graph, opset=13, ir_version=10, producer_name="onnx-example")
 
 
+def make_IfSimple():
+    # branches read the outer-scope input X; no strided or dynamic shapes involved
+    then_graph = helper.make_graph(
+        [helper.make_node('Mul', ['X', 'X'], ['then_out'])],
+        'then_branch',
+        inputs=[],
+        outputs=[_vi('then_out', FLOAT, [2, 3])],
+    )
+    else_graph = helper.make_graph(
+        [helper.make_node('Neg', ['X'], ['else_out'])],
+        'else_branch',
+        inputs=[],
+        outputs=[_vi('else_out', FLOAT, [2, 3])],
+    )
+    nodes = [
+        helper.make_node('If', ['cond'], ['output'], then_branch=then_graph, else_branch=else_graph),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'IfSimple',
+        inputs=[
+            _vi('cond', BOOL, [1]),
+            _vi('X', FLOAT, [2, 3]),
+        ],
+        outputs=[
+            _vi('output', FLOAT, [2, 3]),
+        ],
+    )
+    return _model(graph, opset=21, ir_version=10, producer_name='onnx-example')
+
+
+def make_IfTwoOutputs():
+    # two outputs per branch, with a branch-local initializer and a node on the If output downstream
+    then_graph = helper.make_graph(
+        [
+            helper.make_node('Add', ['X', 'then_bias'], ['then_a']),
+            helper.make_node('Relu', ['then_a'], ['then_b']),
+        ],
+        'then_branch',
+        inputs=[],
+        outputs=[_vi('then_a', FLOAT, [4]), _vi('then_b', FLOAT, [4])],
+        initializer=[_tensor('then_bias', FLOAT, [4], [1.0, -1.0, 2.0, -2.0])],
+    )
+    else_graph = helper.make_graph(
+        [
+            helper.make_node('Sub', ['X', 'else_bias'], ['else_a']),
+            helper.make_node('Abs', ['else_a'], ['else_b']),
+        ],
+        'else_branch',
+        inputs=[],
+        outputs=[_vi('else_a', FLOAT, [4]), _vi('else_b', FLOAT, [4])],
+        initializer=[_tensor('else_bias', FLOAT, [4], [0.5, 0.5, 0.5, 0.5])],
+    )
+    nodes = [
+        helper.make_node('If', ['cond'], ['out_a', 'out_b'], then_branch=then_graph, else_branch=else_graph),
+        helper.make_node('Add', ['out_a', 'out_b'], ['output']),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'IfTwoOutputs',
+        inputs=[
+            _vi('cond', BOOL, [1]),
+            _vi('X', FLOAT, [4]),
+        ],
+        outputs=[
+            _vi('output', FLOAT, [4]),
+        ],
+    )
+    return _model(graph, opset=21, ir_version=10, producer_name='onnx-example')
+
+
 MODELS = {
     "Abs": make_Abs,
     "Acosh": make_Acosh,
@@ -5997,6 +6068,8 @@ MODELS = {
     "TopK": make_TopK,
     "TopKLargestUnsorted": make_TopKLargestUnsorted,
     "TopKWithDynShapeK": make_TopKWithDynShapeK,
+    "IfSimple": make_IfSimple,
+    "IfTwoOutputs": make_IfTwoOutputs,
     "Where": make_Where,
     "WhereMultidirectionalBroadcast": make_WhereMultidirectionalBroadcast,
     "WhereBroadcastHighRankCond": make_WhereBroadcastHighRankCond,

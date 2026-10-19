@@ -86,6 +86,7 @@ public:
       }
 
       fShapeY = fShapeX;
+      fHasStridedInput = model.IsStridedInputTensor(fNX);
       model.AddIntermediateTensor(fNY, model.GetTensorType(fNX), fShapeY);
 
       auto original_S = model.GetInitializedTensorData(fNScale);
@@ -108,6 +109,8 @@ public:
       }
    }
 
+   bool SupportsStridedInput() const override { return true; }
+
    std::string Generate(std::string opName) override {
       opName = "op_" + opName;
       if (fShapeX.empty()){
@@ -125,6 +128,10 @@ public:
       }
 
       out << "\n\n//---- BatchNorm" << (fActivation == EActivationType::RELU ? " + ReLU " : " ") << opName << "\n";
+      // a strided input is read through its strides, from the logical (contiguous) index of its elements
+      if (fHasStridedInput)
+         out << GenerateStridedOffsetLambda(opName, fNX, fShapeX);
+      const std::string readX = fHasStridedInput ? "tensor_" + fNX + "[xoff_" + opName + "(i)]" : "tensor_" + fNX + "[i]";
       out << SP << "{\n";
       out << SP << "   size_t i = 0;\n";
       out << SP << "   for (size_t n = 0; n < " << batchSize << "; ++n) {\n";
@@ -133,7 +140,7 @@ public:
       out << SP << "         const float fused_scale_val = tensor_" << fNFusedScale << "[c];\n";
       out << SP << "         const float bias_val = tensor_" << fNB << "[c];\n";
       out << SP << "         for (size_t sp = 0; sp < " << spatial_dim << "; ++sp) {\n";
-      out << SP << "            float val = (tensor_" << fNX << "[i] - mean_val) * fused_scale_val + bias_val;\n";
+      out << SP << "            float val = (" << readX << " - mean_val) * fused_scale_val + bias_val;\n";
       if (fActivation == EActivationType::RELU) {
          out << SP << "            tensor_" << fNY << "[i] = (val > 0.0f) ? val : 0.0f;\n";
       } else {
@@ -157,6 +164,7 @@ public:
       std::string channels    = fShapeX[1].GetVal();
       std::string spatial_dim = ConvertDimShapeToLength(std::vector<Dim>(fShapeX.begin() + 2, fShapeX.end()));   //"1" for rank-2 input
       std::string kname = "BatchNormKernel_" + opName;
+      const std::string readX = fHasStridedInput ? StridedKernelRead("X", "layoutX", "i") : "X[i]";
       std::string op;
       op  = "\n//------ BATCHNORM_KERNEL_ALPAKA\n";
       op += SP + "struct " + kname + " {\n";
@@ -170,6 +178,8 @@ public:
       op += SP + SP + SP + "T* __restrict__ Y,\n";
       for (auto &p : dynParamNames)
          op += SP + SP + SP + "std::size_t const " + p + ",\n";
+      if (fHasStridedInput)
+         op += SP + SP + SP + "sofie_strided_layout<" + std::to_string(fShapeX.size()) + "> const layoutX,\n";
       op += SP + SP + SP + "std::size_t const totalElements) const {\n\n";
 
       op += SP + SP + SP + "auto const global_thread_idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
@@ -178,7 +188,7 @@ public:
 
       op += SP + SP + SP + "for (std::size_t i = global_thread_idx; i < totalElements; i += grid_thread_extent) {\n";
       op += SP + SP + SP + SP + "std::size_t const c = (i / (" + spatial_dim + ")) % (" + channels + ");\n";
-      op += SP + SP + SP + SP + "T val = (X[i] - mean[c]) * fused_scale[c] + bias[c];\n";
+      op += SP + SP + SP + SP + "T val = (" + readX + " - mean[c]) * fused_scale[c] + bias[c];\n";
       if (fActivation == EActivationType::RELU)
          op += SP + SP + SP + SP + "Y[i] = val > static_cast<T>(0) ? val : static_cast<T>(0);\n";
       else
@@ -209,6 +219,8 @@ public:
 
       std::stringstream out;
       out << "\n//------ BATCHNORM_GPU_ALPAKA\n";
+      if (fHasStridedInput)
+         out << GenerateStridedBroadcastLayout(opName + "_X", fNX, fShapeX, fShapeX.size(), fShapeX);
       out << SP << "auto const elementsPerThread_" << fNY << " = Vec::all(static_cast<Idx>(1));\n";
       out << SP << "auto const elementsPerGrid_"   << fNY << " = Vec::all(Idx{" << totalElements << "});\n";
       out << SP << "auto const workDiv_" << fNY << " = sofie_workdiv(elementsPerGrid_" << fNY << ");\n";
@@ -221,6 +233,7 @@ public:
          << ", alpaka::getPtrNative(deviceBuf_" << fNMean       << ")"
          << ", alpaka::getPtrNative(deviceBuf_" << fNY          << ")"
          << dynArgs
+         << (fHasStridedInput ? ", layout_" + opName + "_X" : std::string())
          << ", static_cast<Idx>(" << totalElements << "));\n";
       out << SP <<"alpaka::enqueue(queue, task_" << fNY << ");\n";
 

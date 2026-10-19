@@ -57,6 +57,9 @@ public:
       }
 
       fShapeX = model.GetDimTensorShape(fNX);
+      fHasStridedInput = model.IsStridedInputTensor(fNX) && !fShapeX.empty();
+      if (model.IsStridedInputTensor(fNK))
+         throw std::runtime_error("SOFIE TopK - strided input is only supported for the data tensor X");
       Dim kdim;
       if (model.IsShapeTensor(fNK)) {
          auto &kvalues = model.GetShapeTensorValues(fNK);
@@ -109,6 +112,8 @@ public:
       }
    }
 
+   bool SupportsStridedInput() const override { return true; }
+
    std::string Generate(std::string OpName) override {
       OpName = "op_" + OpName;
       if (fShapeX.empty()) {
@@ -129,6 +134,12 @@ public:
       std::string n_elements = fShapeX[axis].GetVal();
 
       out << SP << "{\n"; // to define a separate scope for the operator code
+      // a strided input is read through its strides, from the logical (contiguous) index of its elements
+      const std::string xIndex = "xoffset + " + strideX[axis].GetVal() + "*l + j";
+      const std::string xRead = fHasStridedInput ? "tensor_" + fNX + "[xoff_" + OpName + "(" + xIndex + ")]"
+                                                 : "tensor_" + fNX + "[" + xIndex + "]";
+      if (fHasStridedInput)
+         out << GenerateStridedOffsetLambda(OpName, fNX, fShapeX);
 
       //
       bool packed = (fType == "float");
@@ -168,15 +179,13 @@ public:
       out << SP << SP << "for (size_t l = 0; l < " << n_elements << "; l++) {\n";
       if (packed) {
          out << SP << SP << SP << "uint32_t b_ = 0;\n";
-         out << SP << SP << SP << "std::memcpy(&b_, &tensor_" << fNX << "[xoffset + " << strideX[axis]
-             << "*l + j], sizeof(b_));\n";
+         out << SP << SP << SP << "std::memcpy(&b_, &" << xRead << ", sizeof(b_));\n";
          out << SP << SP << SP << "b_ ^= (b_ & 0x80000000u) ? 0xFFFFFFFFu : 0x80000000u;\n";
          if (fAttrLargest)
             out << SP << SP << SP << "b_ = ~b_;\n";
          out << SP << SP << SP << "elements[l] = (static_cast<uint64_t>(b_) << 32) | static_cast<uint32_t>(l);\n";
       } else {
-         out << SP << SP << SP << "elements[l] = std::make_pair(tensor_" << fNX << "[xoffset + " << strideX[axis]
-             << "*l + j], l);\n";
+         out << SP << SP << SP << "elements[l] = std::make_pair(" << xRead << ", l);\n";
       }
       out << SP << SP << "}\n";
 
@@ -306,7 +315,10 @@ public:
       op += SP + SP + SP + "std::size_t const strideXAxis,\n";
       op += SP + SP + SP + "std::size_t const strideXBefore,\n";
       op += SP + SP + SP + "std::size_t const strideYAxis,\n";
-      op += SP + SP + SP + "std::size_t const strideYBefore) const {\n\n";
+      op += SP + SP + SP + "std::size_t const strideYBefore";
+      if (fHasStridedInput)
+         op += ",\n" + SP + SP + SP + "sofie_strided_layout<" + std::to_string(fShapeX.size()) + "> const layoutX";
+      op += ") const {\n\n";
 
       op += SP + SP + SP + "auto const slice = alpaka::getIdx<alpaka::Grid, alpaka::Blocks>(acc)[0];\n";
       op += SP + SP + SP + "auto const tid = alpaka::getIdx<alpaka::Block, alpaka::Threads>(acc)[0];\n";
@@ -331,7 +343,8 @@ public:
       op += SP + SP + SP + "T rsV[" + B + "]; int64_t rsI[" + B + "]; int rsN = 0;\n\n";
 
       op += SP + SP + SP + "for (std::size_t idx = tid; idx < nElAxis; idx += " + P + "u) {\n";
-      op += SP + SP + SP + SP + "T v = x[xbase + strideXAxis * idx];\n";
+      op += SP + SP + SP + SP + "T v = " + (fHasStridedInput ? StridedKernelRead("x", "layoutX", "xbase + strideXAxis * idx")
+                                                          : std::string("x[xbase + strideXAxis * idx]")) + ";\n";
       op += SP + SP + SP + SP + "bool admit;\n";
       op += SP + SP + SP + SP + "if ((std::size_t)*vSCount < topKCount) admit = true;\n";
       op += SP + SP + SP + SP + "else admit = " + beatsWorstVolatile + ";\n";
@@ -412,6 +425,8 @@ public:
 
       std::stringstream out;
       out << "\n//-- TopK_GPU_ALPAKA (hierarchical)\n";
+      if (fHasStridedInput)
+         out << GenerateStridedBroadcastLayout(opName + "_X", fNX, fShapeX, fShapeX.size(), fShapeX);
       out << SP << "{\n";
       out << SP << SP << "std::size_t const topkNumSlices_" << n << " = static_cast<std::size_t>(" << numSlices << ");\n";
       out << SP << SP << "std::size_t const topkNElAxis_"   << n << " = static_cast<std::size_t>(" << sx.nElements << ");\n";
@@ -432,7 +447,8 @@ public:
           << ", static_cast<std::size_t>(" << sx.strideAxis << ")"
           << ", static_cast<std::size_t>(" << sx.strideBefore << ")"
           << ", static_cast<std::size_t>(" << sy.strideAxis << ")"
-          << ", static_cast<std::size_t>(" << sy.strideBefore << "));\n";
+          << ", static_cast<std::size_t>(" << sy.strideBefore << ")"
+          << (fHasStridedInput ? ", layout_" + opName + "_X" : std::string()) << ");\n";
       out << SP << "}\n";
       return out.str();
    }

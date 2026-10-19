@@ -59,6 +59,9 @@ public:
          throw std::runtime_error("SOFIE GroupNorm: bias tensor " + fNBias + " not found");
 
       fShapeX = model.GetDimTensorShape(fNX);
+      fHasStridedInput = model.IsStridedInputTensor(fNX) && !fShapeX.empty();
+      if (model.IsStridedInputTensor(fNScale) || (!fNBias.empty() && model.IsStridedInputTensor(fNBias)))
+         throw std::runtime_error("SOFIE GroupNorm - strided input is only supported for the data tensor X");
       fShapeY = fShapeX;
       fRank   = fShapeX.size();
       fType   = ConvertTypeToString(model.GetTensorType(fNX));
@@ -82,6 +85,8 @@ public:
       model.AddNeededStdLib("cmath");
    }
 
+   bool SupportsStridedInput() const override { return true; }
+
    std::string Generate(std::string opName) override {
       opName = "op_" + opName;
       if (fShapeX.empty())
@@ -94,6 +99,13 @@ public:
       std::stringstream out;
       out << "\n//---- GroupNorm operator " << opName << "\n";
       out << SP << "{\n";
+      // a strided input is read through its strides, from the logical (contiguous) index of its elements
+      auto readX = [&](const std::string &index) {
+         return fHasStridedInput ? "tensor_" + fNX + "[xoff_" + opName + "(" + index + ")]"
+                                 : "tensor_" + fNX + "[" + index + "]";
+      };
+      if (fHasStridedInput)
+         out << GenerateStridedOffsetLambda(opName, fNX, fShapeX);
       out << SP << SP << "const size_t gn_N = " << fN << ";\n";
       out << SP << SP << "const size_t gn_C = " << fC << ";\n";
       out << SP << SP << "const size_t gn_spatial = " << fSpatial << ";\n";
@@ -108,7 +120,7 @@ public:
       out << SP << SP << SP << SP << "for (size_t ci = 0; ci < gn_gs; ++ci) {\n";
       out << SP << SP << SP << SP << SP << "size_t c = g * gn_gs + ci;\n";
       out << SP << SP << SP << SP << SP << "for (size_t s = 0; s < gn_spatial; ++s)\n";
-      out << SP << SP << SP << SP << SP << SP << "gn_mean += tensor_" << fNX << "[n * gn_C * gn_spatial + c * gn_spatial + s];\n";
+      out << SP << SP << SP << SP << SP << SP << "gn_mean += " << readX("n * gn_C * gn_spatial + c * gn_spatial + s") << ";\n";
       out << SP << SP << SP << SP << "}\n";
       out << SP << SP << SP << SP << "gn_mean /= " << fType << "(gn_gs * gn_spatial);\n\n";
 
@@ -117,7 +129,7 @@ public:
       out << SP << SP << SP << SP << "for (size_t ci = 0; ci < gn_gs; ++ci) {\n";
       out << SP << SP << SP << SP << SP << "size_t c = g * gn_gs + ci;\n";
       out << SP << SP << SP << SP << SP << "for (size_t s = 0; s < gn_spatial; ++s) {\n";
-      out << SP << SP << SP << SP << SP << SP << fType << " d = tensor_" << fNX << "[n * gn_C * gn_spatial + c * gn_spatial + s] - gn_mean;\n";
+      out << SP << SP << SP << SP << SP << SP << fType << " d = " << readX("n * gn_C * gn_spatial + c * gn_spatial + s") << " - gn_mean;\n";
       out << SP << SP << SP << SP << SP << SP << "gn_var += d * d;\n";
       out << SP << SP << SP << SP << SP << "}\n";
       out << SP << SP << SP << SP << "}\n";
@@ -129,7 +141,7 @@ public:
       out << SP << SP << SP << SP << SP << "size_t c = g * gn_gs + ci;\n";
       out << SP << SP << SP << SP << SP << "for (size_t s = 0; s < gn_spatial; ++s) {\n";
       out << SP << SP << SP << SP << SP << SP << "size_t idx = n * gn_C * gn_spatial + c * gn_spatial + s;\n";
-      out << SP << SP << SP << SP << SP << SP << fType << " v = (tensor_" << fNX << "[idx] - gn_mean) * gn_inv_std;\n";
+      out << SP << SP << SP << SP << SP << SP << fType << " v = (" << readX("idx") << " - gn_mean) * gn_inv_std;\n";
       out << SP << SP << SP << SP << SP << SP << "v *= tensor_" << fNScale << "[c];\n";
       if (!fNBias.empty())
          out << SP << SP << SP << SP << SP << SP << "v += tensor_" << fNBias << "[c];\n";
@@ -158,6 +170,10 @@ public:
       std::string eps = std::to_string(fAttrEpsilon);
       std::string kname = "GroupNormKernel_" + opName;
 
+      // a strided input is read through its strides, from the logical (contiguous) index of its elements
+      auto rdX = [&](const std::string &index) {
+         return fHasStridedInput ? StridedKernelRead("X", "layoutX", index) : "X[" + index + "]";
+      };
       std::string op;
       op  = "\n//------ GROUPNORM_KERNEL_ALPAKA\n";
       op += SP + "struct " + kname + " {\n";
@@ -172,6 +188,8 @@ public:
       op += SP + SP + SP + "std::size_t const gn_C,\n";
       op += SP + SP + SP + "std::size_t const gn_spatial,\n";
       op += SP + SP + SP + "std::size_t const gn_G,\n";
+      if (fHasStridedInput)
+         op += SP + SP + SP + "sofie_strided_layout<" + std::to_string(fRank) + "> const layoutX,\n";
       op += SP + SP + SP + "std::size_t const numRows) const {\n\n";
 
       // one block per (n,g) row - a block-shared reduction buffer, reused across the
@@ -200,7 +218,7 @@ public:
 
       op += SP + SP + SP + "// mean: per-thread partial sum, then block-shared tree reduction\n";
       op += SP + SP + SP + "T sum = static_cast<T>(0);\n";
-      op += SP + SP + SP + "for (std::size_t l = tid; l < rowLen; l += " + bs + "u) sum += X[base + l];\n";
+      op += SP + SP + SP + "for (std::size_t l = tid; l < rowLen; l += " + bs + "u) sum += " + rdX("base + l") + ";\n";
       op += SP + SP + SP + "sred[tid] = sum;\n";
       op += SP + SP + SP + "alpaka::syncBlockThreads(acc);\n";
       op += treeReduce(SP + SP + SP);
@@ -210,7 +228,7 @@ public:
       op += SP + SP + SP + "// variance: same pattern, from deviations around mean\n";
       op += SP + SP + SP + "T devsq = static_cast<T>(0);\n";
       op += SP + SP + SP + "for (std::size_t l = tid; l < rowLen; l += " + bs + "u) {\n";
-      op += SP + SP + SP + SP + "T d = X[base + l] - mean;\n";
+      op += SP + SP + SP + SP + "T d = " + rdX("base + l") + " - mean;\n";
       op += SP + SP + SP + SP + "devsq += d * d;\n";
       op += SP + SP + SP + "}\n";
       op += SP + SP + SP + "sred[tid] = devsq;\n";
@@ -223,7 +241,7 @@ public:
       op += SP + SP + SP + "for (std::size_t l = tid; l < rowLen; l += " + bs + "u) {\n";
       op += SP + SP + SP + SP + "std::size_t idx = base + l;\n";
       op += SP + SP + SP + SP + "std::size_t c = g * gn_gs + l / gn_spatial;\n";
-      op += SP + SP + SP + SP + "T v = (X[idx] - mean) * inv_std * scale[c];\n";
+      op += SP + SP + SP + SP + "T v = (" + rdX("idx") + " - mean) * inv_std * scale[c];\n";
       if (!fNBias.empty())
          op += SP + SP + SP + SP + "v += bias[c];\n";
       op += SP + SP + SP + SP + "Y[idx] = v;\n";
@@ -256,10 +274,13 @@ public:
               "static_cast<Idx>(" + fC + "), "
               "static_cast<Idx>(" + fSpatial + "), "
               "static_cast<Idx>(" + G + "), "
+              + (fHasStridedInput ? "layout_" + opName + "_X, " : std::string())
               + numRows;
 
       std::stringstream out;
       out << "\n//------ GROUPNORM_GPU_ALPAKA\n";
+      if (fHasStridedInput)
+         out << GenerateStridedBroadcastLayout(opName + "_X", fNX, fShapeX, fShapeX.size(), fShapeX);
       out << SP << "alpaka::WorkDivMembers<Dim, Idx> workDiv_" << opName << "(\n";
       out << SP << SP << "Vec::all(" << numRows << "),\n";
       out << SP << SP << "Vec::all(Idx{" << kBlockSize << "u}),\n";

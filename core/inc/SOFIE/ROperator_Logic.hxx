@@ -99,6 +99,8 @@ private:
    std::string fNB;
    std::string fNY;
    std::vector<Dim> fShape;
+   bool fStridedA = false;
+   bool fStridedB = false;
 
    using Trait = LogicBinaryTrait<T, Op>;
 
@@ -125,6 +127,9 @@ public:
                                   fNB + "' not found in model");
 
       fShape = model.GetDimTensorShape(fNA);
+      fStridedA = model.IsStridedInputTensor(fNA) && !fShape.empty();
+      fStridedB = model.IsStridedInputTensor(fNB) && !fShape.empty();
+      fHasStridedInput = fStridedA || fStridedB;
       auto length = ConvertShapeToLength(fShape);
       // Constant-fold: if both inputs are constant, compute output at init time.
       if (model.IsConstantTensor(fNA) && model.IsConstantTensor(fNB)) {
@@ -148,12 +153,19 @@ public:
       }
    }
 
+   bool SupportsStridedInput() const override { return true; }
+
    std::string Generate(std::string OpName) override {
       if (fIsOutputConstant) return "";
       OpName = "op_" + OpName;
       auto length = ConvertDimShapeToLength(fShape);
       std::stringstream out;
       out << "\n//------ " << Trait::Name() << "\n";
+      if (fHasStridedInput) {
+         out << GenerateStridedNaryLoop(OpName, {fNA, fNB}, {fStridedA, fStridedB}, fNY, fShape,
+                                        [](const std::vector<std::string> &v) { return Trait::Expr(v[0], v[1]); });
+         return out.str();
+      }
       out << SP << "for (std::size_t id = 0; id < " << length << "u; ++id) {\n";
       out << SP << SP << "tensor_" << fNY << "[id] = "
           << Trait::Expr("tensor_" + fNA + "[id]", "tensor_" + fNB + "[id]")
@@ -168,17 +180,23 @@ public:
       std::stringstream op;
       op << "\n//------ " << Trait::Name() << "_KERNEL_ALPAKA\n";
       op << "struct " << Trait::KernelName() << "_" << OpName << " {\n";
+      const std::string layoutType = "sofie_strided_layout<" + std::to_string(fShape.size()) + ">";
       op << SP << "template<typename TAcc, typename T>\n";
       op << SP << "ALPAKA_FN_ACC void operator()("
                << "TAcc const& acc, "
                << "T const* __restrict__ A, "
                << "T const* __restrict__ B, "
                << "T* __restrict__ C, "
-               << "std::size_t const N) const {\n";
+               << "std::size_t const N"
+               << (fStridedA ? ", " + layoutType + " const layoutA" : "")
+               << (fStridedB ? ", " + layoutType + " const layoutB" : "") << ") const {\n";
       op << SP << SP << "auto const idx = "
                << "alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
       op << SP << SP << "if (idx >= N) return;\n";
-      op << SP << SP << "C[idx] = " << Trait::Expr("A[idx]", "B[idx]") << ";\n";
+      op << SP << SP << "C[idx] = "
+         << Trait::Expr(fStridedA ? "A[sofie_strided_offset(layoutA, idx)]" : "A[idx]",
+                        fStridedB ? "B[sofie_strided_offset(layoutB, idx)]" : "B[idx]")
+         << ";\n";
       op << SP << "}\n";
       op << "};\n";
       return op.str();
@@ -196,6 +214,10 @@ public:
       auto length = ConvertDimShapeToLength(fShape);
       std::stringstream out;
       out << "\n//------ " << Trait::Name() << "_GPU_ALPAKA\n";
+      if (fStridedA)
+         out << GenerateStridedBroadcastLayout(cleanOp + "_A", fNA, fShape, fShape.size(), fShape);
+      if (fStridedB)
+         out << GenerateStridedBroadcastLayout(cleanOp + "_B", fNB, fShape, fShape.size(), fShape);
       out << SP << "auto const elementsPerThread_" << fNY
           << " = Vec::all(static_cast<Idx>(1));\n";
       out << SP << "auto const elementsPerGrid_" << fNY
@@ -208,19 +230,21 @@ public:
           << ", alpaka::getPtrNative(deviceBuf_" << fNA << ")"
           << ", alpaka::getPtrNative(deviceBuf_" << fNB << ")"
           << ", alpaka::getPtrNative(deviceBuf_" << fNY << ")"
-          << ", static_cast<Idx>(" << length << "));\n";
+          << ", static_cast<Idx>(" << length << ")"
+          << (fStridedA ? ", layout_" + cleanOp + "_A" : "")
+          << (fStridedB ? ", layout_" + cleanOp + "_B" : "") << ");\n";
       out << SP << "alpaka::enqueue(queue, task_" << cleanOp << ");\n";
       return out.str();
    }
 
    bool IsElementwise() const override
    {
-      return !fIsOutputConstant;
+      return !fIsOutputConstant && !fHasStridedInput;
    }
 
    EFusionMappingType GetFusionMappingType() const override
    {
-      return fIsOutputConstant ? EFusionMappingType::Unsupported : EFusionMappingType::OneToOne;
+      return (fIsOutputConstant || fHasStridedInput) ? EFusionMappingType::Unsupported : EFusionMappingType::OneToOne;
    }
 
    bool SupportsFusionTypes(const std::vector<ETensorType> &inputTypes, ETensorType outputType) const override
@@ -275,6 +299,7 @@ public:
          throw std::runtime_error("SOFIE BitwiseNot: input tensor '" + fNX +
                                   "' not found in model");
       fShape = model.GetDimTensorShape(fNX);
+      fHasStridedInput = model.IsStridedInputTensor(fNX) && !fShape.empty();
       model.AddIntermediateTensor(fNY, model.GetTensorType(fNX), fShape);
       if (model.Verbose())
          std::cout << "BitwiseNot: " << fNX << " -> " << fNY
@@ -286,14 +311,23 @@ public:
       auto length = ConvertDimShapeToLength(fShape);
       std::stringstream out;
       out << "\n//------ BITWISE_NOT\n";
+      if (fHasStridedInput) {
+         out << GenerateStridedUnaryLoop(OpName, fNX, fNY, fShape, [](const std::string &v) { return "~" + v; });
+         return out.str();
+      }
       out << SP << "for (std::size_t id = 0; id < " << length << "u; ++id) {\n";
       out << SP << SP << "tensor_" << fNY << "[id] = ~tensor_" << fNX << "[id];\n";
       out << SP << "}\n";
       return out.str();
    }
 
+   bool SupportsStridedInput() const override { return true; }
+
    std::string Generate_GPU_Kernel_ALPAKA(std::string OpName) override {
       OpName = "op_" + OpName;
+      if (fHasStridedInput)
+         return GenerateStridedUnaryKernel("BitwiseNotKernel_" + OpName, "BITWISE_NOT",
+                                           [](const std::string &v) { return "~" + v; });
       std::stringstream op;
       op << "\n//------ BITWISE_NOT_KERNEL_ALPAKA\n";
       op << "struct BitwiseNotKernel_" << OpName << " {\n";
@@ -319,6 +353,8 @@ public:
 
    std::string Generate_GPU_ALPAKA(std::string OpName) override {
       std::string cleanOp = "op_" + OpName;
+      if (fHasStridedInput)
+         return GenerateStridedUnaryLaunch(cleanOp, "bitwiseNotKernel_" + cleanOp, "BITWISE_NOT", fNX, fNY, fShape);
       auto length = ConvertDimShapeToLength(fShape);
       std::stringstream out;
       out << "\n//------ BITWISE_NOT_GPU_ALPAKA\n";
@@ -338,7 +374,7 @@ public:
       return out.str();
    }
 
-   bool IsElementwise() const override { return true; }
+   bool IsElementwise() const override { return !fHasStridedInput; }
    std::string GetElementwiseExpr(const std::string& v) const override {
       return "~" + v;
    }

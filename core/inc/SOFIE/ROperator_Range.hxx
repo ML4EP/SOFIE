@@ -77,6 +77,9 @@ public:
       }
    }
 
+   // start, limit and delta are scalars (a single element, at offset 0 whatever the strides)
+   bool SupportsStridedInput() const override { return true; }
+
    void Initialize(RModel& model) override {
        //input must be a graph input, or already initialized intermediate tensor
       if (!model.CheckIfTensorAlreadyExist(fNStart)) {
