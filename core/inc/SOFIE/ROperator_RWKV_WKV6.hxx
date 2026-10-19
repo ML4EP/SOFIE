@@ -16,6 +16,7 @@ private:
    std::vector<Dim> fShapeR;
    std::string fB, fH, fT, fDh;
    std::string fType;
+   std::vector<StridedInputInfo> fInputs; ///< r, k, v, w and u, read through their strides if they are graph inputs
 
 public:
    ROperator_RWKV_WKV6() {}
@@ -48,6 +49,12 @@ public:
       fShapeR = model.GetDimTensorShape(fNR);
       if (fShapeR.size() != 4)
          throw std::runtime_error("SOFIE RWKV_WKV6: r must be rank-4 [B, H, T, Dh]");
+      fInputs.clear();
+      for (const auto &in : std::vector<std::pair<std::string, std::string>>{{fNR, "r"}, {fNK, "k"}, {fNV, "v"}, {fNW, "w"}, {fNU, "u"}}) {
+         const bool strided = model.IsStridedInputTensor(in.first);
+         fInputs.push_back({in.first, in.second, model.GetDimTensorShape(in.first), strided});
+         fHasStridedInput |= strided;
+      }
 
       fType = ConvertTypeToString(model.GetTensorType(fNR));
       fB  = fShapeR[0].GetVal();
@@ -61,6 +68,8 @@ public:
                                   { fShapeR[0], fShapeR[1], fShapeR[3], fShapeR[3] });
       model.AddNeededStdLib("cmath");
    }
+
+   bool SupportsStridedInput() const override { return true; }
 
    std::string Generate(std::string opName) override {
       opName = "op_" + opName;
@@ -99,10 +108,14 @@ public:
       out << SP << SP << SP << SP << SP << SP << S << "[sBase+i*" << Dh << "+j] = decay_i * " << S << "[sBase+i*" << Dh << "+j] + " << K << "[rBase+i] * " << V << "[rBase+j];\n";
       out << SP << SP << SP << SP << "}\n";
       out << SP << SP << SP << "}\n" << SP << SP << "}\n" << SP << "}\n";
-      return out.str();
+      return RewriteCpuStridedReads(opName, fInputs, out.str());
    }
 
    std::string Generate_GPU_Kernel_ALPAKA(std::string opName) override {
+      return RewriteKernelStridedInputs(GenerateWkv6Kernel(std::move(opName)), fInputs, "std::size_t const Dh");
+   }
+
+   std::string GenerateWkv6Kernel(std::string opName) {
       opName = "op_" + opName;
       std::string kname = "WKV6Kernel_" + opName;
       std::string out;
@@ -172,6 +185,7 @@ public:
       std::stringstream out;
       out << "\n//------ RWKV_WKV6_GPU_ALPAKA\n";
       out << SP << "{\n";
+      out << StridedLaunchLayouts(opName, fInputs);
       out << SP << SP << "auto const elementsPerGrid_" << opName
           << " = Vec::all(Idx{" << fB << " * " << fH << "});\n";
       out << SP << SP << "auto const workDiv_" << opName
@@ -189,7 +203,7 @@ public:
           << "static_cast<Idx>(" << fB << "), "
           << "static_cast<Idx>(" << fH << "), "
           << "static_cast<Idx>(" << fT << "), "
-          << "static_cast<Idx>(" << fDh << "));\n";
+          << "static_cast<Idx>(" << fDh << ")" << StridedLayoutArgs(opName, fInputs) << ");\n";
       out << SP << SP << "alpaka::enqueue(queue, task_" << opName << ");\n";
       out << SP << "}\n";
       return out.str();

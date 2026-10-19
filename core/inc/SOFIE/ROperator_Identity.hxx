@@ -47,9 +47,14 @@ public:
          }
       } else {
          model.AddIntermediateTensor(fNY, model.GetTensorType(fNX), fShape);
-         fIsAlias = model.AddAliasTensor(fNY, fNX);
+         // a strided input cannot be aliased by the (contiguous) output: it is copied through its strides
+         fHasStridedInput = model.IsStridedInputTensor(fNX) && !fShape.empty();
+         if (!fHasStridedInput)
+            fIsAlias = model.AddAliasTensor(fNY, fNX);
       }
    }
+
+   bool SupportsStridedInput() const override { return true; }
 
    std::string Generate(std::string OpName) override {
       if (fIsOutputConstant || fIsOutputInitialized)
@@ -60,7 +65,9 @@ public:
       }
       std::stringstream out;
       out << "\n//------ IDENTITY\n";
-      if (fIsAlias) {
+      if (fHasStridedInput) {
+         out << GenerateStridedUnaryLoop(OpName, fNX, fNY, fShape, [](const std::string &v) { return v; });
+      } else if (fIsAlias) {
          out << SP << "auto * tensor_" << fNY << " = tensor_" << fNX << ";\n";
       } else {
          out << SP << "std::copy(tensor_" << fNX << ", tensor_" << fNX << " + " << ConvertDimShapeToLength(fShape)
@@ -69,10 +76,26 @@ public:
       return out.str();
    }
 
+   std::string Generate_GPU_Kernel_ALPAKA(std::string opName) override {
+      if (!fHasStridedInput)
+         return "";
+      return GenerateStridedUnaryKernel("IdentityStridedKernel" + opName, "IDENTITY",
+                                        [](const std::string &v) { return v; });
+   }
+
+   std::string Generate_GPU_Kernel_Definitions_ALPAKA(std::string opName) override {
+      if (!fHasStridedInput)
+         return "";
+      return SP + "IdentityStridedKernel" + opName + " identityStridedKernel_" + opName + ";\n";
+   }
+
    std::string Generate_GPU_ALPAKA(std::string OpName) override {
       // Constant outputs and already-initialised tensors need no runtime work.
       if (fIsOutputConstant || fIsOutputInitialized) return "";
+      const std::string kernelMember = "identityStridedKernel_" + OpName;
       OpName = "op_" + OpName;
+      if (fHasStridedInput)
+         return GenerateStridedUnaryLaunch(OpName, kernelMember, "IDENTITY", fNX, fNY, fShape);
       if (fShape.empty()) {
          throw std::runtime_error("SOFIE Operator Identity called to Generate_GPU_ALPAKA without being initialized first");
       }
@@ -83,7 +106,7 @@ public:
    }
 
    bool IsElementwise() const override {
-      return !fIsOutputConstant && !fIsOutputInitialized;
+      return !fIsOutputConstant && !fIsOutputInitialized && !fHasStridedInput;
    }
 
    std::string GetElementwiseExpr(const std::string &inputVar) const override {

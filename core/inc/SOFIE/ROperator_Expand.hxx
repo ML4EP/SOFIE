@@ -26,6 +26,7 @@ private:
    bool fInitializedShape = false;
    bool fDimShapeValues = false;
    bool fInitBroadcast = false;
+   size_t fRankX = 0; ///< rank of the input, before the padding to the rank of the output
 
 public:
    ROperator_Expand(){}
@@ -36,6 +37,8 @@ public:
       }
 
 
+   bool SupportsStridedInput() const override { return true; }
+
    void Initialize(RModel& model) override {
       model.AddNeededHelperFunction("UnidirectionalBroadcast");
       // input must be a graph input, or already initialized intermediate tensor
@@ -43,6 +46,8 @@ public:
         throw std::runtime_error("SOFIE Expand Op Input Tensor " + fNX + " is not found in model");
       }
       fShapeX = model.GetDimTensorShape(fNX);
+      fRankX = fShapeX.size();
+      fHasStridedInput = model.IsStridedInputTensor(fNX) && !fShapeX.empty();
       if (model.IsInitializedTensor(fNShape)) {
          fInitializedShape = true;
          int64_t *shapeData =
@@ -144,6 +149,23 @@ public:
             out << SP << "size_t " << fShapeDim[i] << " = " << "tensor_" << fNShape << "[" << i << "];\n";
          }
       }
+      if (fHasStridedInput) {
+         // input read through the strides given to the Session: broadcast dims (extent 1 in the input) get no stride
+         const auto paddedX = PaddedShapeX();
+         out << SP << "{\n";
+         out << GenerateInputStrideCode(opName, fNX, std::vector<Dim>(paddedX.end() - fRankX, paddedX.end()));
+         out << SP << "size_t k_" << opName << " = 0;\n";
+         for (size_t d = 0; d < fShapeY.size(); d++)
+            out << SP << "for (size_t idx_" << d << " = 0; idx_" << d << " < (" << fShapeY[d].GetVal() << "); ++idx_" << d
+                << ") {\n";
+         out << SP << "tensor_" << fNY << "[k_" << opName << "++] = tensor_" << fNX << "["
+             << GenerateStridedBroadcastIndex("stride_" + opName, paddedX, fRankX, fShapeY.size()) << "];\n";
+         for (size_t d = 0; d < fShapeY.size(); d++)
+            out << SP << "}\n";
+         out << SP << "}\n";
+         return out.str();
+      }
+
       // No need to broadcast A if it's an initialized tensor or shapes are the same
       auto lengthX = ConvertDimShapeToLength(fShapeX);
       auto lengthY = ConvertDimShapeToLength(fShapeY);
@@ -172,6 +194,8 @@ public:
    }
 
    bool NeedsBroadcast() const {
+      // a strided input is always read by the kernel (never copied as a whole)
+      if (fHasStridedInput) return true;
       if (fShapeX.size() != fShapeY.size()) return true;
       for (size_t i = 0; i < fShapeX.size(); ++i)
          if (fShapeX[i] != fShapeY[i]) return true;
@@ -193,6 +217,10 @@ std::string Generate_GPU_Kernel_ALPAKA(std::string opName, const std::vector<std
 
     auto stridesX = UTILITY::ComputeStrideFromShape(shapeX_padded);
     auto stridesY = UTILITY::ComputeStrideFromShape(fShapeY);
+    // input read through the strides given to the Session: the kernel receives them in a layout
+    if (fHasStridedInput)
+        for (std::size_t d = 0; d < D; ++d)
+            stridesX[d] = Dim{"layoutX.stride[" + std::to_string(d) + "]", static_cast<std::size_t>(-1)};
 
     std::string kname = "ExpandKernel_" + opName;
 
@@ -206,6 +234,8 @@ std::string Generate_GPU_Kernel_ALPAKA(std::string opName, const std::vector<std
     op += SP + SP + SP + "T* __restrict__ output";
     for (auto &p : dynParamNames)
         op += ",\n" + SP + SP + SP + "std::size_t const " + p;
+    if (fHasStridedInput)
+        op += ",\n" + SP + SP + SP + "sofie_strided_layout<" + std::to_string(D) + "> const layoutX";
     op += ",\n" + SP + SP + SP + "std::size_t const totalElements) const {\n\n";
 
     op += SP + SP + SP + "auto const global_thread_idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
@@ -278,6 +308,9 @@ std::string Generate_GPU_ALPAKA(std::string opName, const std::vector<std::strin
     std::string totalElements = ConvertDimShapeToLength(fShapeY);
     std::string kname = "expandKernel_" + opName;
 
+    if (fHasStridedInput)
+        out << GenerateStridedBroadcastLayout(opName + "_X", fNX, PaddedShapeX(), fRankX, fShapeY);
+
     out << SP << "auto const elementsPerThread_" << opName << " = Vec::all(static_cast<Idx>(1));\n";
     out << SP << "auto const elementsPerGrid_"   << opName << " = Vec::all(Idx{static_cast<Idx>(" << totalElements << ")});\n";
     out << SP << "auto const workDiv_" << opName << " = sofie_workdiv(elementsPerGrid_" << opName << ");\n";
@@ -287,6 +320,8 @@ std::string Generate_GPU_ALPAKA(std::string opName, const std::vector<std::strin
         << ", alpaka::getPtrNative(deviceBuf_" << fNY << ")";
     for (auto &p : dynParamNames)
         out << ", static_cast<std::size_t>(" << p << ")";
+    if (fHasStridedInput)
+        out << ", layout_" << opName << "_X";
     out << ", static_cast<Idx>(" << totalElements << "));\n";
    out << SP <<"alpaka::enqueue(queue, task_" << opName << ");\n";
 
@@ -294,7 +329,7 @@ std::string Generate_GPU_ALPAKA(std::string opName, const std::vector<std::strin
 }
 
 EFusionMappingType GetFusionMappingType() const override {
-   if (fIsOutputConstant || fInitialized || fShapeY.empty())
+   if (fIsOutputConstant || fHasStridedInput || fInitialized || fShapeY.empty())
        return EFusionMappingType::Unsupported;
 
    if (fShapeX == fShapeY)

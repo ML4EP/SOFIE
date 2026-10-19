@@ -55,6 +55,7 @@ public:
         throw std::runtime_error("SOFIE Tile Op Input Tensor is not found in model");
       }
       fShapeInput=model.GetDimTensorShape(fNInput);
+      fHasStridedInput = model.IsStridedInputTensor(fNInput) && !fShapeInput.empty();
 
       // if repeats vector is not initialized we cannot deduce shape of output
       // not support for time being this case
@@ -86,6 +87,8 @@ public:
             << " given repeats " << ConvertShapeToString(repeats_vector) << std::endl;
    }
 
+   bool SupportsStridedInput() const override { return true; }
+
    std::string Generate(std::string OpName) override {
       OpName = "op_" + OpName;
       if (fShapeInput.empty() || fShapeY.empty()) {
@@ -101,11 +104,16 @@ public:
       out << SP << "const size_t input_shape[" << rank << "] = " << ConvertDimShapeToString(fShapeInput) << ";\n";
       out << SP << "const size_t output_shape[" << rank << "] = " << ConvertDimShapeToString(fShapeY) << ";\n\n";
 
-      out << SP << "size_t input_strides[" << rank << "];\n";
-      out << SP << "input_strides[" << rank - 1 << "] = 1;\n";
-      out << SP << "for (int i = " << rank - 2 << "; i >= 0; --i) {\n";
-      out << SP << SP << "input_strides[i] = input_strides[i+1] * input_shape[i+1];\n";
-      out << SP << "}\n\n";
+      if (fHasStridedInput) {
+         // input read through the strides given to the Session
+         out << GenerateInputStrideArray("input_strides", fNInput, fShapeInput) << "\n";
+      } else {
+         out << SP << "size_t input_strides[" << rank << "];\n";
+         out << SP << "input_strides[" << rank - 1 << "] = 1;\n";
+         out << SP << "for (int i = " << rank - 2 << "; i >= 0; --i) {\n";
+         out << SP << SP << "input_strides[i] = input_strides[i+1] * input_shape[i+1];\n";
+         out << SP << "}\n\n";
+      }
 
       out << SP << "size_t out_idx = 0;\n";
       std::string indent = SP;
@@ -137,6 +145,10 @@ public:
 
       auto inputStrides  = UTILITY::ComputeStrideFromShape(fShapeInput);
       auto outputStrides = UTILITY::ComputeStrideFromShape(fShapeY);
+      // input read through the strides given to the Session: the kernel receives them in a layout
+      if (fHasStridedInput)
+         for (std::size_t d = 0; d < D; ++d)
+            inputStrides[d] = Dim{"layoutX.stride[" + std::to_string(d) + "]", static_cast<std::size_t>(-1)};
 
       std::string kname = "TileKernel_" + opName;
 
@@ -150,6 +162,8 @@ public:
       op += SP + SP + SP + "T* __restrict__ output,\n";
       for (auto &p : dynParamNames)
          op += SP + SP + SP + "std::size_t const " + p + ",\n";
+      if (fHasStridedInput)
+         op += SP + SP + SP + "sofie_strided_layout<" + std::to_string(D) + "> const layoutX,\n";
       op += SP + SP + SP + "std::size_t const totalElements) const {\n\n";
 
       op += SP + SP + SP + "auto const global_thread_idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
@@ -207,10 +221,14 @@ public:
           + "alpaka::getPtrNative(deviceBuf_" + fNY + ")";
       for (auto &p : dynParamNames)
          args += ", static_cast<std::size_t>(" + p + ")";
+      if (fHasStridedInput)
+         args += ", layout_" + opName + "_X";
       args += ", static_cast<Idx>(" + totalElements + ")";
 
       std::stringstream out;
       out << "\n//------ TILE_GPU_ALPAKA\n";
+      if (fHasStridedInput)
+         out << GenerateStridedBroadcastLayout(opName + "_X", fNInput, fShapeInput, fShapeInput.size(), fShapeInput);
       out << SP << "auto const elementsPerThread_" << opName << " = Vec::all(static_cast<Idx>(1));\n";
       out << SP << "auto const elementsPerGrid_"   << opName << " = Vec::all(Idx{" << totalElements << "});\n";
       out << SP << "auto const workDiv_" << opName << " = sofie_workdiv(elementsPerGrid_" << opName << ");\n";
@@ -222,7 +240,7 @@ public:
 
    EFusionMappingType GetFusionMappingType() const override
    {
-      if (fShapeInput.empty() || fShapeY.empty())
+      if (fHasStridedInput || fShapeInput.empty() || fShapeY.empty())
          return EFusionMappingType::Unsupported;
 
       return EFusionMappingType::Shuffle;

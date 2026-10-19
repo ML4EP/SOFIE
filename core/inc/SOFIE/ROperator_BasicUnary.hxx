@@ -162,6 +162,7 @@ public:
       }
       fShapeX = model.GetDimTensorShape(fNX);
       fShapeY = fShapeX;
+      fHasStridedInput = model.IsStridedInputTensor(fNX) && !fShapeX.empty();
       model.AddIntermediateTensor(fNY, model.GetTensorType(fNX), fShapeY);
 
       model.AddNeededStdLib("cmath");
@@ -173,6 +174,11 @@ public:
       std::stringstream out;
 
       out << SP << "\n//---- Operator" << UnaryOpTraits<T, Op>::Name() << " " << OpName << "\n";
+      if (fHasStridedInput) {
+         out << GenerateStridedUnaryLoop(OpName, fNX, fNY, fShapeX,
+                                         [](const std::string &v) { return UnaryOpTraits<T, Op>::Op(v); });
+         return out.str();
+      }
       auto length = ConvertDimShapeToLength(fShapeX);
       out << SP << "for (size_t i = 0; i < " << length << "; i++) {\n";
       out << SP << SP << "tensor_" << fNY << "[i] = " << UnaryOpTraits<T, Op>::Op("tensor_" + fNX + "[i]") << ";\n";
@@ -180,9 +186,15 @@ public:
       return out.str();
    }
 
+   bool SupportsStridedInput() const override { return true; }
+
    std::string Generate_GPU_Kernel_ALPAKA(std::string /*OpName*/) override {
       if (fIsOutputConstant)
          return "";
+      if (fHasStridedInput)
+         return GenerateStridedUnaryKernel("Unary" + UnaryOpTraits<T, Op>::Name() + "StridedKernel",
+                                           UnaryOpTraits<T, Op>::Name(),
+                                           [](const std::string &v) { return UnaryOpTraits<T, Op>::Op(v); });
 
       std::string op;
       op = "\n//------ " + UnaryOpTraits<T, Op>::Name() + "_KERNEL_ALPAKA\n";
@@ -198,11 +210,17 @@ public:
    }
 
    std::string Generate_GPU_Kernel_Definitions_ALPAKA(std::string /*OpName*/) override {
+      if (fHasStridedInput)
+         return SP + "Unary" + UnaryOpTraits<T, Op>::Name() + "StridedKernel " + UnaryOpTraits<T, Op>::Name() +
+                "StridedKernel;\n";
       return SP + "Unary" + UnaryOpTraits<T, Op>::Name() + "Kernel " + UnaryOpTraits<T, Op>::Name() + "Kernel;\n";
    }
 
    std::string Generate_GPU_ALPAKA(std::string OpName) override {
       OpName = "op_" + OpName;
+      if (fHasStridedInput)
+         return GenerateStridedUnaryLaunch(OpName, UnaryOpTraits<T, Op>::Name() + "StridedKernel",
+                                           UnaryOpTraits<T, Op>::Name(), fNX, fNY, fShapeX);
       std::stringstream out;
       std::string length = ConvertDimShapeToLength(fShapeX);
       out << "\n//------ "+OpName+"_ALPAKA\n";
@@ -223,7 +241,7 @@ public:
       return {"cmath"};
    }
 
-   bool IsElementwise() const override { return !fIsOutputConstant; }
+   bool IsElementwise() const override { return !fIsOutputConstant && !fHasStridedInput; }
    std::string GetElementwiseExpr(const std::string& v) const override {
       return UnaryOpTraits<T, Op>::Op(v);
    }

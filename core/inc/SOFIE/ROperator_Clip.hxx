@@ -148,6 +148,8 @@ public:
          }
       }
 
+      fHasStridedInput = model.IsStridedInputTensor(fNX) && !fDimShape.empty();
+
       // ---- register output tensor ---------------------------------------
       if (fIsDynamic)
          model.AddIntermediateTensor(fNY, model.GetTensorType(fNX), fDimShape);
@@ -180,9 +182,19 @@ public:
    // arguments) and may have different element types.  Use per-operator names
    // for the kernel struct and member variable so that multiple Clip operators
    // in the same model do not produce duplicate definitions.
+   bool SupportsStridedInput() const override { return true; }
+
    std::string Generate_GPU_Kernel_ALPAKA(std::string opName) override
    {
       std::string kname = "ClipKernel_op_" + opName;
+      if (fHasStridedInput)
+         return GenerateStridedUnaryKernel(
+            kname, "CLIP",
+            [](const std::string &v) {
+               const std::string lowered = "(" + v + " < minVal ? minVal : " + v + ")";
+               return "(" + lowered + " > maxVal ? maxVal : " + lowered + ")";
+            },
+            ", T minVal, T maxVal");
       std::string op;
       op  = "\n//------ CLIP_KERNEL_ALPAKA op_" + opName + "\n";
       op += "struct " + kname + " {\n";
@@ -251,6 +263,10 @@ public:
       std::string castMin = "static_cast<" + TensorType<T>::Name() + ">(" + minExpr + ")";
       std::string castMax = "static_cast<" + TensorType<T>::Name() + ">(" + maxExpr + ")";
 
+      if (fHasStridedInput)
+         return GenerateStridedUnaryLaunch(OpName, varName, "CLIP", fNX, fNY, fDimShape,
+                                           ", " + castMin + ", " + castMax);
+
       out << SP << "auto const elementsPerThread_" << fNY << " = Vec::all(static_cast<Idx>(1));\n";
       out << SP << "auto const elementsPerGrid_"   << fNY << " = Vec::all(Idx{" << length << "});\n";
       out << SP << "auto const workDiv_" << fNY << " = sofie_workdiv(elementsPerGrid_" << fNY << ");\n";
@@ -264,11 +280,11 @@ public:
       return out.str();
    }
 
-   bool IsElementwise() const override { return true; }
+   bool IsElementwise() const override { return !fHasStridedInput; }
 
    EFusionMappingType GetFusionMappingType() const override
    {
-      if (fIsDynamic || (fHasMin && !fMinIsConstant) || (fHasMax && !fMaxIsConstant))
+      if (fHasStridedInput || fIsDynamic || (fHasMin && !fMinIsConstant) || (fHasMax && !fMaxIsConstant))
          return EFusionMappingType::Unsupported;
 
       return EFusionMappingType::OneToOne;
@@ -373,6 +389,14 @@ public:
          s << "tensor_" << name << "[" << index << "]";
          return s.str();
       };
+
+      if (fHasStridedInput) {
+         out << GenerateStridedUnaryLoop(OpName, fNX, fNY, fDimShape, [&](const std::string &v) {
+            std::string first = fHasMax ? "std::min(" + maxExpr + ", " + v + ")" : v;
+            return fHasMin ? "std::max(" + minExpr + ", " + first + ")" : first;
+         });
+         return out.str();
+      }
 
       // ---- flat element loop (identical structure to Selu) -------------
       out << SP << "for (int id = 0; id < " << length << " ; id++) {\n";

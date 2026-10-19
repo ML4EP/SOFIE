@@ -33,8 +33,11 @@ public:
          throw std::runtime_error("SOFIE Sigmoid Op Input Tensor is not found in model");
       }
       fShape = model.GetDimTensorShape(fNX);
+      fHasStridedInput = model.IsStridedInputTensor(fNX) && !fShape.empty();
       model.AddIntermediateTensor(fNY, model.GetTensorType(fNX), fShape);
    }
+
+   bool SupportsStridedInput() const override { return true; }
 
 
    std::string Generate(std::string opName) override {
@@ -44,6 +47,11 @@ public:
       std::stringstream out;
       auto length = ConvertDimShapeToLength(fShape);
       out << "\n//------ Sigmoid -- " << opName << "\n";
+      if (fHasStridedInput) {
+         out << GenerateStridedUnaryLoop("op_" + opName, fNX, fNY, fShape,
+                                         [](const std::string &v) { return "1 / (1 + std::exp( - " + v + "))"; });
+         return out.str();
+      }
       out << SP << "for (int id = 0; id < " << length << " ; id++){\n";
       out << SP << SP  << "tensor_" << fNY << "[id] = 1 / (1 + std::exp( - tensor_"  << fNX << "[id]));\n";
       out << SP << "}\n";
@@ -51,6 +59,9 @@ public:
    }
 
    std::string Generate_GPU_Kernel_ALPAKA(std::string /*opName*/) override {
+      if (fHasStridedInput)
+         return GenerateStridedUnaryKernel("SigmoidStridedKernel", "SIGMOID",
+                                           [this](const std::string &v) { return GetElementwiseExpr(v); });
       std::string op;
       op = "\n//------ SIGMOID_KERNEL_ALPAKA\n";
       op += "struct SigmoidKernel {\n";
@@ -67,6 +78,8 @@ public:
 
 
    std::string Generate_GPU_Kernel_Definitions_ALPAKA(std::string /*opName*/) override {
+      if (fHasStridedInput)
+         return SP + "SigmoidStridedKernel sigmoidStridedKernel;\n";
       return SP + "SigmoidKernel sigmoidKernel;\n";
    }
 
@@ -75,6 +88,9 @@ public:
       if (fShape.empty()) {
          throw std::runtime_error("SOFIE Operator Sigmoid called to Generate without being initialized first");
       }
+
+      if (fHasStridedInput)
+         return GenerateStridedUnaryLaunch(OpName, "sigmoidStridedKernel", "SIGMOID", fNX, fNY, fShape);
 
       std::stringstream out;
       std::string length = ConvertDimShapeToLength(fShape);
@@ -93,7 +109,7 @@ public:
       return fNY;
    }
 
-   bool IsElementwise() const override { return true; }
+   bool IsElementwise() const override { return !fHasStridedInput; }
    std::string GetElementwiseExpr(const std::string& v) const override {
       return "static_cast<T>(1) / (static_cast<T>(1) + exp(-(" + v + ")))";
    }

@@ -69,6 +69,10 @@ template <typename T, EBasicBinaryOperator Op>
 class ROperator_BasicBinary final : public ROperator {
 private:
    int fBroadcastFlag = 0;
+   bool fStridedA = false;
+   bool fStridedB = false;
+   size_t fOrigRankA = 0; ///< rank of the inputs, before the padding to the rank of the output
+   size_t fOrigRankB = 0;
    std::string fNA;
    std::string fNB;
    std::string fNBroadcastedA;
@@ -133,6 +137,11 @@ public:
       if (!model.CheckIfTensorAlreadyExist(fNB)) {
          throw std::runtime_error(std::string("SOFIE Binary Op Input Tensor ") + fNB + "is not found in model");
       }
+      fOrigRankA = model.GetDimTensorShape(fNA).size();
+      fOrigRankB = model.GetDimTensorShape(fNB).size();
+      fStridedA = model.IsStridedInputTensor(fNA) && fOrigRankA > 0;
+      fStridedB = model.IsStridedInputTensor(fNB) && fOrigRankB > 0;
+      fHasStridedInput = fStridedA || fStridedB;
       int dynamicInputs = 0;
       if (model.IsDynamicTensor(fNA)) {
          fDimShapeA = model.GetDynamicTensorShape(fNA);
@@ -360,6 +369,8 @@ public:
       }
    }
 
+   bool SupportsStridedInput() const override { return true; }
+
    std::string GenerateInitCode() override
    {
       std::stringstream out;
@@ -419,6 +430,14 @@ public:
       auto stridesB = UTILITY::ComputeStrideFromShape(fDimShapeB);
       auto stridesY = UTILITY::ComputeStrideFromShape(fDimShapeY);
 
+      // inputs read through the strides given to the Session
+      if (fStridedA)
+         out << GenerateInputStrideCode(opName + "_A", fNA,
+                                        std::vector<Dim>(fDimShapeA.end() - fOrigRankA, fDimShapeA.end()));
+      if (fStridedB)
+         out << GenerateInputStrideCode(opName + "_B", fNB,
+                                        std::vector<Dim>(fDimShapeB.end() - fOrigRankB, fDimShapeB.end()));
+
       std::string compute_idx_A, compute_idx_B, compute_idx_Y;
       if (fDimShapeA.empty() ||
           std::all_of(fDimShapeA.begin(), fDimShapeA.end(), [](Dim d) { return d.dim == 1 || d.GetVal() == "1"; })) {
@@ -452,6 +471,10 @@ public:
          for (int j = 0; j < 3; j++)
             compute_idx_B.pop_back();
       }
+      if (fStridedA && compute_idx_A != "0")
+         compute_idx_A = GenerateStridedBroadcastIndex("stride_" + opName + "_A", fDimShapeA, fOrigRankA, fDimShapeY.size());
+      if (fStridedB && compute_idx_B != "0")
+         compute_idx_B = GenerateStridedBroadcastIndex("stride_" + opName + "_B", fDimShapeB, fOrigRankB, fDimShapeY.size());
       int nloop = 0;
       if (fDimShapeY.empty() ||
           std::all_of(fDimShapeY.begin(), fDimShapeY.end(), [](Dim d) { return d.dim == 1 || d.GetVal() == "1"; })) {
@@ -509,6 +532,10 @@ public:
       bool isAPartialBroadcast = IsPartialBroadcast(fDimShapeA);
       bool isBPartialBroadcast = IsPartialBroadcast(fDimShapeB);
 
+      // inputs read through the strides given to the Session (a scalar input has no strides to apply)
+      const bool stridedA = fStridedA && !isAScalar;
+      const bool stridedB = fStridedB && !isBScalar;
+
       std::string op;
       op = "\n//------ "+opName+"_"+BinaryOperatorTrait<T, Op>::Name()+"_KERNEL_ALPAKA\n";
       op += SP + "struct Binary"+opName+BinaryOperatorTrait<T, Op>::Name()+"Kernel {\n";
@@ -516,6 +543,10 @@ public:
       op += SP + SP + "ALPAKA_FN_ACC void operator()(TAcc const & acc, T const * A, T const * B, T * C";
       for (auto &p : dynParamNames)
          op += ", std::size_t const " + p;
+      if (stridedA)
+         op += ", sofie_strided_layout<" + std::to_string(D) + "> const layoutA";
+      if (stridedB)
+         op += ", sofie_strided_layout<" + std::to_string(D) + "> const layoutB";
       op += ", std::size_t const totalElements) const {\n";
       op += SP + SP + SP + "auto idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
       op += SP + SP + SP + "if (idx < totalElements) {\n";
@@ -539,6 +570,10 @@ public:
       }
       std::string indexA = isAScalar ? "0" : (isAPartialBroadcast ? "idxA" : "idx");
       std::string indexB = isBScalar ? "0" : (isBPartialBroadcast ? "idxB" : "idx");
+      if (stridedA)
+         indexA = "sofie_strided_offset(layoutA, idx)";
+      if (stridedB)
+         indexB = "sofie_strided_offset(layoutB, idx)";
       const std::string a = "A[" + indexA + "]";
       const std::string b = "B[" + indexB + "]";
       if constexpr (Op == EBasicBinaryOperator::Pow)
@@ -568,6 +603,12 @@ public:
       std::stringstream out;
       auto length = ConvertDimShapeToLength(fDimShapeY);
       out << "\n//------ "+OpName+"_ALPAKA\n";
+      const bool stridedA = fStridedA && ConvertDimShapeToLength(fDimShapeA) != "1";
+      const bool stridedB = fStridedB && ConvertDimShapeToLength(fDimShapeB) != "1";
+      if (stridedA)
+         out << GenerateStridedBroadcastLayout(OpName + "_A", fNA, fDimShapeA, fOrigRankA, fDimShapeY);
+      if (stridedB)
+         out << GenerateStridedBroadcastLayout(OpName + "_B", fNB, fDimShapeB, fOrigRankB, fDimShapeY);
       out << SP << "auto const elementsPerThread_"<<fNY<<" = Vec::all(static_cast<Idx>(1));\n";
       out << SP << "auto const elementsPerGrid_"<<fNY<<" = Vec::all(Idx{"<< length << "});\n";
       out << SP << "auto const workDiv_" << fNY << " = sofie_workdiv(elementsPerGrid_" << fNY << ");\n";
@@ -576,6 +617,10 @@ public:
          << "), alpaka::getPtrNative(deviceBuf_" << fNB << "), alpaka::getPtrNative(deviceBuf_" << fNY << ")";
       for (auto &p : dynParamNames)
          out << ", static_cast<std::size_t>(" << p << ")";
+      if (stridedA)
+         out << ", layout_" << OpName << "_A";
+      if (stridedB)
+         out << ", layout_" << OpName << "_B";
       out << ", static_cast<Idx>(" << length << "));\n";
       out << SP << "alpaka::enqueue(queue, task_" << OpName << ");\n";
       return out.str();
@@ -592,7 +637,7 @@ public:
 
    EFusionMappingType GetFusionMappingType() const override
    {
-      if (fIsOutputConstant)
+      if (fIsOutputConstant || fHasStridedInput)
          return EFusionMappingType::Unsupported;
 
       if (fDimShapeY.empty())

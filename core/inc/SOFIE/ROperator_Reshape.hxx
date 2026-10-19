@@ -343,13 +343,18 @@ public:
       else {
          // non-constant case
          model.AddIntermediateTensor(fNOutput, model.GetTensorType(fNData), fShapeOutput);
-         fIsAlias = model.AddAliasTensor(fNOutput, fNData);
+         // the output of a strided input cannot alias it: it is a contiguous copy, made through the strides
+         fHasStridedInput = model.IsStridedInputTensor(fNData) && !fShapeInput.empty();
+         if (!fHasStridedInput)
+            fIsAlias = model.AddAliasTensor(fNOutput, fNData);
          if (model.Verbose())
             std::cout << Name() << " : " << fNData << " " << ConvertDimShapeToString(fShapeInput) << " -->  "
                       << fNOutput << "  " << ConvertDimShapeToString(fShapeOutput) << (fIsAlias ? " (alias)" : "")
                       << std::endl;
       }
    }
+
+   bool SupportsStridedInput() const override { return true; }
 
    std::string Generate(std::string opName) override {
 
@@ -398,7 +403,10 @@ public:
              << lengthOut << " is different than input one " << lengthIn << "\");\n";
       }
 
-      if (fIsAlias) {
+      if (fHasStridedInput) {
+         out << GenerateStridedUnaryLoop("op_" + opName, fNData, fNOutput, fShapeInput,
+                                         [](const std::string &v) { return v; });
+      } else if (fIsAlias) {
          out << SP << "auto * tensor_" << fNOutput << " = tensor_" << fNData << ";\n";
       } else {
          out << SP << "std::copy( tensor_" << fNData << ", tensor_" << fNData << " + " << lengthIn << ", " << "tensor_"
@@ -407,9 +415,21 @@ public:
       return out.str();
    }
 
+std::string Generate_GPU_Kernel_ALPAKA(std::string opName) override {
+    if (!fHasStridedInput || fIsOutputConstant || fIsOutputParamShape) return "";
+    return GenerateStridedUnaryKernel("ReshapeStridedKernel_" + opName, "RESHAPE",
+                                      [](const std::string &v) { return v; });
+}
+
+std::string Generate_GPU_Kernel_Definitions_ALPAKA(std::string opName) override {
+    if (!fHasStridedInput || fIsOutputConstant || fIsOutputParamShape) return "";
+    return SP + "ReshapeStridedKernel_" + opName + " reshapeStridedKernel_" + opName + ";\n";
+}
+
 std::string Generate_GPU_ALPAKA(std::string opName) override {
     if (fIsOutputConstant) return "";
 
+    const std::string rawOpName = opName;
     opName = "op_" + opName;
 
     if (fIsOutputParamShape)
@@ -433,6 +453,13 @@ std::string Generate_GPU_ALPAKA(std::string opName) override {
         }
     }
 
+    // a strided input cannot be reinterpreted: it is copied in the contiguous output, through its strides
+    if (fHasStridedInput) {
+        out << GenerateStridedUnaryLaunch(opName, "reshapeStridedKernel_" + rawOpName, "RESHAPE", fNData, fNOutput,
+                                          fShapeInput);
+        return out.str();
+    }
+
     // Reshape / View / Squeeze / Unsqueeze are zero-copy reinterpretations of memory.
     // Instead of a GPU memcpy + CPU synchronisation barrier, create a local non-owning
     // view that aliases the source buffer.  All downstream getPtrNative() calls on the
@@ -449,7 +476,7 @@ std::string Generate_GPU_ALPAKA(std::string opName) override {
 
 EFusionMappingType GetFusionMappingType() const override
 {
-   return fIsOutputConstant ? EFusionMappingType::Unsupported : EFusionMappingType::Reorganize;
+   return (fIsOutputConstant || fHasStridedInput) ? EFusionMappingType::Unsupported : EFusionMappingType::Reorganize;
 }
 
 std::vector<size_t> GetFusionDataInputIndices() const override

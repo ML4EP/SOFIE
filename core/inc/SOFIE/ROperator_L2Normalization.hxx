@@ -69,6 +69,7 @@ public:
 
       if (fShapeX.empty())
          throw std::runtime_error("SOFIE L2Normalization requires a non-empty shape");
+      fHasStridedInput = model.IsStridedInputTensor(fNX);
 
       // Only a concrete (non-parametric) trailing dimension can be checked
       // here; a dynamic one is trusted to be non-empty at runtime.
@@ -94,6 +95,8 @@ public:
       }
    }
 
+   bool SupportsStridedInput() const override { return true; }
+
    std::string Generate(std::string opName) override
    {
       if (fShapeX.empty())
@@ -103,17 +106,22 @@ public:
       std::stringstream out;
 
       out << "\n//------ L2NORMALIZATION op_" << opName << "\n";
+      // a strided input is read through its strides, from the logical (contiguous) index of its elements
+      const std::string readX = fHasStridedInput ? "tensor_" + fNX + "[xoff_op_" + opName + "(base + elementIdx)]"
+                                                 : "tensor_" + fNX + "[base + elementIdx]";
+      if (fHasStridedInput)
+         out << GenerateStridedOffsetLambda("op_" + opName, fNX, fShapeX);
       out << SP << "for (std::size_t vectorIdx = 0; vectorIdx < " << fNumVectors << "; ++vectorIdx) {\n";
       out << SP << SP << "const std::size_t base = vectorIdx * " << fVectorLength << ";\n";
       out << SP << SP << "float sumSquares = 0.0f;\n";
       out << SP << SP << "for (std::size_t elementIdx = 0; elementIdx < " << fVectorLength << "; ++elementIdx) {\n";
-      out << SP << SP << SP << "const float value = tensor_" << fNX << "[base + elementIdx];\n";
+      out << SP << SP << SP << "const float value = " << readX << ";\n";
       out << SP << SP << SP << "sumSquares += value * value;\n";
       out << SP << SP << "}\n";
       out << SP << SP << "float norm = std::sqrt(sumSquares);\n";
       out << SP << SP << "norm = norm < " << epsilon << " ? " << epsilon << " : norm;\n";
       out << SP << SP << "for (std::size_t elementIdx = 0; elementIdx < " << fVectorLength << "; ++elementIdx)\n";
-      out << SP << SP << SP << "tensor_" << fNY << "[base + elementIdx] = tensor_" << fNX << "[base + elementIdx] / norm;\n";
+      out << SP << SP << SP << "tensor_" << fNY << "[base + elementIdx] = " << readX << " / norm;\n";
       out << SP << "}\n";
 
       return out.str();
@@ -128,7 +136,12 @@ public:
       code += "struct " + kernelName + " {\n";
       code += SP + "template<typename TAcc, typename T>\n";
       code += SP + "ALPAKA_FN_ACC void operator()(TAcc const &acc, T const *__restrict__ input, ";
-      code += "T *__restrict__ output, std::size_t vectorLength, std::size_t numVectors, T epsilon) const {\n";
+      code += "T *__restrict__ output, std::size_t vectorLength, std::size_t numVectors, T epsilon";
+      if (fHasStridedInput)
+         code += ", sofie_strided_layout<" + std::to_string(fShapeX.size()) + "> const layoutX";
+      code += ") const {\n";
+      const std::string readX = fHasStridedInput ? StridedKernelRead("input", "layoutX", "base + elementIdx")
+                                                 : "input[base + elementIdx]";
       code += SP + SP + "auto &shared = alpaka::declareSharedVar<T[256], __COUNTER__>(acc);\n";
       code += SP + SP + "const auto vectorIdx = alpaka::getIdx<alpaka::Grid, alpaka::Blocks>(acc)[0];\n";
       code += SP + SP + "const auto threadIdx = alpaka::getIdx<alpaka::Block, alpaka::Threads>(acc)[0];\n";
@@ -136,7 +149,7 @@ public:
       code += SP + SP + "const std::size_t base = vectorIdx * vectorLength;\n";
       code += SP + SP + "T partial = static_cast<T>(0);\n";
       code += SP + SP + "for (std::size_t elementIdx = threadIdx; elementIdx < vectorLength; elementIdx += 256u) {\n";
-      code += SP + SP + SP + "const T value = input[base + elementIdx];\n";
+      code += SP + SP + SP + "const T value = " + readX + ";\n";
       code += SP + SP + SP + "partial += value * value;\n";
       code += SP + SP + "}\n";
       code += SP + SP + "shared[threadIdx] = partial;\n";
@@ -152,7 +165,7 @@ public:
       code += SP + SP + "alpaka::syncBlockThreads(acc);\n";
       code += SP + SP + "const T norm = shared[0];\n";
       code += SP + SP + "for (std::size_t elementIdx = threadIdx; elementIdx < vectorLength; elementIdx += 256u)\n";
-      code += SP + SP + SP + "output[base + elementIdx] = input[base + elementIdx] / norm;\n";
+      code += SP + SP + SP + "output[base + elementIdx] = " + readX + " / norm;\n";
       code += SP + "}\n";
       code += "};\n";
 
@@ -179,6 +192,8 @@ public:
       // them here needs no extra plumbing (unlike a value used *inside* a
       // separate kernel functor, which must be passed in explicitly).
       out << "\n//------ L2Normalization_GPU_ALPAKA op_" << opName << "\n";
+      if (fHasStridedInput)
+         out << GenerateStridedBroadcastLayout("op_" + opName + "_X", fNX, fShapeX, fShapeX.size(), fShapeX);
       out << SP << "alpaka::WorkDivMembers<Dim, Idx> workDiv_l2norm_" << opName << "(\n";
       out << SP << SP << "Vec::all(Idx{" << fNumVectors << "}),\n";
       out << SP << SP << "Vec::all(Idx{256u}),\n";
@@ -189,7 +204,10 @@ public:
       out << ", alpaka::getPtrNative(deviceBuf_" << fNY << ")";
       out << ", static_cast<std::size_t>(" << fVectorLength << ")";
       out << ", static_cast<std::size_t>(" << fNumVectors << ")";
-      out << ", static_cast<" << TensorType<T>::Name() << ">(" << epsilon << "));\n";
+      out << ", static_cast<" << TensorType<T>::Name() << ">(" << epsilon << ")";
+      if (fHasStridedInput)
+         out << ", layout_op_" << opName << "_X";
+      out << ");\n";
 
       return out.str();
    }

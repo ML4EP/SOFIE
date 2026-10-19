@@ -57,6 +57,7 @@ public:
 
       fShape = model.GetDimTensorShape(fNX);
       fRank  = fShape.size();
+      fHasStridedInput = model.IsStridedInputTensor(fNX) && !fShape.empty();
       fType  = ConvertTypeToString(model.GetTensorType(fNX));
 
       if (!fNAxisTensor.empty()) {
@@ -77,6 +78,8 @@ public:
       model.AddIntermediateTensor(fNY, model.GetTensorType(fNX), fShape);
    }
 
+   bool SupportsStridedInput() const override { return true; }
+
    std::string Generate(std::string opName) override {
       opName = "op_" + opName;
       if (fShape.empty())
@@ -92,6 +95,10 @@ public:
       std::stringstream out;
       out << "\n//---- CumSum operator " << opName << " axis=" << fAxis
           << " exclusive=" << fExclusive << " reverse=" << fReverse << "\n";
+
+      // a strided input is read through its strides, from the logical (contiguous) index of its elements
+      if (fHasStridedInput)
+         out << GenerateStridedOffsetLambda(opName, fNX, fShape);
 
       // Outer loops over all dims except the cumsum axis
       for (size_t i = 0; i < fRank; ++i) {
@@ -124,11 +131,13 @@ public:
       std::string inIdx  = buildIdx(ivar);
       std::string outIdx = buildIdx(ivar);
 
+      const std::string readX = fHasStridedInput ? "tensor_" + fNX + "[xoff_" + opName + "(" + inIdx + ")]"
+                                                 : "tensor_" + fNX + "[" + inIdx + "]";
       if (fExclusive) {
          out << SP << SP << SP << "tensor_" << fNY << "[" << outIdx << "] = cs_acc;\n";
-         out << SP << SP << SP << "cs_acc += tensor_" << fNX << "[" << inIdx << "];\n";
+         out << SP << SP << SP << "cs_acc += " << readX << ";\n";
       } else {
-         out << SP << SP << SP << "cs_acc += tensor_" << fNX << "[" << inIdx << "];\n";
+         out << SP << SP << SP << "cs_acc += " << readX << ";\n";
          out << SP << SP << SP << "tensor_" << fNY << "[" << outIdx << "] = cs_acc;\n";
       }
 
@@ -167,6 +176,8 @@ public:
          if (i != ax) outerDimIdx.push_back(i);
 
       std::string kname = "CumSumKernel_" + opName;
+      // a strided input is read through its strides, from the logical (contiguous) index of its elements
+      const std::string xAt = fHasStridedInput ? StridedKernelRead("X", "layoutX", "idx") : "X[idx]";
       std::string exclStr = std::to_string(fExclusive);
       std::string revStr  = std::to_string(fReverse);
 
@@ -180,6 +191,8 @@ public:
       op += SP + SP + SP + "T* __restrict__ Y,\n";
       for (auto &p : dynParamNames)
          op += SP + SP + SP + "std::size_t const " + p + ",\n";
+      if (fHasStridedInput)
+         op += SP + SP + SP + "sofie_strided_layout<" + std::to_string(fRank) + "> const layoutX,\n";
       op += SP + SP + SP + "std::size_t const outerLen,\n";
       op += SP + SP + SP + "std::size_t const axLen) const {\n\n";
 
@@ -216,9 +229,9 @@ public:
          op += SP + SP + SP + SP + "std::size_t idx = outer_base + i * ax_stride;\n";
          if (fExclusive) {
             op += SP + SP + SP + SP + "Y[idx] = acc_val;\n";
-            op += SP + SP + SP + SP + "acc_val += X[idx];\n";
+            op += SP + SP + SP + SP + "acc_val += " + xAt + ";\n";
          } else {
-            op += SP + SP + SP + SP + "acc_val += X[idx];\n";
+            op += SP + SP + SP + SP + "acc_val += " + xAt + ";\n";
             op += SP + SP + SP + SP + "Y[idx] = acc_val;\n";
          }
          op += SP + SP + SP + "}\n";
@@ -228,9 +241,9 @@ public:
          op += SP + SP + SP + SP + "std::size_t idx = outer_base + i * ax_stride;\n";
          if (fExclusive) {
             op += SP + SP + SP + SP + "Y[idx] = acc_val;\n";
-            op += SP + SP + SP + SP + "acc_val += X[idx];\n";
+            op += SP + SP + SP + SP + "acc_val += " + xAt + ";\n";
          } else {
-            op += SP + SP + SP + SP + "acc_val += X[idx];\n";
+            op += SP + SP + SP + SP + "acc_val += " + xAt + ";\n";
             op += SP + SP + SP + SP + "Y[idx] = acc_val;\n";
          }
          op += SP + SP + SP + "}\n";
@@ -262,6 +275,8 @@ public:
       std::stringstream out;
       out << "\n//------ CUMSUM_GPU_ALPAKA\n";
       out << SP << "{\n";
+      if (fHasStridedInput)
+         out << GenerateStridedBroadcastLayout(opName + "_X", fNX, fShape, fShape.size(), fShape);
       out << SP << SP << "auto const elementsPerGrid_" << opName << " = Vec::all(Idx{" << outerLen << "});\n";
       out << SP << SP << "auto const workDiv_" << opName << " = sofie_workdiv(elementsPerGrid_" << opName << ");\n";
       out << SP << SP << "auto task_" << opName << " = alpaka::createTaskKernel<Acc>(workDiv_" << opName
@@ -270,6 +285,8 @@ public:
           << "alpaka::getPtrNative(deviceBuf_" << fNY << ")";
       for (auto &p : dynParamNames)
          out << ", static_cast<std::size_t>(" << p << ")";
+      if (fHasStridedInput)
+         out << ", layout_" << opName << "_X";
       out << ", static_cast<Idx>(" << outerLen << "), "
           << "static_cast<Idx>(" << axLen << "));\n";
       out << SP << SP << "alpaka::enqueue(queue, task_" << opName << ");\n";

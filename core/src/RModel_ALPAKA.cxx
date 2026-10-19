@@ -762,7 +762,12 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
    ForEachInferArg_GPU_ALPAKA([&](const std::string &p) { dynParamNames.push_back(p); },
                               [](const std::string &) {});
 
-   std::set<SOFIE::OperatorKind> registered_operators;
+   // kernels shared by all the operators of a kind are generated once; the variant reading a strided input
+   // is a different kernel
+   std::set<std::pair<SOFIE::OperatorKind, bool>> registered_operators;
+   auto kernelKey = [this](size_t id) {
+      return std::make_pair(fOperators[id]->GetKind(), fOperators[id]->HasStridedInput());
+   };
 
    std::set<SOFIE::OperatorKind> single_initialized_operators = {
       SOFIE::OperatorKind::RELU,
@@ -789,6 +794,22 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
 
    bool OpNeedsBlas = false;
 
+   // the sessions of the sub-graphs (e.g. the branches of an If operator) are generated first, each one in its own
+   // namespace to keep their kernels separate. They share the queue of this session
+   for (auto &graph : fSubGraphs) {
+      if (fKernelOnly)
+         throw std::runtime_error("sofie: Options::kKernelOnly is not supported for models with subgraphs");
+      if (fVerbose)
+         std::cout << "generate session code for subgraph " << graph->fName << std::endl;
+      graph->fVerbose = fVerbose;
+      graph->fBatchSize = fBatchSize;
+      graph->fFusion = Fusion::Compute(*graph);
+      graph->GenerateSessionCode_GPU_ALPAKA();
+      fGC += "\nnamespace SubGraph_" + graph->fName + " {\n" + graph->fGC + "\n} // namespace SubGraph_" +
+             graph->fName + "\n";
+      fNeededHelperFunctions.insert(graph->fNeededHelperFunctions.begin(), graph->fNeededHelperFunctions.end());
+   }
+
    fGC += "\n//--- ALPAKA Kernels\n";
    for (size_t id = 0; id < fOperators.size(); id++) {
       if(fOperators[id]->GetKind() == OperatorKind::GEMM || fOperators[id]->GetKind() == OperatorKind::CONV) {
@@ -805,11 +826,11 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
          } else {
             auto idDynParamNames = GetOperatorKernelParams(id, dynParamNames);
             if (single_initialized_operators.find(fOperators[id]->GetKind()) != single_initialized_operators.end()) {
-               if (registered_operators.find(fOperators[id]->GetKind()) == registered_operators.end()) {
+               if (registered_operators.find(kernelKey(id)) == registered_operators.end()) {
                   if (fVerbose)
                      std::cout << "Generating ALPAKA kernel for operator " << toString(fOperators[id]->GetKind()) << std::endl;
                   fGC += fOperators[id]->Generate_GPU_Kernel_ALPAKA(std::to_string(id), idDynParamNames);
-                  registered_operators.insert(fOperators[id]->GetKind());
+                  registered_operators.insert(kernelKey(id));
                }
             } else {
                if (fVerbose)
@@ -964,6 +985,12 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
 
    GenerateOperatorDeclarations();
 
+   // sessions of the sub-graphs, running on the queue of this session
+   if (!fSubGraphs.empty())
+      fGC += "\n//   subgraph sessions\n";
+   for (auto &graph : fSubGraphs)
+      fGC += "SubGraph_" + graph->fName + "::Session<tagAcc> fSession_" + graph->fName + "{queue};\n";
+
    // inject profiling session data member
    if (fProfile) {
       fGC += RModelProfilerGPU::GenerateSessionMembers();
@@ -1037,6 +1064,8 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
          std::string ctorParams;
          for (auto &p : ctorParamNames)
             ctorParams += ",\n        size_t " + p + " = " + fShapeParams[p];
+         if (fStridedInput)
+            ctorParams += ",\n        std::vector<std::vector<size_t>> inputStrides = {}";
 
          /*
           * One Session member per shape parameter, the same members the CPU session declares.
@@ -1053,6 +1082,28 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
          std::string initParams = "std::string filename";
          for (auto &p : ctorParamNames)
             initParams += ", size_t " + p;
+
+         // strides (in elements) of the input tensors; empty means contiguous input
+         if (fStridedInput) {
+            initArgs += ", inputStrides";
+            initParams += ", std::vector<std::vector<size_t>> const &inputStrides";
+            std::string strideCode = GenerateInputStrideInitCode();
+            for (auto &graph : fSubGraphs)
+               strideCode += "   fSession_" + graph->fName + ".SetInputStrides(inputStrides);\n";
+            ctorBody = strideCode + ctorBody;
+            fGC += "\n//   strides of the input tensors (empty = contiguous)\n";
+            for (const auto &name : fInputTensorNames)
+               fGC += "std::vector<size_t> " + GetInputStrideMember(name) + ";\n";
+         }
+
+         // the session of a sub-graph is created by the session of the main model, which gives it the strides
+         if (fStridedInput && fIsSubGraph) {
+            fGC += "\nvoid SetInputStrides(std::vector<std::vector<size_t>> const &inputStrides) {\n";
+            fGC += GenerateInputStrideInitCode();
+            for (auto &graph : fSubGraphs)
+               fGC += "   fSession_" + graph->fName + ".SetInputStrides(inputStrides);\n";
+            fGC += "}\n";
+         }
 
          fGC += "\nvoid InitSession(" + initParams + ") {\n";
          fGC += ctorBody;
@@ -1105,11 +1156,11 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
             }
          } else {
             if (single_initialized_operators.find(fOperators[id]->GetKind()) != single_initialized_operators.end()) {
-               if (registered_operators.find(fOperators[id]->GetKind()) == registered_operators.end()) {
+               if (registered_operators.find(kernelKey(id)) == registered_operators.end()) {
                   if (fVerbose)
                      std::cout << "Declaring ALPAKA kernel for operator " << toString(fOperators[id]->GetKind()) << std::endl;
                   fGC += fOperators[id]->Generate_GPU_Kernel_Definitions_ALPAKA(std::to_string(id));
-                  registered_operators.insert(fOperators[id]->GetKind());
+                  registered_operators.insert(kernelKey(id));
                }
             } else {
                if (fVerbose)
@@ -1192,6 +1243,15 @@ void RModel::GenerateGPU_ALPAKA(std::underlying_type_t<Options> options, int bat
 
    if (static_cast<std::underlying_type_t<Options>>(Options::kLowRankFactorize) & options)
       fLowRankFactorize = true;
+
+   if (static_cast<std::underlying_type_t<Options>>(Options::kStridedInput) & options) {
+      // without a Session (Options::kKernelOnly) the strides are not stored: the strided kernels take them as an
+      // argument (sofie_strided_layout), and the header defines the layout and the offset function
+      if (!fUseSession && !fKernelOnly)
+         throw std::runtime_error("sofie: RModel::Generate: Options::kStridedInput requires a Session class "
+                                  "(the strides are passed to its constructor)");
+      fStridedInput = true;
+   }
 
    Initialize(batchSize, verbose);
 

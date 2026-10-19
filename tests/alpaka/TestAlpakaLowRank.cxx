@@ -1,14 +1,11 @@
 #include "TestAlpakaCommon.h"
+#include "common/lowrank_test_utils.h"
 
 #include "LowRankGemm_Dense_GPU_ALPAKA.hxx"
 #include "LowRankGemm_LowRank_GPU_ALPAKA.hxx"
 
 #include <cmath>
 #include <random>
-
-namespace {
-constexpr size_t kM = 4, kK = 64, kN = 32, kRank = 16;
-}
 
 // GPU counterpart of TestLowRankFactorization.cxx: validates that the chained
 // low-rank Gemm codegen emitted by Generate_GPU_ALPAKA (two blas.matmul/blas.gemm
@@ -17,10 +14,7 @@ constexpr size_t kM = 4, kK = 64, kN = 32, kRank = 16;
 // reconstructing A*B on the host from the factors actually baked into the Session.
 TEST_F(SofieAlpakaTest, LowRankMatchesFactorReconstruction)
 {
-   std::mt19937 rng(7);
-   std::normal_distribution<float> dist(0.f, 1.f);
-   std::vector<float> x(kM * kK);
-   for (auto &v : x) v = dist(rng);
+   auto x = MakeInput();
 
    auto A = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{kM * kK}));
    float *A_ptr = reinterpret_cast<float *>(alpaka::getPtrNative(A));
@@ -69,10 +63,7 @@ TEST_F(SofieAlpakaTest, LowRankMatchesFactorReconstruction)
 // unaffected: same weight matrix, straight single-GEMM codegen.
 TEST_F(SofieAlpakaTest, DenseGpuUnaffectedByFeature)
 {
-   std::mt19937 rng(7);
-   std::normal_distribution<float> dist(0.f, 1.f);
-   std::vector<float> x(kM * kK);
-   for (auto &v : x) v = dist(rng);
+   auto x = MakeInput();
 
    auto A = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{kM * kK}));
    float *A_ptr = reinterpret_cast<float *>(alpaka::getPtrNative(A));

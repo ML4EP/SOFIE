@@ -57,6 +57,9 @@ public:
          throw std::runtime_error("SOFIE RMSNorm: scale tensor " + fNScale + " not found");
 
       fShapeX   = model.GetDimTensorShape(fNX);
+      fHasStridedInput = model.IsStridedInputTensor(fNX) && !fShapeX.empty();
+      if (model.IsStridedInputTensor(fNScale))
+         throw std::runtime_error("SOFIE RMSNorm - strided input is only supported for the data tensor X");
       fShapeY   = fShapeX;
       fShapeScale = model.GetDimTensorShape(fNScale);
       fType     = ConvertTypeToString(model.GetTensorType(fNX));
@@ -73,6 +76,8 @@ public:
       model.AddNeededStdLib("cmath");
    }
 
+   bool SupportsStridedInput() const override { return true; }
+
    std::string Generate(std::string opName) override {
       opName = "op_" + opName;
       if (fShapeX.empty())
@@ -84,6 +89,10 @@ public:
 
       std::stringstream out;
       out << "\n//---- RMSNorm operator " << opName << "\n";
+      // a strided input is read through its strides, from the logical (contiguous) index of its elements
+      const std::string readX = fHasStridedInput ? "tensor_" + fNX + "[xoff_" + opName + "(idx)]" : "tensor_" + fNX + "[idx]";
+      if (fHasStridedInput)
+         out << GenerateStridedOffsetLambda(opName, fNX, fShapeX);
 
       for (size_t i = 0; i < fAxis; ++i)
          out << SP << "for (size_t a_" << i << " = 0; a_" << i << " < " << shape[i] << "; ++a_" << i << ") {\n";
@@ -105,7 +114,7 @@ public:
       out << SP << SP << SP << "size_t idx = row_base";
       for (size_t j = fAxis; j < fRank; ++j) out << " + n_" << j << " * " << strides[j].GetVal();
       out << ";\n";
-      out << SP << SP << SP << fType << " v = tensor_" << fNX << "[idx];\n";
+      out << SP << SP << SP << fType << " v = " << readX << ";\n";
       out << SP << SP << SP << "rms_sum += v * v;\n";
       for (size_t j = fAxis; j < fRank; ++j) out << SP << SP << "}\n";
 
@@ -130,7 +139,7 @@ public:
          if (first) out << "0";
       }
       out << ";\n";
-      out << SP << SP << SP << "tensor_" << fNY << "[idx] = tensor_" << fNScale << "[s_idx] * tensor_" << fNX << "[idx] * inv_rms;\n";
+      out << SP << SP << SP << "tensor_" << fNY << "[idx] = tensor_" << fNScale << "[s_idx] * " << readX << " * inv_rms;\n";
       for (size_t j = fAxis; j < fRank; ++j) out << SP << SP << "}\n";
       for (size_t i = 0; i < fAxis; ++i) out << SP << "}\n";
 
@@ -162,6 +171,10 @@ public:
       auto normStrides  = UTILITY::ComputeStrideFromShape(fNormShape);
 
       std::string kname = "RMSNormKernel_" + opName;
+      // a strided input is read through its strides, from the logical (contiguous) index of its elements
+      auto rdX = [&](const std::string &index) {
+         return fHasStridedInput ? StridedKernelRead("X", "layoutX", index) : "X[" + index + "]";
+      };
       std::string op;
       op  = "\n//------ RMSNORM_KERNEL_ALPAKA\n";
       op += SP + "struct " + kname + " {\n";
@@ -173,6 +186,8 @@ public:
       op += SP + SP + SP + "T* __restrict__ Y";
       for (auto &p : dynParamNames)
          op += ",\n" + SP + SP + SP + "std::size_t const " + p;
+      if (fHasStridedInput)
+         op += ",\n" + SP + SP + SP + "sofie_strided_layout<" + std::to_string(fRank) + "> const layoutX";
       op += ",\n" + SP + SP + SP + "std::size_t const axesLength) const {\n\n";
 
       std::string eps = std::to_string(fAttrEpsilon);
@@ -227,7 +242,7 @@ public:
          op += SP + SP + SP + "}\n\n";
 
          op += SP + SP + SP + "std::size_t const norm_idx = row_base + norm_offset;\n";
-         op += SP + SP + SP + "T const val = in_range ? X[norm_idx] : static_cast<T>(0);\n\n";
+         op += SP + SP + SP + "T const val = in_range ? " + rdX("norm_idx") + " : static_cast<T>(0);\n\n";
 
          // Pass 1: sum of squares
          op += SP + SP + SP + "// Pass 1: sum(X^2) via shared-memory tree reduction\n";
@@ -278,7 +293,7 @@ public:
          op += SP + SP + SP + SP + SP + "std::size_t const idx = row_base";
          for (size_t j = fAxis; j < fRank; ++j) op += " + n_" + std::to_string(j) + " * " + sz(strides[j].GetVal());
          op += ";\n";
-         op += SP + SP + SP + SP + SP + "T v = X[idx]; rms_sum += v * v;\n";
+         op += SP + SP + SP + SP + SP + "T v = " + rdX("idx") + "; rms_sum += v * v;\n";
          for (size_t j = fAxis; j < fRank; ++j) op += SP + SP + SP + SP + "}\n";
          op += SP + SP + SP + SP + "T const inv_rms = static_cast<T>(1) / sqrt(acc,"
                " rms_sum / static_cast<T>(" + nl + ") + static_cast<T>(" + eps + "));\n\n";
@@ -300,7 +315,7 @@ public:
             if (fRank == fAxis) op += "0u";
          }
          op += ";\n";
-         op += SP + SP + SP + SP + SP + "Y[idx] = scale[s_idx] * X[idx] * inv_rms;\n";
+         op += SP + SP + SP + SP + SP + "Y[idx] = scale[s_idx] * " + rdX("idx") + " * inv_rms;\n";
          for (size_t j = fAxis; j < fRank; ++j) op += SP + SP + SP + SP + "}\n";
 
          op += SP + SP + SP + "}\n";
@@ -335,10 +350,14 @@ public:
          "alpaka::getPtrNative(deviceBuf_" + fNY + ")";
       for (auto &p : dynParamNames)
          args += ", static_cast<std::size_t>(" + p + ")";
+      if (fHasStridedInput)
+         args += ", layout_" + opName + "_X";
       args += ", static_cast<Idx>(" + fAxesLength + ")";
 
       std::stringstream out;
       out << "\n//------ RMSNORM_GPU_ALPAKA\n";
+      if (fHasStridedInput)
+         out << GenerateStridedBroadcastLayout(opName + "_X", fNX, fShapeX, fShapeX.size(), fShapeX);
       if (canParallel) {
          out << SP << "alpaka::WorkDivMembers<Dim, Idx> workDiv_" << opName << "(\n";
          out << SP << SP << "Vec::all(Idx{" << fAxesLength << "}),\n";

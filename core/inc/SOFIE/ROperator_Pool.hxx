@@ -49,6 +49,7 @@ private:
    std::string fNY;
 
    std::vector<size_t> fShapeX;
+   std::vector<Dim> fShapeXDim; ///< shape of the input with the (possibly symbolic) batch dimension
    std::vector<size_t> fShapeY;
 
    std::string fBatchExpr;
@@ -214,6 +215,8 @@ public:
                + fNX + " may be dynamic - channel and spatial dimensions must be static");
       }
       fBatchExpr = dimShapeX[0].GetVal();
+      fShapeXDim = dimShapeX;
+      fHasStridedInput = model.IsStridedInputTensor(fNX);
       fShapeX.resize(dimShapeX.size());
       fShapeX[0] = dimShapeX[0].isParam ? size_t(1) : dimShapeX[0].dim;
       for (size_t i = 1; i < dimShapeX.size(); i++)
@@ -248,6 +251,7 @@ public:
       return out.str();
    }
 
+   bool SupportsStridedInput() const override { return true; }
 
    std::string Generate(std::string OpName) override {
       OpName = "op_" + OpName;
@@ -260,6 +264,9 @@ public:
 
       out << "\n//----  operator " << Name() << "  " << OpName << "\n";
       out << "{\n"; // create a new scope to avoid name clash
+      // a strided input is read through its strides, from the logical (contiguous) index of its elements
+      if (fHasStridedInput)
+         out << GenerateStridedOffsetLambda(OpName, fNX, fShapeXDim);
 
       assert(fShapeX[0] == fShapeY[0]);
       assert(fShapeX[1] == fShapeY[1]);
@@ -468,8 +475,15 @@ public:
       // end scope
       out << SP << "}\n";
 
-
-      return out.str();
+      std::string code = out.str();
+      if (fHasStridedInput) {
+         // all the reads of the input use the contiguous index of the element
+         const std::string plain = "tensor_" + fNX + "[index]";
+         const std::string strided = "tensor_" + fNX + "[xoff_" + OpName + "(index)]";
+         for (size_t pos = code.find(plain); pos != std::string::npos; pos = code.find(plain, pos + strided.size()))
+            code.replace(pos, plain.size(), strided);
+      }
+      return code;
    }
 
    std::string Generate_GPU_Kernel_ALPAKA(std::string opName) override {
@@ -499,13 +513,17 @@ public:
          }
          return s;
       };
+      // a strided input is read through its strides, from the logical (contiguous) index of its elements
+      auto xAt = [&](const std::string &xidx) {
+         return fHasStridedInput ? StridedKernelRead("X", "layoutX", xidx) : "X[" + xidx + "]";
+      };
       auto emitAccum = [&](const std::string & ind, const std::string & xidx) {
          std::string s;
          if (isAvg) {
-            s += ind + "value += X[" + xidx + "];\n";
+            s += ind + "value += " + xAt(xidx) + ";\n";
             if (runtimeCount) s += ind + "++count;\n";
          } else {
-            s += ind + "T xv = X[" + xidx + "];\n";
+            s += ind + "T xv = " + xAt(xidx) + ";\n";
             s += ind + "if (xv > value) value = xv;\n";
          }
          return s;
@@ -525,7 +543,10 @@ public:
       op << SP << SP << SP << "TAcc const& acc,\n";
       op << SP << SP << SP << "T const* __restrict__ X,\n";
       op << SP << SP << SP << "T* __restrict__ Y,\n";
-      op << SP << SP << SP << "std::size_t const totalOut) const {\n\n";
+      op << SP << SP << SP << "std::size_t const totalOut";
+      if (fHasStridedInput)
+         op << ",\n" << SP << SP << SP << "sofie_strided_layout<" << fShapeX.size() << "> const layoutX";
+      op << ") const {\n\n";
 
       if (fDim == 1) {
          op << SP << SP << SP << "constexpr int H        = " << fShapeX[2]          << ";\n";
@@ -663,6 +684,8 @@ public:
 
       std::stringstream out;
       out << "\n//------ " << (isAvg ? "AVGPOOL" : "MAXPOOL") << "_GPU_ALPAKA\n";
+      if (fHasStridedInput)
+         out << GenerateStridedBroadcastLayout(opName + "_X", fNX, fShapeXDim, fShapeXDim.size(), fShapeXDim);
       out << SP << "auto const elementsPerThread_" << fNY << " = Vec::all(static_cast<Idx>(1));\n";
       out << SP << "auto const elementsPerGrid_"   << fNY << " = Vec::all(Idx{static_cast<Idx>(" << totalOut << ")});\n";
       out << SP << "auto const workDiv_" << fNY << " = sofie_workdiv(elementsPerGrid_" << fNY << ");\n";
@@ -671,7 +694,8 @@ public:
           << ", " << kname
           << ", alpaka::getPtrNative(deviceBuf_" << fNX << ")"
           << ", alpaka::getPtrNative(deviceBuf_" << fNY << ")"
-          << ", static_cast<Idx>(" << totalOut << "));\n";
+          << ", static_cast<Idx>(" << totalOut << ")"
+          << (fHasStridedInput ? ", layout_" + opName + "_X" : std::string()) << ");\n";
       out << SP << "alpaka::enqueue(queue, task_" << fNY << ");\n";
 
       return out.str();

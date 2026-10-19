@@ -17,6 +17,7 @@ private:
    std::vector<Dim> fShapeX;
    std::string fB, fL, fD;
    std::string fType;
+   std::vector<StridedInputInfo> fInputs; ///< X and the gate A, read through their strides if they are graph inputs
 
 public:
    ROperator_GriffinRGLRU() {}
@@ -43,6 +44,9 @@ public:
       fShapeX = model.GetDimTensorShape(fNX);
       if (fShapeX.size() != 3)
          throw std::runtime_error("SOFIE GriffinRGLRU: input must be rank-3 [B, L, D]");
+      fInputs = {{fNX, "X", fShapeX, model.IsStridedInputTensor(fNX)},
+                 {fNA, "A", model.GetDimTensorShape(fNA), model.IsStridedInputTensor(fNA)}};
+      fHasStridedInput = fInputs[0].strided || fInputs[1].strided;
 
       fType = ConvertTypeToString(model.GetTensorType(fNX));
       fB = fShapeX[0].GetVal();
@@ -53,6 +57,8 @@ public:
       model.AddIntermediateTensor(fNState, model.GetTensorType(fNX), { fShapeX[0], fShapeX[2] });
       model.AddNeededStdLib("cmath");
    }
+
+   bool SupportsStridedInput() const override { return true; }
 
    std::string Generate(std::string opName) override {
       opName = "op_" + opName;
@@ -68,10 +74,14 @@ public:
       out << SP << SP << SP << SP << "tensor_" << fNState << "[b*" << fD << " + d] = h_new;\n";
       out << SP << SP << SP << SP << "tensor_" << fNY << "[b*" << fL << "*" << fD << " + t*" << fD << " + d] = h_new;\n";
       out << SP << SP << SP << "}\n" << SP << SP << "}\n" << SP << "}\n";
-      return out.str();
+      return RewriteCpuStridedReads(opName, fInputs, out.str());
    }
 
    std::string Generate_GPU_Kernel_ALPAKA(std::string opName) override {
+      return RewriteKernelStridedInputs(GenerateRglruKernel(std::move(opName)), fInputs, "std::size_t const D");
+   }
+
+   std::string GenerateRglruKernel(std::string opName) {
       opName = "op_" + opName;
       std::string kname = "RGLRUKernel_" + opName;
       std::string out;
@@ -126,6 +136,7 @@ public:
       std::stringstream out;
       out << "\n//------ GRIFFIN_RGLRU_GPU_ALPAKA\n";
       out << SP << "{\n";
+      out << StridedLaunchLayouts(opName, fInputs);
       out << SP << SP << "auto const elementsPerGrid_" << opName
           << " = Vec::all(Idx{" << fB << " * " << fD << "});\n";
       out << SP << SP << "auto const workDiv_" << opName
@@ -139,7 +150,7 @@ public:
           << "alpaka::getPtrNative(deviceBuf_" << fNState << "), "
           << "static_cast<Idx>(" << fB << "), "
           << "static_cast<Idx>(" << fL << "), "
-          << "static_cast<Idx>(" << fD << "));\n";
+          << "static_cast<Idx>(" << fD << ")" << StridedLayoutArgs(opName, fInputs) << ");\n";
       out << SP << SP << "alpaka::enqueue(queue, task_" << opName << ");\n";
       out << SP << "}\n";
       return out.str();

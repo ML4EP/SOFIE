@@ -64,6 +64,9 @@ public:
                                   "' must have at least 2 dimensions, got " +
                                   std::to_string(fShape.size()));
 
+      fHasStridedInput = model.IsStridedInputTensor(fNX);
+      if (!fNK.empty() && model.IsStridedInputTensor(fNK))
+         throw std::runtime_error("SOFIE Trilu - strided input is only supported for the data tensor");
       fN = fShape.back();
       fM = fShape[fShape.size() - 2];
       fTotal = ConvertDimShapeToLength(fShape);
@@ -92,6 +95,8 @@ public:
       }
    }
 
+   bool SupportsStridedInput() const override { return true; }
+
    std::string Generate(std::string OpName) override {
       OpName = "op_" + OpName;
       if (fShape.empty())
@@ -100,6 +105,9 @@ public:
 
       std::stringstream out;
       out << "\n//------ TRILU\n";
+      // a strided input is read through its strides, from the logical (contiguous) index of its elements
+      if (fHasStridedInput)
+         out << GenerateStridedOffsetLambda(OpName, fNX, fShape);
 
       if (fKIsStatic) {
          out << SP << "const int64_t k_" << OpName << " = " << fK << "LL;\n";
@@ -121,7 +129,8 @@ public:
          out << SP << SP << "const bool keep = (col <= row + k_" << OpName << ");\n";
       }
       out << SP << SP << "tensor_" << fNY << "[id] = keep ? tensor_" << fNX
-                      << "[id] : static_cast<T>(0);\n";
+                      << (fHasStridedInput ? "[xoff_" + OpName + "(id)]" : std::string("[id]"))
+                      << " : static_cast<" << TensorType<T>::Name() << ">(0);\n";
       out << SP << "}\n";
 
       return out.str();
@@ -144,7 +153,9 @@ public:
                << "const std::size_t total, "
                << "const std::size_t M, "
                << "const std::size_t N, "
-               << "const std::ptrdiff_t k) const {\n";
+               << "const std::ptrdiff_t k"
+               << (fHasStridedInput ? ", sofie_strided_layout<" + std::to_string(fShape.size()) + "> const layoutX" : std::string())
+               << ") const {\n";
       op << SP << SP << "auto const idx = "
                << "alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
       op << SP << SP << "if (idx >= total) return;\n";
@@ -159,7 +170,8 @@ public:
       } else {
          op << SP << SP << "const bool keep = (col <= row + k);\n";
       }
-      op << SP << SP << "output[idx] = keep ? input[idx] : T(0);\n";
+      op << SP << SP << "output[idx] = keep ? "
+         << (fHasStridedInput ? StridedKernelRead("input", "layoutX", "idx") : std::string("input[idx]")) << " : T(0);\n";
       op << SP << "}\n";
       op << "};\n";
       return op.str();
@@ -178,6 +190,8 @@ public:
       std::string cleanOp = "op_" + OpName;
       std::stringstream out;
       out << "\n//------ TRILU_GPU_ALPAKA\n";
+      if (fHasStridedInput)
+         out << GenerateStridedBroadcastLayout(cleanOp + "_X", fNX, fShape, fShape.size(), fShape);
 
       if (fKIsStatic) {
          out << SP << "const std::ptrdiff_t k_" << cleanOp
@@ -210,7 +224,7 @@ public:
           << ", static_cast<std::size_t>(" << fTotal << ")"
           << ", static_cast<std::size_t>(" << fM.GetVal() << ")"
           << ", static_cast<std::size_t>(" << fN.GetVal() << ")"
-          << ", k_" << cleanOp << ");\n";
+          << ", k_" << cleanOp << (fHasStridedInput ? ", layout_" + cleanOp + "_X" : std::string()) << ");\n";
       out << SP << "alpaka::enqueue(queue, task_" << cleanOp << ");\n";
       return out.str();
    }

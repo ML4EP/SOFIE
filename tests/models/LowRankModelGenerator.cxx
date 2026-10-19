@@ -8,6 +8,8 @@
 // - Emits a LeakyRelu model in Options::kKernelOnly mode (Alpaka kernel
 //   struct only, no Session/infer) for alpaka/TestAlpakaKernelOnly.cxx.
 
+#include "common/lowrank_test_utils.h"
+
 #include "SOFIE/RModel.hxx"
 #include "SOFIE/ROperator_Gemm.hxx"
 #include "SOFIE/ROperator_LeakyRelu.hxx"
@@ -19,11 +21,7 @@ using namespace SOFIE;
 
 namespace {
 
-// shared across all four emitted models so they represent the exact same weight matrix
-constexpr size_t kM = 4;  // batch
-constexpr size_t kK = 64; // in features
-constexpr size_t kN = 32; // out features
-
+// the weight matrix is shared across all four emitted models, so they represent the exact same Gemm
 void FillWeights(std::vector<float> &W, std::vector<float> &Bias)
 {
    std::mt19937 rng(1234);

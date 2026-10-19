@@ -47,7 +47,8 @@ private:
 
    bool IsDepthwise1D_GPU() const
    {
-      return fDim == 1 && fShapeX.size() == 3 && fShapeY.size() == 3 &&
+      // (a strided input is read by the general im2col kernel)
+      return !fHasStridedInput && fDim == 1 && fShapeX.size() == 3 && fShapeY.size() == 3 &&
              !fShapeX[1].isParam && !fShapeX[2].isParam && !fShapeY[2].isParam &&
              fShapeW.size() == 3 && fAttrGroup == fShapeX[1].dim &&
              fShapeW[0] == fShapeX[1].dim && fShapeW[1] == 1;
@@ -267,6 +268,9 @@ public:
             std::runtime_error("SOFIE Conv op Input Tensor " + fNX + " is not found in model");
       }
       fShapeX = model.GetDimTensorShape(fNX);
+      fHasStridedInput = model.IsStridedInputTensor(fNX);
+      if (model.IsStridedInputTensor(fNW) || (!fNB.empty() && model.IsStridedInputTensor(fNB)))
+         throw std::runtime_error("SOFIE Conv Op - strided input is only supported for the data tensor X");
       if (fShapeX.size() < 3 || fShapeX.size()  > 5) {
          std::cout << fNX << " : " << ConvertDimShapeToString(fShapeX) << std::endl;
          throw
@@ -356,9 +360,9 @@ public:
       }
 
       if (fDim < 3)
-         model.AddNeededHelperFunction("Im2col");
+         model.AddNeededHelperFunction(fHasStridedInput ? "Im2col_strided" : "Im2col");
       else
-         model.AddNeededHelperFunction("Im2col_3d");
+         model.AddNeededHelperFunction(fHasStridedInput ? "Im2col_3d_strided" : "Im2col_3d");
       model.AddNeededHelperFunction("Gemm_Call");
       if (fBroadcastBias)
          model.AddNeededHelperFunction("UnidirectionalBroadcast");
@@ -392,6 +396,8 @@ public:
       return out.str();
    }
 
+   bool SupportsStridedInput() const override { return true; }
+
    std::string Generate(std::string OpName) override {
       OpName = "op_" + OpName;
 
@@ -419,6 +425,10 @@ public:
       auto inputBatchStride =  ConvertDimShapeToLength(std::vector<Dim>{fShapeX[1] , iDepth, iHeight, iWidth}); // size of C * D * H * W
 
       out << "\n//----  operator Conv " << OpName << "\n";
+      // a strided input is read through its strides by a strided im2col
+      const std::string strX = "strX_" + OpName;
+      if (fHasStridedInput)
+         out << GenerateInputStrideArray(strX, fNX, fShapeX);
 
       // vectorize the (dilated)convolution kernels into a matrix
       // no need to transpose the matrix
@@ -493,7 +503,10 @@ public:
       out << SP << SP << "size_t out_offset = n * " << outputBatchStride  << ";\n";
 
       if (fAttrGroup == 1) {
-         out << SP << SP << "size_t x_offset = n * " << inputBatchStride << ";\n";
+         if (fHasStridedInput)
+            out << SP << SP << "size_t x_offset = n * " << strX << "[0];\n";
+         else
+            out << SP << SP << "size_t x_offset = n * " << inputBatchStride << ";\n";
          // when using im2col - resulting matrix is transposed, the dimension is (input_c * filter_h * filter_y,  output_h *
          // output_w)
          if (fDim < 3) {
@@ -540,8 +553,11 @@ public:
          // group)
          // out << SP << SP << "size_t out_offset = n * " << fShapeY[1] * oDepth * oHeight * oWidth << ";\n";
          out << SP << SP << "for (size_t g = 0; g < " << fAttrGroup << "; g++) {\n";
-         out << SP << SP << "size_t x_offset = n * " << inputBatchStride << " + g * "
-             << fShapeW[1] << " * " << inputChannelStride << ";\n ";
+         if (fHasStridedInput)
+            out << SP << SP << "size_t x_offset = n * " << strX << "[0] + g * " << fShapeW[1] << " * " << strX << "[1];\n ";
+         else
+            out << SP << SP << "size_t x_offset = n * " << inputBatchStride << " + g * "
+                << fShapeW[1] << " * " << inputChannelStride << ";\n ";
          out << SP << SP << "size_t g_offset = g * " << fShapeW[0] << " * (" << outputChannelStride << ") / " << fAttrGroup << ";\n ";
          out << SP << SP << "size_t out_offset = n * " << outputBatchStride << " + g_offset;\n";
 
@@ -598,6 +614,24 @@ public:
 
 
       out << SP << "}\n"; // end of batch size loop
+
+      if (fHasStridedInput) {
+         // use the strided im2col: append the strides of the channel, (depth,) height and width to each call
+         const std::string strides = fDim == 1 ? ", " + strX + "[1], 0, " + strX + "[2]"
+                                    : fDim == 2 ? ", " + strX + "[1], " + strX + "[2], " + strX + "[3]"
+                                                : ", " + strX + "[1], " + strX + "[2], " + strX + "[3], " + strX + "[4]";
+         std::string code = out.str();
+         for (const std::string &name : {std::string("Im2col"), std::string("Im2col_3d")}) {
+            const std::string call = "UTILITY::" + name + "<float>(";
+            const std::string end = "tensor_" + imcol + ");";
+            for (size_t pos = code.find(call); pos != std::string::npos; pos = code.find(call, pos + 1)) {
+               const size_t endPos = code.find(end, pos);
+               code.insert(endPos + end.size() - 2, strides);
+               code.replace(pos, call.size(), "UTILITY::" + name + "_strided<float>(");
+            }
+         }
+         return code;
+      }
 
       return out.str();
       }
@@ -751,6 +785,8 @@ public:
       op += SP + SP + SP + "T* __restrict__ col,\n";
       op += SP + SP + SP + "std::size_t const oDepth, std::size_t const oHeight, std::size_t const oWidth,\n";
       op += SP + SP + SP + "std::size_t const iDepth, std::size_t const iHeight, std::size_t const iWidth,\n";
+      if (fHasStridedInput)
+         op += SP + SP + SP + "sofie_strided_layout<" + std::to_string(fShapeX.size()) + "> const layoutX,\n";
       op += SP + SP + SP + "std::size_t const totalElements) const {\n\n";
 
       op += SP + SP + SP + "auto const global_thread_idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
@@ -825,10 +861,21 @@ public:
 
       op += SP + SP + SP + SP + "if (in_bounds) {\n";
       op += SP + SP + SP + SP + SP + "std::size_t const in_idx =\n";
+      if (fHasStridedInput) {
+         // strides of the channel, (depth,) height and width of the input given to the Session
+         const std::string s = "layoutX.stride[";
+         op += SP + SP + SP + SP + SP + SP + "ic * " + s + "1u] +\n";
+         if (fDim > 2)
+            op += SP + SP + SP + SP + SP + SP + "static_cast<std::size_t>(id_in) * " + s + "2u] +\n";
+         if (fDim > 1)
+            op += SP + SP + SP + SP + SP + SP + "static_cast<std::size_t>(ih_in) * " + s + std::to_string(fDim) + "u] +\n";
+         op += SP + SP + SP + SP + SP + SP + "static_cast<std::size_t>(iw_in) * " + s + std::to_string(fDim + 1) + "u];\n";
+      } else {
       op += SP + SP + SP + SP + SP + SP + "ic * (iDepth * iHeight * iWidth) +\n";
       op += SP + SP + SP + SP + SP + SP + "static_cast<std::size_t>(id_in) * (iHeight * iWidth) +\n";
       op += SP + SP + SP + SP + SP + SP + "static_cast<std::size_t>(ih_in) * iWidth +\n";
       op += SP + SP + SP + SP + SP + SP + "static_cast<std::size_t>(iw_in);\n";
+      }
       op += SP + SP + SP + SP + SP + "col[elem_idx] = input[in_idx];\n";
       op += SP + SP + SP + SP + "} else {\n";
       op += SP + SP + SP + SP + SP + "col[elem_idx] = static_cast<T>(0);\n";
@@ -918,6 +965,10 @@ public:
 
       std::stringstream out;
       out << "\n//------ CONV_GPU_ALPAKA\n";
+      if (fHasStridedInput) {
+         out << GenerateStridedBroadcastLayout(opName + "_X", fNX, fShapeX, fShapeX.size(), fShapeX);
+         im2colExtents += ", layout_" + opName + "_X";
+      }
 
       // dilation>1 leaves gaps in the dilated _f layout; zero it so those slots stay 0
       bool hasDilation = false;
@@ -945,7 +996,7 @@ public:
       // -----------------------------------------------------------------------
       out << SP << "for (std::size_t n = 0; n < " << bsize << "; n++) {\n\n";
       out << SP << SP << "std::size_t const x_offset   = n * ("
-         << strideX[0].GetVal() << ");\n";
+         << (fHasStridedInput ? "layout_" + opName + "_X.stride[0]" : strideX[0].GetVal()) << ");\n";
       out << SP << SP << "std::size_t const out_offset = n * ("
          << strideY[0].GetVal() << ");\n\n";
 
@@ -999,7 +1050,7 @@ public:
          // Each group processes fShapeW[1] input channels starting at g * fShapeW[1].
          out << SP << SP << "for (std::size_t g = 0; g < " << fAttrGroup << "; g++) {\n\n";
          out << SP << SP << SP << "std::size_t const g_in_offset  = x_offset   + g * ("
-               << std::to_string(fShapeW[1]) + " * " + strideX[1].GetVal() << ");\n";
+               << std::to_string(fShapeW[1]) + " * " + (fHasStridedInput ? "layout_" + opName + "_X.stride[1]" : strideX[1].GetVal()) << ");\n";
          out << SP << SP << SP << "std::size_t const g_out_offset = out_offset + g * ("
                << std::to_string(gemm.n) + " * " + gemm.m << ");\n";
          out << SP << SP << SP << "std::size_t const f_offset     = g * " << groupFOffset << "u;\n\n";

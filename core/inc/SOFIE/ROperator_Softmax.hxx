@@ -39,6 +39,7 @@ public:
          throw std::runtime_error("SOFIE Softmax Op Input Tensor is not found in model");
       }
       fShape = model.GetDimTensorShape(fNX);
+      fHasStridedInput = model.IsStridedInputTensor(fNX) && !fShape.empty();
       model.AddIntermediateTensor(fNY, model.GetTensorType(fNX), fShape);
       fType = ConvertTypeToString(model.GetTensorType(fNX));
       if (model.Verbose()) {
@@ -51,6 +52,8 @@ public:
             model.AddNeededCustomHeader("vdt/log.h");
       }
    }
+
+   bool SupportsStridedInput() const override { return true; }
 
    std::string Generate(std::string opName) override {
       opName = "op_" + opName;
@@ -67,8 +70,16 @@ public:
       std::string expFunction = (fUseVDT) ? "vdt::fast_expf" : "std::exp";
       std::string logFunction = (fUseVDT) ? "vdt::fast_logf" : "std::log";
 
+      // a strided input is read through its strides, with the generic code below (any axis) on logical indices
+      const std::string xAt = "xoff_" + opName;
+      auto readX = [&](const std::string &index) {
+         return fHasStridedInput ? "tensor_" + fNX + "[" + xAt + "(" + index + ")]" : "tensor_" + fNX + "[" + index + "]";
+      };
+      if (fHasStridedInput)
+         out << GenerateStridedOffsetLambda(opName, fNX, fShape);
+
       // Check if this is the special case where memory is contiguous.
-      if (axis == size - 1) {
+      if (axis == size - 1 && !fHasStridedInput) {
          std::string axis_size = fShape[axis].GetVal();
          std::string num_rows;
          if (IsInteger(length_str) && IsInteger(axis_size)) {
@@ -136,13 +147,15 @@ public:
          out << ";\n";
          // find maximum looping along reduced axis
          for (size_t j = 0; j < size-1; j++) out << SP;
-         out << fType << " vmax = tensor_" << fNX << "[index];\n";
+         out << fType << " vmax = " << readX("index") << ";\n";
          for (size_t j = 0; j < size-1; j++) out << SP;
          out << "for (int i = 1; i < " << fShape[axis] << "; i++) {\n";
          for (size_t j = 0; j < size; j++) out << SP;
-         out << fType << " x = tensor_" << fNX << "[index + i";
-         if (stride[axis].GetVal() != "1") out << "*(" << stride[axis] << ")";
-         out << "];\n";
+         {
+            std::string index = "index + i";
+            if (stride[axis].GetVal() != "1") index += "*(" + stride[axis].GetVal() + ")";
+            out << fType << " x = " << readX(index) << ";\n";
+         }
          for (size_t j = 0; j < size; j++) out << SP;
          out << "if (x > vmax) vmax = x;\n";
          for (size_t j = 0; j < size-1; j++) out << SP;
@@ -155,7 +168,7 @@ public:
          if (stride[axis].GetVal() != "1") out << "*(" << stride[axis] << ")";
          out << ";\n";
          for (size_t j = 0; j < size; j++) out << SP;
-         out << "tensor_" << fNY << "[id] = " << expFunction << "(tensor_" << fNX << "[id] - vmax);\n";
+         out << "tensor_" << fNY << "[id] = " << expFunction << "(" << readX("id") << " - vmax);\n";
          for (size_t j = 0; j < size; j++) out << SP;
          out << "sum += tensor_" << fNY << "[id];\n";
          for (size_t j = 0; j < size-1; j++) out << SP;
@@ -174,7 +187,7 @@ public:
          out << ";\n";
          for (size_t j = 0; j < size; j++) out << SP;
          if (fLogSoftmax)
-            out << "tensor_" << fNY << "[id] = tensor_" << fNX << "[id] - vmax - log_sum;\n";
+            out << "tensor_" << fNY << "[id] = " << readX("id") << " - vmax - log_sum;\n";
          else
             out << "tensor_" << fNY << "[id] /= sum;\n";
          for (size_t j = 0; j < size-1; j++) out << SP;
@@ -215,6 +228,11 @@ public:
 
       // block-per-row online softmax
 
+      // a strided input is read through its strides, from the logical (contiguous) index of its elements
+      auto readX = [&](const std::string &index) {
+         return fHasStridedInput ? StridedKernelRead("X", "layoutX", index) : "X[" + index + "]";
+      };
+
       std::string op;
       op  = "\n//------ SOFTMAX_KERNEL_ALPAKA\n";
       op += SP + "struct " + kname + " {\n";
@@ -225,6 +243,8 @@ public:
       op += SP + SP + SP + "T* __restrict__ Y,\n";
       for (auto &p : dynParamNames)
          op += SP + SP + SP + "std::size_t const " + p + ",\n";
+      if (fHasStridedInput)
+         op += SP + SP + SP + "sofie_strided_layout<" + std::to_string(fShape.size()) + "> const layoutX,\n";
       op += SP + SP + SP + "std::size_t const numRows) const {\n\n";
 
       // declared before the early return so every thread reaches the collective declaration
@@ -240,10 +260,10 @@ public:
       op += SP + SP + SP + "std::size_t const row_base = (row / inner_stride) * row_block + (row % inner_stride);\n\n";
 
       op += SP + SP + SP + "// fused pass: running (max, sum) per thread\n";
-      op += SP + SP + SP + "T m = X[row_base];\n";
+      op += SP + SP + SP + "T m = " + readX("row_base") + ";\n";
       op += SP + SP + SP + "T d = static_cast<T>(0);\n";
       op += SP + SP + SP + "for (std::size_t l = tid; l < axis_size; l += " + bs + "u) {\n";
-      op += SP + SP + SP + SP + "T x = X[row_base + l * inner_stride];\n";
+      op += SP + SP + SP + SP + "T x = " + readX("row_base + l * inner_stride") + ";\n";
       op += SP + SP + SP + SP + "T m_new = (x > m) ? x : m;\n";
       op += SP + SP + SP + SP + "d = d * exp(acc, m - m_new) + exp(acc, x - m_new);\n";
       op += SP + SP + SP + SP + "m = m_new;\n";
@@ -273,9 +293,9 @@ public:
       op += SP + SP + SP + "for (std::size_t l = tid; l < axis_size; l += " + bs + "u) {\n";
       op += SP + SP + SP + SP + "std::size_t const idx = row_base + l * inner_stride;\n";
       if (fLogSoftmax) {
-         op += SP + SP + SP + SP + "Y[idx] = X[idx] - vmax - log(acc, sum);\n";
+         op += SP + SP + SP + SP + "Y[idx] = " + readX("idx") + " - vmax - log(acc, sum);\n";
       } else {
-         op += SP + SP + SP + SP + "T e = exp(acc, X[idx] - vmax) * inv;\n";
+         op += SP + SP + SP + SP + "T e = exp(acc, " + readX("idx") + " - vmax) * inv;\n";
          op += SP + SP + SP + SP + "Y[idx] = e;\n";
       }
       op += SP + SP + SP + "}\n";
@@ -306,6 +326,8 @@ public:
 
       std::stringstream out;
       out << "\n//------ SOFTMAX_GPU_ALPAKA\n";
+      if (fHasStridedInput)
+         out << GenerateStridedBroadcastLayout(opName + "_X", fNX, fShape, fShape.size(), fShape);
       out << SP << "alpaka::WorkDivMembers<Dim, Idx> workDiv_" << opName << "(\n";
       out << SP << SP << "Vec::all(static_cast<Idx>(" << s.nSlices << ")),\n";   //blocks: one per row
       out << SP << SP << "Vec::all(Idx{" << kBlock << "u}),\n";                    //threads per block
@@ -315,6 +337,7 @@ public:
           << ", alpaka::getPtrNative(deviceBuf_" << fNX << ")"
           << ", alpaka::getPtrNative(deviceBuf_" << fNY << ")"
           << dynArgs
+          << (fHasStridedInput ? ", layout_" + opName + "_X" : std::string())
           << ", static_cast<Idx>(" << s.nSlices << "));\n";
       out << SP << "alpaka::enqueue(queue, task_" << opName << ");\n";
       return out.str();

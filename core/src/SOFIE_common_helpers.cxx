@@ -139,6 +139,105 @@ void Im2col_3d(const T *data_im, const int channels,
 }
 )SOFIE";
 
+constexpr const char *kIm2colStrided = R"SOFIE(
+// same as Im2col for an input read through its strides (in elements) for the channel, the height and the width
+template <typename T>
+void Im2col_strided(const T *data_im, const int channels, const int height, const int width, const int kernel_h,
+                    const int kernel_w, const int pad_h_begin, const int pad_h_end, const int pad_w_begin,
+                    const int pad_w_end, const int stride_h, const int stride_w, const int dilation_h,
+                    const int dilation_w, T *data_col, const size_t channel_stride, const size_t height_stride,
+                    const size_t width_stride)
+{
+   const int output_h = (height + pad_h_begin + pad_h_end - (dilation_h * (kernel_h - 1) + 1)) / stride_h + 1;
+   const int output_w = (width + pad_w_begin + pad_w_end - (dilation_w * (kernel_w - 1) + 1)) / stride_w + 1;
+   for (int channel = 0; channel < channels; channel++, data_im += channel_stride) {
+      for (int kernel_row = 0; kernel_row < kernel_h; kernel_row++) {
+         for (int kernel_col = 0; kernel_col < kernel_w; kernel_col++) {
+            int input_row = -pad_h_begin + kernel_row * dilation_h;
+            for (int output_rows = output_h; output_rows; output_rows--) {
+               if (!is_a_ge_zero_and_a_lt_b(input_row, height)) {
+                  for (int output_cols = output_w; output_cols; output_cols--) {
+                     *(data_col++) = 0;
+                  }
+               } else {
+                  int input_col = -pad_w_begin + kernel_col * dilation_w;
+                  for (int output_col = output_w; output_col; output_col--) {
+                     if (is_a_ge_zero_and_a_lt_b(input_col, width)) {
+                        *(data_col++) = data_im[input_row * height_stride + input_col * width_stride];
+                     } else {
+                        *(data_col++) = 0;
+                     }
+                     input_col += stride_w;
+                  }
+               }
+               input_row += stride_h;
+            }
+         }
+      }
+   }
+}
+)SOFIE";
+
+constexpr const char *kIm2col3dStrided = R"SOFIE(
+// same as Im2col_3d for an input read through its strides (in elements) for the channel, the depth, the height and the
+// width
+template <typename T>
+void Im2col_3d_strided(const T *data_im, const int channels,
+                       const int depth, const int height, const int width,
+                       const int kernel_d, const int kernel_h, const int kernel_w,
+                       const int pad_d_begin, const int pad_d_end, const int pad_h_begin, const int pad_h_end,
+                       const int pad_w_begin, const int pad_w_end,
+                       const int stride_d, const int stride_h, const int stride_w,
+                       const int dilation_d, const int dilation_h, const int dilation_w, T *data_col,
+                       const size_t channel_stride, const size_t depth_stride, const size_t height_stride,
+                       const size_t width_stride)
+{
+   const int output_h = (height + pad_h_begin + pad_h_end - (dilation_h * (kernel_h - 1) + 1)) / stride_h + 1;
+   const int output_w = (width + pad_w_begin + pad_w_end - (dilation_w * (kernel_w - 1) + 1)) / stride_w + 1;
+   const int output_d = (depth + pad_d_begin + pad_d_end - (dilation_d * (kernel_d - 1) + 1)) / stride_d + 1;
+   for (int channel = 0; channel < channels; channel++, data_im += channel_stride) {
+      for (int kernel_depth = 0; kernel_depth < kernel_d; kernel_depth++) {
+         for (int kernel_row = 0; kernel_row < kernel_h; kernel_row++) {
+            for (int kernel_col = 0; kernel_col < kernel_w; kernel_col++) {
+               int input_dep = -pad_d_begin + kernel_depth * dilation_d;
+               for (int output_dep = output_d; output_dep; output_dep--) {
+                  if (!is_a_ge_zero_and_a_lt_b(input_dep, depth)) {
+                     for (int output_rows = output_h; output_rows; output_rows--) {
+                        for (int output_cols = output_w; output_cols; output_cols--) {
+                           *(data_col++) = 0;
+                        }
+                     }
+                  } else {
+                     int input_row = -pad_h_begin + kernel_row * dilation_h;
+                     for (int output_rows = output_h; output_rows; output_rows--) {
+                        if (!is_a_ge_zero_and_a_lt_b(input_row, height)) {
+                           for (int output_cols = output_w; output_cols; output_cols--) {
+                              *(data_col++) = 0;
+                           }
+                        } else {
+                           int input_col = -pad_w_begin + kernel_col * dilation_w;
+                           for (int output_col = output_w; output_col; output_col--) {
+                              if (is_a_ge_zero_and_a_lt_b(input_col, width)) {
+                                 *(data_col++) = data_im[input_dep * depth_stride + input_row * height_stride +
+                                                         input_col * width_stride];
+                              } else {
+                                 *(data_col++) = 0;
+                              }
+                              input_col += stride_w;
+                           }
+                        }
+                        input_row += stride_h;
+                     }
+                  }
+                  input_dep += stride_d;
+               }
+            }
+         }
+      }
+   }
+}
+)SOFIE";
+
 constexpr const char *kCol2im = R"SOFIE(
 template <typename Dtype>
 void col2im(const Dtype *data_col, const int channels,
@@ -319,6 +418,19 @@ inline void Gemm_Call(float *output, bool transa, bool transb, int m, int n, int
       std::copy(C, C + m * n, output);
    }
    BLAS::sgemm_(transa ? &ct : &cn, transb ? &ct : &cn, &m, &n, &k, &alpha, A, lda, B, ldb, &beta, output, ldc);
+}
+
+// same as Gemm_Call but with explicit leading dimensions of A and B (used for strided input tensors)
+inline void Gemm_Call_ld(float *output, bool transa, bool transb, int m, int n, int k, float alpha, const float *A,
+                         int lda, const float *B, int ldb, float beta, const float *C)
+{
+   char ct = 't';
+   char cn = 'n';
+   const int *ldc = &m;
+   if (C != nullptr) {
+      std::copy(C, C + m * n, output);
+   }
+   BLAS::sgemm_(transa ? &ct : &cn, transb ? &ct : &cn, &m, &n, &k, &alpha, A, &lda, B, &ldb, &beta, output, ldc);
 }
 )SOFIE";
 
@@ -1033,6 +1145,8 @@ HelperFunctionsCode GenerateHelperFunctionsCode(const std::set<std::string> &nee
 
    const bool im2col = need("Im2col");
    const bool im2col3d = need("Im2col_3d");
+   const bool im2colStrided = need("Im2col_strided");
+   const bool im2col3dStrided = need("Im2col_3d_strided");
    const bool col2im = need("col2im");
    const bool uniBroadcast = need("UnidirectionalBroadcast");
    const bool convBias = need("BroadcastConvBias");
@@ -1046,7 +1160,7 @@ HelperFunctionsCode GenerateHelperFunctionsCode(const std::set<std::string> &nee
    const bool inputDims = need("InputTensorDims");
    const bool dynMemory = need("DynamicMemory");
 
-   const bool im2colFamily = im2col || im2col3d || col2im;
+   const bool im2colFamily = im2col || im2col3d || col2im || im2colStrided || im2col3dStrided;
    const bool needConvertLength = uniBroadcast || convBias;
    const bool needConvertString = convBias;
 
@@ -1096,6 +1210,10 @@ HelperFunctionsCode GenerateHelperFunctionsCode(const std::set<std::string> &nee
          defs += kIm2col;
       if (im2col3d)
          defs += kIm2col3d;
+      if (im2colStrided)
+         defs += kIm2colStrided;
+      if (im2col3dStrided)
+         defs += kIm2col3dStrided;
       if (col2im)
          defs += kCol2im;
       if (uniBroadcast)

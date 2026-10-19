@@ -2,6 +2,7 @@
 #define SOFIE_TEST_ALPAKA_COMMON_H
 
 #include <numeric>
+#include <vector>
 #include <cstddef>
 #include <alpaka/alpaka.hpp>
 #include <cuda_runtime.h>
@@ -61,6 +62,20 @@ makeDeviceBuf(alpaka::DevCpu const& host,
    alpaka::memcpy(queue, dbuf, hbuf);
    alpaka::wait(queue);
    return dbuf;
+}
+
+template <typename TBuf>
+static std::vector<alpaka::Elem<TBuf>>
+toHost(alpaka::DevCpu const& host,
+       alpaka::Queue<alpaka::DevCudaRt, alpaka::NonBlocking>& queue,
+       TBuf const& deviceBuf, std::size_t n)
+{
+   using T = alpaka::Elem<TBuf>;
+   auto hbuf = alpaka::allocBuf<T, Idx>(host, Ext1D::all(Idx{n}));
+   alpaka::memcpy(queue, hbuf, deviceBuf);
+   alpaka::wait(queue);
+   const T* p = alpaka::getPtrNative(hbuf);
+   return std::vector<T>(p, p + n);
 }
 
 #endif // SOFIE_TEST_ALPAKA_COMMON_H

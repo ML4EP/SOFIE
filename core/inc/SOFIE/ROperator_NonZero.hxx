@@ -88,6 +88,7 @@ public:
       } else {
 
          fShapeX = model.GetDimTensorShape(fNX);
+         fHasStridedInput = model.IsStridedInputTensor(fNX) && !fShapeX.empty();
 
          fShapeY.resize(2);
          fShapeY[0] = fShapeX.size();
@@ -122,6 +123,8 @@ public:
       }
    }
 
+   bool SupportsStridedInput() const override { return true; }
+
    std::string GenerateSessionMembersCode(std::string /*opName*/) override {
       if (fIsOutputConstant || !fDeclaresParam)
          return "";
@@ -140,6 +143,9 @@ public:
          throw std::runtime_error("SOFIE Operator NonZero called to Generate without being initialized first");
       }
       std::stringstream out;
+      // a strided input is read through its strides, from the logical (contiguous) index of its elements
+      if (fHasStridedInput)
+         out << GenerateStridedOffsetLambda(opName, fNX, fShapeX);
       auto intShapeX = ConvertShapeToInt(fShapeX);
       size_t inputLength = 0;
       std::string s_inputLength = ConvertDimShapeToLength(fShapeX);
@@ -159,7 +165,10 @@ public:
          out << "for (size_t " << index << " = 0; " << index << " < " << fShapeX[j] << "; " << index << "++) {\n";
       }
       for (size_t k = 0; k <= dims; k++) out << SP;
-      out << "if (tensor_" << fNX << "[offset_" << opName << "++]) {\n";
+      if (fHasStridedInput)
+         out << "if (tensor_" << fNX << "[xoff_" << opName << "(offset_" << opName << "++)]) {\n";
+      else
+         out << "if (tensor_" << fNX << "[offset_" << opName << "++]) {\n";
       for (size_t j = 0; j < dims; j++) {
          for (size_t k = 0; k <= dims+1; k++) out << SP;
          out << "tensor_" << fNY << "[";
@@ -221,7 +230,11 @@ public:
          for (auto &p : dynParamNames)
             op += ", std::size_t const " + p;
       }
+      // a strided input is read through its strides, from the logical (contiguous) index of its elements
+      if (fHasStridedInput)
+         op += ", sofie_strided_layout<" + std::to_string(fRank) + "> const layoutX";
       op += ") const {\n";
+      const std::string readX = fHasStridedInput ? StridedKernelRead("input", "layoutX", "j") : "input[j]";
 
       if (!fIsInputDynamic) {
          op += SP + SP + SP + "constexpr std::size_t nzTotalLen = " + std::to_string(fInputLength) + "u;\n";
@@ -234,7 +247,7 @@ public:
       op += SP + SP + SP + "std::size_t const nzBegin = nzTid * nzChunkSize;\n";
       op += SP + SP + SP + "std::size_t const nzEnd = (nzBegin + nzChunkSize < nzTotalLen) ? nzBegin + nzChunkSize : nzTotalLen;\n";
       op += SP + SP + SP + "std::size_t nzChunkCount = 0;\n";
-      op += SP + SP + SP + "for (std::size_t j = nzBegin; j < nzEnd; ++j) nzChunkCount += input[j] != static_cast<T>(0);\n";
+      op += SP + SP + SP + "for (std::size_t j = nzBegin; j < nzEnd; ++j) nzChunkCount += " + readX + " != static_cast<T>(0);\n";
       op += SP + SP + SP + "nzChunkOffset[nzTid] = nzChunkCount;\n";
       op += SP + SP + SP + "alpaka::syncBlockThreads(acc);\n";
       op += SP + SP + SP + "if (nzTid == 0) {\n";
@@ -246,7 +259,7 @@ public:
       op += SP + SP + SP + "std::size_t nz = nzChunkOffset[nzTid];\n";
       op += SP + SP + SP + "std::size_t const total = static_cast<std::size_t>(*count);\n";
       op += SP + SP + SP + "for (std::size_t j = nzBegin; j < nzEnd; ++j) {\n";
-      op += SP + SP + SP + SP + "if (input[j] == static_cast<T>(0)) continue;\n";
+      op += SP + SP + SP + SP + "if (" + readX + " == static_cast<T>(0)) continue;\n";
 
       for (size_t d = 0; d < fRank; d++) {
          std::string strideExpr = "1";
@@ -279,6 +292,9 @@ public:
       out << "\n//------ NonZero_GPU_ALPAKA\n";
 
       std::string countPtr = "alpaka::getPtrNative(deviceBuf_" + fCountScratchName + ")";
+      const std::string layoutArg = fHasStridedInput ? ", layout_" + fNY + "_X" : std::string();
+      if (fHasStridedInput)
+         out << GenerateStridedBroadcastLayout(fNY + "_X", fNX, fShapeX, fShapeX.size(), fShapeX);
 
       if (fIsInputDynamic) {
          std::string nExpr = ConvertDimShapeToLength(fShapeX);
@@ -291,11 +307,11 @@ public:
              << ", nzN_" << fNY << ", nzP_" << fNY << ", nzChunk_" << fNY;
          for (auto &p : dynParamNames)
             out << ", static_cast<std::size_t>(" << p << ")";
-         out << ");\n";
+         out << layoutArg << ");\n";
       } else {
          out << SP << "auto const workDivNonZero_" << fNY << " = sofie_workdiv(Vec::all(Idx{" << fNumChunks << "}), Idx{" << fNumChunks << "});\n";
          out << SP << "auto taskNonZero_" << fNY << " = alpaka::createTaskKernel<Acc>(workDivNonZero_" << fNY << ", nonZeroKernel_" << fNY
-             << ", alpaka::getPtrNative(deviceBuf_" << fNX << "), alpaka::getPtrNative(deviceBuf_" << fNY << "), " << countPtr << ");\n";
+             << ", alpaka::getPtrNative(deviceBuf_" << fNX << "), alpaka::getPtrNative(deviceBuf_" << fNY << "), " << countPtr << layoutArg << ");\n";
       }
       out << SP << "alpaka::enqueue(queue, taskNonZero_" << fNY << ");\n";
 

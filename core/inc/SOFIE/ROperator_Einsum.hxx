@@ -27,6 +27,7 @@ private:
    std::string fOutputLabels;
    std::string fSumLabels;  // string containing the reducing labels
    std::string fGemmType;
+   std::vector<bool> fStrided; ///< inputs which are graph inputs read through their strides
 
    std::vector<int> fSumDims; // dimension of the labels we use to perform summing
 
@@ -118,6 +119,8 @@ public:
       for ( auto & name : fNInputs) {
          if (!model.CheckIfTensorAlreadyExist(name))
             throw std::runtime_error(std::string("SOFIE Einsum Op Input Tensor ") + name + "is not found in model");
+         fStrided.push_back(model.IsStridedInputTensor(name) && !model.GetTensorShape(name).empty());
+         fHasStridedInput |= fStrided.back();
 
          // if (model.IsDynamicTensor(name) || model.IsDimInputTensor(name) ) {
          //    // not yet supported
@@ -154,7 +157,8 @@ public:
 
       // check if we can use MatMul for EinSum
       // need to have one sum labels in the last 2 and have the first in common
-      if (fNInputs.size() == 2 && fSumDims.size() == 1 && fShapeInputs[0].size() >=2 && fShapeInputs[1].size() >= 2 ) {
+      // (strided inputs are read by the generic loops: BLAS needs a unit stride in each matrix)
+      if (!fHasStridedInput && fNInputs.size() == 2 && fSumDims.size() == 1 && fShapeInputs[0].size() >=2 && fShapeInputs[1].size() >= 2 ) {
          // find positions of dum labels
          char l = fSumLabels[0];
          size_t pos1 = fInputLabels[0].find(l);
@@ -191,6 +195,8 @@ public:
       return out.str();
    }
 
+   bool SupportsStridedInput() const override { return true; }
+
    std::string Generate(std::string opName) override {
 
       if (fIsOutputConstant) return "";
@@ -222,6 +228,11 @@ public:
 
       // loops on the output indices  i0,....iN
       if (fGemmType.empty()) {
+      // inputs read through the strides given to the Session
+      for (size_t k = 0; k < fNInputs.size(); k++)
+         if (fStrided[k])
+            out << GenerateInputStrideArray("strE_" + opName + "_" + std::to_string(k), fNInputs[k],
+                                            ConvertShapeToDim(fShapeInputs[k]));
       int outDims = fShapeY.size();
       int inDims = fSumLabels.length();
       assert(outDims == int(fOutputLabels.size()));
@@ -248,6 +259,14 @@ public:
       for (size_t k = 0; k < fNInputs.size(); k++) {
          auto inputStride = UTILITY::ComputeStrideFromShape(fShapeInputs[k]);
          std::string inputIndex = tensorIndex(inputStride,fInputLabels[k]);
+         if (fStrided[k]) {
+            // sum of label * stride over all the labels of the input
+            inputIndex.clear();
+            const std::string var = "strE_" + opName + "_" + std::to_string(k);
+            for (size_t l = 0; l < fInputLabels[k].length(); l++)
+               inputIndex += (l ? " + " : "") + std::string{fInputLabels[k][l]} + "*" + var + "[" + std::to_string(l) + "]";
+            if (inputIndex.empty()) inputIndex = "0";
+         }
          for (int j = 0; j < outDims+inDims; j++) out << SP;
          out << SP << "tensor_" << fNInputs[k] << "[" << inputIndex << "]";
          if (fNInputs.size() > 1 && k < fNInputs.size() -1) out << " *\n";

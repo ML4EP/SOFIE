@@ -31,8 +31,12 @@ public:
          throw std::runtime_error("SOFIE HardSwish Op Input Tensor " + fNX + " is not found in model");
       }
       fShape = model.GetTensorShape(fNX);
+      fHasStridedInput = model.IsStridedInputTensor(fNX) && !fShape.empty();
       model.AddIntermediateTensor(fNY, model.GetTensorType(fNX), fShape);
    }
+
+   bool SupportsStridedInput() const override { return true; }
+
 
    std::string Generate(std::string OpName) override {
       OpName = "op_" + OpName;
@@ -43,6 +47,12 @@ public:
       size_t length = ConvertShapeToLength(fShape);
 
       out << "\n//------ HardSwish\n";
+      if (fHasStridedInput) {
+         out << GenerateStridedUnaryLoop(OpName, fNX, fNY, ConvertShapeToDim(fShape), [](const std::string &v) {
+            return v + " * std::fmax(0x0p+0f, std::fmin(0x1p+0f, 0x1.5555555555555p-3f * " + v + " + 0x1p-1f))";
+         });
+         return out.str();
+      }
       out << SP << "for (int id = 0; id < " << length << " ; id++){\n";
       out << SP << SP << "float h = 0x1.5555555555555p-3f * tensor_" << fNX << "[id] + 0x1p-1f;\n";
       out << SP << SP << "tensor_" << fNY << "[id] = tensor_" << fNX
