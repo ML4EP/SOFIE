@@ -3,7 +3,7 @@
 namespace SOFIE {
 
 namespace shared_code {
-// helper code shared with the generator: single source in inc/SOFIE/utils/Shared/*.inc, embedded at build time
+// helper code shared with the generator: single source in inc/SOFIE/utils/shared/*.inc, embedded at build time
 extern const char *const kShared_ConvertShapeToLength;
 extern const char *const kShared_ConvertShapeToString;
 extern const char *const kShared_Broadcast;
@@ -319,140 +319,6 @@ inline void Gemm_Call_ld(float *output, bool transa, bool transb, int m, int n, 
       std::copy(C, C + m * n, output);
    }
    BLAS::sgemm_(transa ? &ct : &cn, transb ? &ct : &cn, &m, &n, &k, &alpha, A, &lda, B, &ldb, &beta, output, ldc);
-}
-)SOFIE";
-
-constexpr const char *kGemmCallPullback = R"SOFIE(
-inline void Gemm_Call_pullback(float *output, bool transa, bool transb, int m, int n, int k, float alpha,
-                               const float *A, const float *B, float beta, const float *C, float *_d_output, bool *,
-                               bool *, int *, int *, int *, float *_d_alpha, float *_d_A, float *_d_B, float *_d_beta,
-                               float *_d_C)
-{
-   if (alpha != 1.0f) {
-      return;
-   }
-
-   float one = 1.;
-
-   if (!transa) {
-      Gemm_Call(_d_A, false, !transb, m, k, n, one, _d_output, B, one, _d_A);
-   } else {
-      Gemm_Call(_d_A, transb, true, k, m, n, one, B, _d_output, one, _d_A);
-   }
-
-   if (!transb) {
-      Gemm_Call(_d_B, !transa, false, k, n, m, one, A, _d_output, one, _d_B);
-   } else {
-      Gemm_Call(_d_B, true, transa, n, k, m, one, _d_output, A, one, _d_B);
-   }
-
-   int sizeC = n * m;
-
-   for (int i = 0; i < sizeC; ++i) {
-      if (C) {
-         *_d_alpha += _d_output[i] * (output[i] - beta * C[i]);
-         *_d_beta += _d_output[i] * C[i];
-      } else {
-         *_d_alpha += _d_output[i] * output[i];
-      }
-      if (_d_C)
-         _d_C[i] += _d_output[i] * beta;
-   }
-}
-)SOFIE";
-
-constexpr const char *kCopyPullback = R"SOFIE(
-inline void Copy_pullback(float *output, const float *input, int size, float *_d_output, float *_d_input, int *)
-{
-   for (int i = 0; i < size; i++) {
-      output[i] = input[i];
-      _d_input[i] += _d_output[i];
-      _d_output[i] = 0.F;
-   }
-}
-)SOFIE";
-
-constexpr const char *kFillPullback = R"SOFIE(
-inline void Fill_pullback(float *output, float value, int size, float *_d_output, float *_d_value, int *)
-{
-   for (int i = 0; i < size; i++) {
-      output[i] = value;
-      *_d_value += _d_output[i];
-      _d_output[i] = 0.F;
-   }
-}
-)SOFIE";
-
-constexpr const char *kReluPullback = R"SOFIE(
-inline void Relu_pullback(float *output, const float *input, int size, float *_d_output, float *_d_input, int *)
-{
-   for (int i = 0; i < size; i++) {
-      output[i] = input[i] > 0.F ? input[i] : 0.F;
-      float _r_d0 = _d_output[i];
-      _d_output[i] = 0.F;
-      if (input[i] > 0.F)
-         _d_input[i] += _r_d0;
-   }
-}
-)SOFIE";
-
-constexpr const char *kGemmCallPushforward = R"SOFIE(
-inline void Gemm_Call_pushforward(float *output, bool transa, bool transb, int m, int n, int k, float alpha,
-                                  const float *A, const float *B, float beta, const float *C, float *_d_output, bool,
-                                  bool, int, int, int, float _d_alpha, const float *_d_A, const float *_d_B,
-                                  float _d_beta, const float *_d_C)
-{
-   const bool hasC = C != nullptr;
-   const bool hasdC = _d_C != nullptr;
-   SOFIE_MODEL_NS::Gemm_Call(_d_output, transa, transb, m, n, k, alpha, _d_A, B, (hasC && !hasdC) ? 0.0f : beta, _d_C);
-   SOFIE_MODEL_NS::Gemm_Call(_d_output, transa, transb, m, n, k, alpha, A, _d_B, 1.0f, nullptr);
-   if (_d_alpha != 0.0f) {
-      SOFIE_MODEL_NS::Gemm_Call(_d_output, transa, transb, m, n, k, _d_alpha, A, B, 1.0f, nullptr);
-   }
-   if (_d_beta != 0.0f) {
-      if (hasC) {
-         for (int i = 0; i < m * n; ++i) {
-            _d_output[i] += _d_beta * C[i];
-         }
-      } else {
-         for (int i = 0; i < m * n; ++i) {
-            _d_output[i] += _d_beta * output[i];
-         }
-      }
-   }
-   SOFIE_MODEL_NS::Gemm_Call(output, transa, transb, m, n, k, alpha, A, B, beta, C);
-}
-)SOFIE";
-
-constexpr const char *kCopyPushforward = R"SOFIE(
-inline void Copy_pushforward(float *output, const float *input, int size, float *_d_output, const float *_d_input,
-                             int)
-{
-   for (int i = 0; i < size; i++) {
-      output[i] = input[i];
-      _d_output[i] = _d_input[i];
-   }
-}
-)SOFIE";
-
-constexpr const char *kFillPushforward = R"SOFIE(
-inline void Fill_pushforward(float *output, float value, int size, float *_d_output, float _d_value, int)
-{
-   for (int i = 0; i < size; i++) {
-      output[i] = value;
-      _d_output[i] = _d_value;
-   }
-}
-)SOFIE";
-
-constexpr const char *kReluPushforward = R"SOFIE(
-inline void Relu_pushforward(float *output, float const *input, int size, float *_d_output, float const *_d_input,
-                             int)
-{
-   for (int i = 0; i < size; i++) {
-      _d_output[i] = (input[i] > 0.0f) ? _d_input[i] : 0.0f;
-      output[i] = (input[i] > 0.0f) ? input[i] : 0.0f;
-   }
 }
 )SOFIE";
 
@@ -954,88 +820,69 @@ HelperFunctionsCode GenerateHelperFunctionsCode(const std::set<std::string> &nee
    if (dynMemory)
       addStd({"set", "unordered_map", "stdexcept", "iterator"});
 
+   auto Block = [](const char *comment, const char *code) {
+      return std::string("\n// ") + comment + "\n" + code;
+   };
+
    std::string defs;
-   defs += "\n// --- Standalone SOFIE inference helper functions ---\n";
 
    if (gemm && !sgemmAlreadyDeclared)
-      defs += kBlasSgemm;
+      defs += Block("declaration of the BLAS single precision matrix multiplication routine", kBlasSgemm);
 
    if (needConvertLength)
-      defs += shared_code::kShared_ConvertShapeToLength;
+      defs += Block("compute the number of elements of a tensor from its shape", shared_code::kShared_ConvertShapeToLength);
    if (needConvertString)
-      defs += shared_code::kShared_ConvertShapeToString;
+      defs += Block("convert a tensor shape to its string representation", shared_code::kShared_ConvertShapeToString);
 
    if (im2colFamily || uniBroadcast || convBias) {
-      defs += "\nnamespace UTILITY {\n";
+      defs += "\n// utility functions for convolution and broadcasting\nnamespace UTILITY {\n";
       if (im2colFamily)
-         defs += kIsAGeZero;
+         defs += Block("check that an index lies inside a dimension (used by im2col)", kIsAGeZero);
       if (im2col)
-         defs += kIm2col;
+         defs += Block("rearrange 2D image patches into columns for convolution", kIm2col);
       if (im2col3d)
-         defs += kIm2col3d;
+         defs += Block("rearrange 3D image patches into columns for convolution", kIm2col3d);
       if (im2colStrided)
-         defs += kIm2colStrided;
+         defs += Block("rearrange 2D image patches into columns for an input with custom strides", kIm2colStrided);
       if (im2col3dStrided)
-         defs += kIm2col3dStrided;
+         defs += Block("rearrange 3D image patches into columns for an input with custom strides", kIm2col3dStrided);
       if (col2im)
-         defs += kCol2im;
+         defs += Block("accumulate columns back into an image (inverse of im2col)", kCol2im);
       if (uniBroadcast) {
-         defs += shared_code::kShared_Broadcast;
-         defs += kUnidirectionalBroadcastInPlace;
+         defs += Block("broadcast a tensor to a target shape", shared_code::kShared_Broadcast);
+         defs += Block("unidirectional broadcast of a tensor into a preallocated buffer", kUnidirectionalBroadcastInPlace);
       }
       if (convBias)
-         defs += shared_code::kShared_BroadcastConvBias;
+         defs += Block("broadcast the convolution bias over the output tensor", shared_code::kShared_BroadcastConvBias);
       defs += "} // namespace UTILITY\n";
    }
 
    if (gemm)
-      defs += kGemmCall;
+      defs += Block("matrix multiplication wrapper around the BLAS routine", kGemmCall);
    if (relu)
-      defs += kRelu;
+      defs += Block("apply the ReLU activation in place", kRelu);
    if (fill)
-      defs += kFill;
+      defs += Block("fill a buffer with a constant value", kFill);
    if (copy)
-      defs += kCopy;
+      defs += Block("copy a buffer into another one", kCopy);
    if (readTensor)
-      defs += kReadTensorFromStream;
+      defs += Block("read a tensor from a text stream", kReadTensorFromStream);
    if (safetensorsBlob)
-      defs += kSafetensorsBlob;
+      defs += Block("raw byte storage of a safetensors file", kSafetensorsBlob);
    if (readSafetensors)
-      defs += kSafetensorsReader;
+      defs += Block("parser reading tensors from a safetensors file", kSafetensorsReader);
    if (inputDims)
-      defs += kInputTensorDims;
+      defs += Block("shape and stride descriptor of the input tensors", kInputTensorDims);
    if (dynMemory)
-      defs += shared_code::kShared_MemoryPlanner;
+      defs += Block("memory planner for the dynamic intermediate tensors", shared_code::kShared_MemoryPlanner);
    if (gnnData)
-      defs += kGNNData;
+      defs += Block("data structure holding the nodes, edges and globals of a graph", kGNNData);
 
-   defs += "// --- End of SOFIE inference helper functions ---\n\n";
+   if (!defs.empty())
+      defs = "\n// --- Standalone SOFIE inference helper functions ---\n" + defs +
+             "// --- End of SOFIE inference helper functions ---\n\n";
 
-   std::string cladDefs;
-   if (gemm || copy || fill || relu) {
-      cladDefs += "\nnamespace clad {\nnamespace custom_derivatives {\nnamespace " + modelNamespace + " {\n";
-      if (gemm) {
-         cladDefs += "using ::" + modelNamespace + "::Gemm_Call;\n";
-         cladDefs += "namespace SOFIE_MODEL_NS = ::" + modelNamespace + ";\n";
-         cladDefs += kGemmCallPullback;
-         cladDefs += kGemmCallPushforward;
-      }
-      if (copy) {
-         cladDefs += kCopyPullback;
-         cladDefs += kCopyPushforward;
-      }
-      if (fill) {
-         cladDefs += kFillPullback;
-         cladDefs += kFillPushforward;
-      }
-      if (relu) {
-         cladDefs += kReluPullback;
-         cladDefs += kReluPushforward;
-      }
-      cladDefs += "} // namespace " + modelNamespace + "\n} // namespace custom_derivatives\n} // namespace clad\n";
-   }
-
-   return HelperFunctionsCode{std::move(stdHeaders), std::move(defs), std::move(cladDefs)};
+   return HelperFunctionsCode{std::move(stdHeaders), std::move(defs)};
 }
 
 }

@@ -3,7 +3,7 @@
 
 #include "SOFIE/utils/SOFIE_common.hxx"
 #include "SOFIE/operators/ROperator_ALPAKA.hxx"
-#include "SOFIE/model/RModel.hxx"
+#include "SOFIE/RModel.hxx"
 
 #include <memory>
 #include <sstream>
@@ -358,14 +358,19 @@ public:
          std::cout << "Conv - " << fDim << "  " << fNX << " : " << ConvertDimShapeToString(fShapeX)
                   << " --> " << fNY << " : " << ConvertDimShapeToString(fShapeY) << std::endl;
       }
+   }
 
+   std::vector<std::string> GetHelperFunctions() override
+   {
+      std::vector<std::string> helpers;
       if (fDim < 3)
-         model.AddNeededHelperFunction(fHasStridedInput ? "Im2col_strided" : "Im2col");
+         helpers.push_back(fHasStridedInput ? "Im2col_strided" : "Im2col");
       else
-         model.AddNeededHelperFunction(fHasStridedInput ? "Im2col_3d_strided" : "Im2col_3d");
-      model.AddNeededHelperFunction("Gemm_Call");
+         helpers.push_back(fHasStridedInput ? "Im2col_3d_strided" : "Im2col_3d");
+      helpers.push_back("Gemm_Call");
       if (fBroadcastBias)
-         model.AddNeededHelperFunction("UnidirectionalBroadcast");
+         helpers.push_back("UnidirectionalBroadcast");
+      return helpers;
    }
 
    std::string GenerateInitCode() override {

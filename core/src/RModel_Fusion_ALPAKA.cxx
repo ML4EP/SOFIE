@@ -13,8 +13,8 @@
 #include <utility>
 #include <vector>
 
-#include "SOFIE/model/RModel.hxx"
-#include "SOFIE/model/RModelFusion_ALPAKA.hxx"
+#include "SOFIE/RModel.hxx"
+#include "SOFIE/RModelFusion_ALPAKA.hxx"
 #include "SOFIE/operators/ROperator_ALPAKA.hxx"
 #include "SOFIE/operators/ROperator_Gemm.hxx"
 #include "SOFIE/operators/ROperator_LeakyRelu.hxx"

@@ -1,4 +1,4 @@
-#include "SOFIE/model/RModelProfiler.hxx"
+#include "SOFIE/RModelProfiler.hxx"
 #include "SOFIE/utils/SOFIE_common.hxx"
 
 namespace SOFIE {

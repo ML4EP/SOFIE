@@ -1,4 +1,4 @@
-#include "SOFIE/model/RModel.hxx"
+#include "SOFIE/RModel.hxx"
 #include "SOFIE/functions/RFunction.hxx"
 
 

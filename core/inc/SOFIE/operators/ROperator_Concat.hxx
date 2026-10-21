@@ -4,7 +4,7 @@
 
  #include "SOFIE/utils/SOFIE_common.hxx"
  #include "SOFIE/operators/ROperator_ALPAKA.hxx"
- #include "SOFIE/model/RModel.hxx"
+ #include "SOFIE/RModel.hxx"
 
  #include <sstream>
  #include <algorithm>
@@ -165,8 +165,9 @@
             return ret;
          }
 
+         std::vector<std::string> GetHelperFunctions() override { return {"Copy"}; }
+
          void Initialize(RModel& model) override {
-            model.AddNeededHelperFunction("Copy");
             std::vector<std::vector<size_t>> inputIntShapes;
             for (auto &it : fInputs) {
                if (model.CheckIfTensorAlreadyExist(it) == false) {

@@ -1,7 +1,7 @@
 #ifndef SOFIE_ROPERATOR_LAYERNORMALIZATION
 #define SOFIE_ROPERATOR_LAYERNORMALIZATION
 
-#include "SOFIE/model/RModel.hxx"
+#include "SOFIE/RModel.hxx"
 #include "SOFIE/operators/ROperator_ALPAKA.hxx"
 #include "SOFIE/utils/SOFIE_common.hxx"
 #include <sstream>
@@ -157,9 +157,13 @@ public:
       }
 
       model.AddNeededStdLib("cmath");
+   }
 
+   std::vector<std::string> GetHelperFunctions() override
+   {
       if (!fNBroadcastedB.empty())
-         model.AddNeededHelperFunction("UnidirectionalBroadcast");
+         return {"UnidirectionalBroadcast"};
+      return {};
    }
 
    std::string GenerateInitCode() override
@@ -403,7 +407,7 @@ public:
       if (!fNInvStdDev.empty())
          op += "T* __restrict__ out_invstd,\n";
       op += "T* __restrict__ Y,\n";
-      // Dynamic-shape parameters (e.g. a symbolic batch/row-count dim) referenced
+      // Dynamic-shape parameters referenced
       // by the axis/stride expressions below must be passed in explicitly: the
       // kernel functor is a free-standing struct, not a closure, so it has no
       // access to _infer_impl's local n_<param> variables otherwise.
@@ -437,7 +441,7 @@ public:
          // Two shared-memory tree reductions compute mean then variance.
          // ---------------------------------------------------------------
          std::string bs = std::to_string(blockSize);
-         std::string nl = fNormalizedLength; // e.g. "64"
+         std::string nl = fNormalizedLength;
          std::string eps = std::to_string(fAttrEpsilon);
          std::string ipt = std::to_string(itemsPerThread);
 

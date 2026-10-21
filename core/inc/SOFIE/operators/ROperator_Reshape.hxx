@@ -3,7 +3,7 @@
 
 #include "SOFIE/utils/SOFIE_common.hxx"
 #include "SOFIE/operators/ROperator_ALPAKA.hxx"
-#include "SOFIE/model/RModel.hxx"
+#include "SOFIE/RModel.hxx"
 
 #include <cassert>
 #include <cctype>
@@ -309,7 +309,7 @@ public:
             throw std::runtime_error("SOFIE Reshape Op 2nd input Tensor " + fNInput2 + " is not found in model");
          }
       } else if (!fAttrAxes.empty()) {
-         // case fNShape is empty and axes are provided as attributes (e.g. for Unsqueeze)
+         // case fNShape is empty and axes are provided as attributes
          fShapeOutput = DoShapeInference(fShapeInput, std::vector<Dim>{}, inputIsScalar);
       } else if (fOpMode == Flatten || fOpMode == Squeeze) {
          fShapeOutput = DoShapeInference(fShapeInput, std::vector<Dim>{}, inputIsScalar);

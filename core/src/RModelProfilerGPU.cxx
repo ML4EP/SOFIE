@@ -1,4 +1,4 @@
-#include "SOFIE/model/RModelProfilerGPU.hxx"
+#include "SOFIE/RModelProfilerGPU.hxx"
 #include "SOFIE/operators/ROperator_ALPAKA.hxx"
 #include "SOFIE/utils/SOFIE_common.hxx"
 

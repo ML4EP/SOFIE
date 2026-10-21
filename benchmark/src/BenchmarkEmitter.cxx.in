@@ -6,8 +6,8 @@
 //   <ModelName>_bench.hxx       — timing function, following the same
 //                                 pattern as the unit tests
 
-#include "SOFIE/model/RModel_Base.hxx"
-#include "SOFIE/model/RModel.hxx"
+#include "SOFIE/RModel_Base.hxx"
+#include "SOFIE/RModel.hxx"
 #include "SOFIE/RModelParser_ONNX.hxx"
 
 #include <algorithm>

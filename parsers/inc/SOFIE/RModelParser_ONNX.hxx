@@ -1,7 +1,7 @@
 #ifndef SOFIE_RMODELPARSER_ONNX
 #define SOFIE_RMODELPARSER_ONNX
 
-#include "SOFIE/model/RModel.hxx"
+#include "SOFIE/RModel.hxx"
 
 #include <memory>
 #include <functional>

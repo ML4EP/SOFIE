@@ -3,7 +3,7 @@
 #include <fstream>
 #include <limits>
 
-#include "SOFIE/model/RModel_GNN.hxx"
+#include "SOFIE/RModel_GNN.hxx"
 #include "SOFIE/functions/RFunction.hxx"
 
 

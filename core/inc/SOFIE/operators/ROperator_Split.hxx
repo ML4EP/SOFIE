@@ -3,7 +3,7 @@
 
 #include "SOFIE/utils/SOFIE_common.hxx"
 #include "SOFIE/operators/ROperator_ALPAKA.hxx"
-#include "SOFIE/model/RModel.hxx"
+#include "SOFIE/RModel.hxx"
 
 #include <sstream>
 
@@ -240,7 +240,7 @@ std::string Generate_GPU_Kernel_ALPAKA(std::string opName, const std::vector<std
             inputStrides[d] = Dim{"layoutX.stride[" + std::to_string(d) + "]", static_cast<std::size_t>(-1)};
 
     std::string op;
-    op  = "\n//------ SPLIT_KERNEL_ALPAKA\n";
+    op  = "";
     for (std::size_t i = 0; i < Nin; ++i) {
         auto outputStrides = UTILITY::ComputeStrideFromShape(fOutputShapes[i]);
 
@@ -253,6 +253,7 @@ std::string Generate_GPU_Kernel_ALPAKA(std::string opName, const std::vector<std
 
         std::string kname = "SplitKernel_" + opName + "_" + std::to_string(i);
 
+        op += "\n//------ SPLIT_KERNEL_ALPAKA (output " + std::to_string(i) + ")\n";
         op += "struct " + kname + " {\n";
         op += "template<typename TAcc, typename T>\n";
         op += "ALPAKA_FN_ACC void operator()(\n";

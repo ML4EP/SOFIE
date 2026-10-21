@@ -479,19 +479,9 @@ SOFIE_ADD_TEST(TestSofieParser
                   EXEC ./TestSofieParser
                   FIXTURES_REQUIRED sofie-test-parser-build)
 
-find_package(nlohmann_json QUIET)
-if (NOT nlohmann_json_FOUND)
-  find_path(SOFIE_NLOHMANN_JSON_INCLUDE_DIR nlohmann/json.hpp)
-  if (SOFIE_NLOHMANN_JSON_INCLUDE_DIR)
-    add_library(nlohmann_json INTERFACE)
-    target_include_directories(nlohmann_json INTERFACE ${SOFIE_NLOHMANN_JSON_INCLUDE_DIR})
-    add_library(nlohmann_json::nlohmann_json ALIAS nlohmann_json)
-    set(nlohmann_json_FOUND TRUE)
-  endif()
-endif()
-if (nlohmann_json_FOUND AND BLAS_FOUND)
+if (BLAS_FOUND)
   SOFIE_GENERATE_EXECUTABLE(TestSafetensorsWeights cpu/TestSafetensorsWeights.cxx
-    LIBRARIES SOFIE_core SOFIE_parsers GTest::gtest GTest::gtest_main BLAS::BLAS nlohmann_json::nlohmann_json
+    LIBRARIES SOFIE_core SOFIE_parsers GTest::gtest GTest::gtest_main BLAS::BLAS
     FIXTURES_SETUP sofie-test-safetensors-build
   )
   target_include_directories(TestSafetensorsWeights PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -500,7 +490,7 @@ if (nlohmann_json_FOUND AND BLAS_FOUND)
                  EXEC ./TestSafetensorsWeights
                  FIXTURES_REQUIRED sofie-test-safetensors-build)
 else()
-  message(STATUS "nlohmann_json or BLAS not found: TestSafetensorsWeights is disabled")
+  message(STATUS "BLAS not found: TestSafetensorsWeights is disabled")
 endif()
 
 if (SOFIE_TORCH_FOUND AND SOFIE_ONNX_USABLE AND BLAS_FOUND)

@@ -1,6 +1,6 @@
 // Formatting of the generated code: the indentation of the code and the layout of the includes of the header.
 
-#include "SOFIE/model/RModel.hxx"
+#include "SOFIE/RModel.hxx"
 #include "SOFIE/operators/ROperator_Relu.hxx"
 #include "SOFIE/operators/ROperator_Gemm.hxx"
 

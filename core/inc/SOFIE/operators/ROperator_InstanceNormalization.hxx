@@ -2,7 +2,7 @@
 #define SOFIE_ROPERATOR_INSTANCENORMALIZATION
 
 #include "SOFIE/operators/ROperator.hxx"
-#include "SOFIE/model/RModel.hxx"
+#include "SOFIE/RModel.hxx"
 #include "SOFIE/utils/SOFIE_common.hxx"
 
 #include <sstream>

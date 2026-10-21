@@ -3,7 +3,7 @@
 
 #include "SOFIE/utils/SOFIE_common.hxx"
 #include "SOFIE/operators/ROperator.hxx"
-#include "SOFIE/model/RModel.hxx"
+#include "SOFIE/RModel.hxx"
 
 #include <sstream>
 namespace SOFIE {

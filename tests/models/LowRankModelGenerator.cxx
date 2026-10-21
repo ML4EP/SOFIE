@@ -10,7 +10,7 @@
 
 #include "common/lowrank_test_utils.h"
 
-#include "SOFIE/model/RModel.hxx"
+#include "SOFIE/RModel.hxx"
 #include "SOFIE/operators/ROperator_Gemm.hxx"
 #include "SOFIE/operators/ROperator_LeakyRelu.hxx"
 

@@ -3,8 +3,8 @@
 
 #include <ctime>
 
-#include "SOFIE/model/RModel_Base.hxx"
-#include "SOFIE/model/RModel.hxx"
+#include "SOFIE/RModel_Base.hxx"
+#include "SOFIE/RModel.hxx"
 #include "SOFIE/functions/RFunction.hxx"
 
 namespace SOFIE {

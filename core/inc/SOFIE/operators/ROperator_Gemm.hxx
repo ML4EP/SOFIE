@@ -4,7 +4,7 @@
 
 #include "SOFIE/utils/SOFIE_common.hxx"
 #include "SOFIE/operators/ROperator_ALPAKA.hxx"
-#include "SOFIE/model/RModel.hxx"
+#include "SOFIE/RModel.hxx"
 #include "SOFIE/utils/SOFIEHelpers.hxx"
 
 #include <sstream>
@@ -399,16 +399,21 @@ namespace SOFIE{
                                      "(no MatMul batching, no low rank factorization)");
 
          model.AddNeededStdLib("algorithm");
+      }
 
-
+      std::vector<std::string> GetHelperFunctions() override {
+         std::vector<std::string> helpers;
+         if (fIsOutputConstant)
+            return helpers;
          if (fType == "float")
-            model.AddNeededHelperFunction("Gemm_Call");
+            helpers.push_back("Gemm_Call");
          if (fNC != "") {
-            model.AddNeededHelperFunction("Copy");
-            model.AddNeededHelperFunction("Fill");
+            helpers.push_back("Copy");
+            helpers.push_back("Fill");
          }
          if (fActivation == EActivationType::RELU)
-            model.AddNeededHelperFunction("Relu");
+            helpers.push_back("Relu");
+         return helpers;
       }
 
       std::string Generate(std::string opName) override {

@@ -113,6 +113,7 @@ class ROperator {
 public:
    virtual std::vector<std::string> GetBlasRoutines() { return {}; }
    virtual std::vector<std::string> GetStdLibs() { return {}; }
+   virtual std::vector<std::string> GetHelperFunctions() { return {}; }
    virtual void Initialize(RModel&) = 0;
    virtual std::string Generate(std::string OpName) = 0;  //expect unique opName for each operator within the same RModel
    // true if the operator can read its graph-input tensors through the strides given to the Session

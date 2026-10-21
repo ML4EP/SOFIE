@@ -6,11 +6,11 @@ add_library(SOFIE_core SHARED)
 
 set(sources_headers
    SOFIE/operators/OperatorList.hxx
-   SOFIE/model/RModel_Base.hxx
-   SOFIE/model/RModel.hxx
-   SOFIE/model/RModelFusion_ALPAKA.hxx
-   SOFIE/model/RModelProfiler.hxx
-   SOFIE/model/RModelProfilerGPU.hxx
+   SOFIE/RModel_Base.hxx
+   SOFIE/RModel.hxx
+   SOFIE/RModelFusion_ALPAKA.hxx
+   SOFIE/RModelProfiler.hxx
+   SOFIE/RModelProfilerGPU.hxx
    SOFIE/operators/ROperator.hxx
    SOFIE/operators/ROperator_BasicUnary.hxx
    SOFIE/operators/ROperator_BasicBinary.hxx
@@ -59,8 +59,8 @@ set(sources_headers
    SOFIE/utils/SOFIE_formatter.hxx
 
    SOFIE/functions/FunctionList.hxx
-   SOFIE/model/RModel_GNN.hxx
-   SOFIE/model/RModel_GraphIndependent.hxx
+   SOFIE/RModel_GNN.hxx
+   SOFIE/RModel_GraphIndependent.hxx
    SOFIE/functions/RFunction.hxx
    SOFIE/functions/RFunction_MLP.hxx
    SOFIE/functions/RFunction_Sum.hxx
@@ -70,15 +70,15 @@ set(sources_headers
 list(TRANSFORM sources_headers PREPEND "inc/")
 
 set(sources_cxx
-    src/model/RModel_Base.cxx
+    src/RModel_Base.cxx
     src/utils/SOFIE_formatter.cxx
-    src/model/RModel.cxx
-    src/model/RModelProfiler.cxx
-    src/model/RModelProfilerGPU.cxx
-    src/model/RModel_ALPAKA.cxx
-    src/model/RModel_Fusion_ALPAKA.cxx
-    src/model/RModel_GNN.cxx
-    src/model/RModel_GraphIndependent.cxx
+    src/RModel.cxx
+    src/RModelProfiler.cxx
+    src/RModelProfilerGPU.cxx
+    src/RModel_ALPAKA.cxx
+    src/RModel_Fusion_ALPAKA.cxx
+    src/RModel_GNN.cxx
+    src/RModel_GraphIndependent.cxx
     src/functions/RFunction.cxx
     src/functions/RFunction_MLP.cxx
     src/functions/RFunction_Mean.cxx
@@ -87,10 +87,10 @@ set(sources_cxx
     src/utils/SOFIE_common_helpers.cxx
 )
 
-# helper code shared by the generator and the generated code: written once in inc/SOFIE/utils/Shared/*.inc,
+# helper code shared by the generator and the generated code: written once in inc/SOFIE/utils/shared/*.inc,
 # embedded as a string for the generated code
 set(shared_code_names ConvertShapeToLength ConvertShapeToString Broadcast BroadcastConvBias MemoryPlanner)
-set(shared_code_dir "${CMAKE_CURRENT_SOURCE_DIR}/inc/SOFIE/utils/Shared")
+set(shared_code_dir "${CMAKE_CURRENT_SOURCE_DIR}/inc/SOFIE/utils/shared")
 set(shared_code_cxx "${CMAKE_CURRENT_BINARY_DIR}/SOFIE_shared_code.cxx")
 set(shared_code_files)
 foreach(name IN LISTS shared_code_names)

@@ -3,7 +3,7 @@
 
 #include "SOFIE/utils/SOFIE_common.hxx"
 #include "SOFIE/operators/ROperator_ALPAKA.hxx"
-#include "SOFIE/model/RModel.hxx"
+#include "SOFIE/RModel.hxx"
 
 #include <sstream>
 
@@ -59,8 +59,7 @@ public:
          // assume shape of then tensor is same of else tensor
          // if not need to make a parametric tensor output (tbd)
          auto soutput_name = fModel_then->GetOutputTensorNames()[i];
-         // Dim-aware: the "then" branch's output may be dynamic (e.g. it
-         // depends on a tensor defined in this If's own enclosing scope);
+         // Dim-aware: the "then" branch's output may be dynamic
          // GetTensorShape() would throw for that case, while GetDimTensorShape()
          // (and the AddIntermediateTensor(..., vector<Dim>) overload below)
          // handle both the static and dynamic case uniformly.

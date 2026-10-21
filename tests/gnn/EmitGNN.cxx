@@ -2,7 +2,7 @@
 // Description:
 //    This program generates a RModel_GNN for testing
 
-#include "SOFIE/model/RModel_GNN.hxx"
+#include "SOFIE/RModel_GNN.hxx"
 #include "SOFIE/functions/FunctionList.hxx"
 #include "SOFIE/utils/SOFIE_common.hxx"
 

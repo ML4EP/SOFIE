@@ -66,7 +66,7 @@ protected:
    std::unordered_set<std::string> fCustomOpHeaders;
 
    std::set<std::string> fNeededHelperFunctions;
-   std::string fHeaderIncludesTail; ///<! include lines emitted after the standard library ones (e.g. alpaka, custom headers)
+   std::string fHeaderIncludesTail; ///<! include lines emitted after the standard library ones
 
    std::string fName = "UnnamedModel";
    std::string fGC; // generated code

@@ -1,8 +1,8 @@
 #ifndef SOFIE_RMODEL
 #define SOFIE_RMODEL
 
-#include "SOFIE/model/RModel_Base.hxx"
-#include "SOFIE/model/RModelFusion_ALPAKA.hxx"
+#include "SOFIE/RModel_Base.hxx"
+#include "SOFIE/RModelFusion_ALPAKA.hxx"
 #include "SOFIE/utils/SOFIE_common.hxx"
 #include "SOFIE/operators/ROperator.hxx"
 
@@ -65,7 +65,7 @@ private:
    MemoryPoolInfo fIntermediateMemoryInfo;    ///<!  intermediate memory info (transient)
    std::unordered_map<std::string_view, size_t> fIntermediateTensorFrequencyLookup;    ///<!  lookup table for intermediate tensor frequency (transient)
 
-   std::string fExtraCodeForDimShapes; // extra code needed for initialization of dynamic parameters (e.g. number of non zero elements in NonZero operator)
+   std::string fExtraCodeForDimShapes; // extra code needed for initialization of dynamic parameters
    Fusion::Plan fFusion; ///<!
 
 public:
@@ -145,7 +145,6 @@ public:
    void InitializeSubGraph(std::shared_ptr<RModel>  graph);
 
    // set a flag to indicate tensor does not need to be written in a weight file
-   // (e.g. shape tensors used as input to define a shape (in Reshape))
    void SetNotWritableInitializedTensor(const std::string & tensor_name);
 
    // Check if a tensor is initialized

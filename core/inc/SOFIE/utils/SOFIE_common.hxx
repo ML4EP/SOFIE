@@ -70,7 +70,7 @@ struct Dim{
    Dim() {}
 
    // constructor for a parametric dimension with the option to pass a default dim value
-   // We use -1 for dim to indicate that the param dimension is an expression (e.g. "d1+d2")
+   // We use -1 for dim to indicate that the param dimension is an expression
    // in case the string represents a number make Dim not parametric
    Dim(const std::string & p, size_t d = 0) : isParam(true), dim(d), param(p)
    {
@@ -205,10 +205,10 @@ std::vector<Dim> ConvertShapeToDim(const std::vector<size_t> & shape);
 
 std::vector<size_t> ConvertShapeToInt(const std::vector<Dim> & shape);
 
-#include "SOFIE/utils/Shared/ConvertShapeToLength.inc"
+#include "SOFIE/utils/shared/ConvertShapeToLength.inc"
 std::size_t ConvertShapeToLength(const std::vector<Dim> & shape);
 
-#include "SOFIE/utils/Shared/ConvertShapeToString.inc"
+#include "SOFIE/utils/shared/ConvertShapeToString.inc"
 std::string ConvertDimShapeToString(const std::vector<Dim> & shape);
 
 std::string ConvertDimShapeToLength(const std::vector<Dim> & shape);
@@ -297,7 +297,7 @@ public:
    bool IsConstantTensor() const { return fConstant;}
    // query if tensor needs to be written in a weight file. Constant tensors are not written in a separate file
    bool IsWeightTensor() const { return !fConstant && !fIsNotWritable;}
-   // check if a Tensor is Writable (need to be written in the file or in the generated code (e.g. as a constant tensor)
+   // check if a Tensor is Writable (need to be written in the file or in the generated code
    // if an initialized tensors is used in a constant operator at compile time does not need to be written and can be omitted in
    // the generated code
    bool IsNotWritable() const { return fIsNotWritable; }
@@ -365,8 +365,8 @@ std::pair<int, std::vector<Dim>> MultidirectionalBroadcastShape(std::vector<Dim>
 
 
 
-#include "SOFIE/utils/Shared/BroadcastConvBias.inc"
-#include "SOFIE/utils/Shared/Broadcast.inc"
+#include "SOFIE/utils/shared/BroadcastConvBias.inc"
+#include "SOFIE/utils/shared/Broadcast.inc"
 
 /// compute stride of a tensor given its shape (assume layout is row-major)
 std::vector<size_t> ComputeStrideFromShape(const std::vector<size_t> & shape);
@@ -395,7 +395,7 @@ void CloseNestedLoops(std::stringstream &out, size_t loopRank);
 void EmitOutputCoordsFromThreadIdx(std::string &op, const std::vector<Dim> &strides, const std::vector<Dim> &shape);
 
 
-#include "SOFIE/utils/Shared/MemoryPlanner.inc"
+#include "SOFIE/utils/shared/MemoryPlanner.inc"
 
 inline std::string ConvertOutputTypeToString(ETensorType t) {
    // The std::vector<bool> is a special type that is not wrapping continuous memory.
@@ -407,7 +407,6 @@ inline std::string ConvertOutputTypeToString(ETensorType t) {
 struct HelperFunctionsCode {
    std::set<std::string> stdHeaders; // standard headers needed by the definitions
    std::string definitions;
-   std::string cladDefinitions;
 };
 
 ///

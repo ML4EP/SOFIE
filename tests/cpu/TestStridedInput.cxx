@@ -69,7 +69,7 @@
 #include "StridedGemmBiasRelu.hxx"
 #include "StridedGemmTransAB.hxx"
 
-#include "SOFIE/model/RModel.hxx"
+#include "SOFIE/RModel.hxx"
 #include "SOFIE/operators/ROperator_Gemm.hxx"
 
 #include "common/strided_input_test_utils.h"
@@ -134,7 +134,7 @@ TEST(StridedInput, ContiguousExplicitStrides)
 
 TEST(StridedInput, RowPadding)
 {
-   // 3x5 view of a row-major matrix with leading dimension 8 (e.g. a sub-matrix)
+   // 3x5 view of a row-major matrix with leading dimension 8
    StridedBuffer in({3, 5}, {8, 1});
    SOFIE_StridedUnaryChain::Session s("", {{8, 1}});
    std::vector<float> ref(15);

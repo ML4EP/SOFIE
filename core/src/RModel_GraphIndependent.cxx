@@ -2,7 +2,7 @@
 #include <algorithm>
 #include <cctype>
 
-#include "SOFIE/model/RModel_GraphIndependent.hxx"
+#include "SOFIE/RModel_GraphIndependent.hxx"
 
 
 namespace SOFIE {

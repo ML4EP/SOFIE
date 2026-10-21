@@ -2,7 +2,7 @@
 
 #include "common/strided_input_test_utils.h"
 
-#include "SOFIE/model/RModel.hxx"
+#include "SOFIE/RModel.hxx"
 #include "SOFIE/operators/ROperator_BasicUnary.hxx"
 #include "SOFIE/operators/ROperator_BasicBinary.hxx"
 #include "SOFIE/operators/ROperator_BasicIs.hxx"

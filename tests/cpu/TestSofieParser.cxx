@@ -1,5 +1,5 @@
 
-#include <SOFIE/model/RModel.hxx>
+#include <SOFIE/RModel.hxx>
 #include <SOFIE/RModelParser_ONNX.hxx>
 
 #include <filesystem>

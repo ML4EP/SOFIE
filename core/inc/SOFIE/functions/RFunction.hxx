@@ -1,7 +1,7 @@
 #ifndef SOFIE_RFUNCTION
 #define SOFIE_RFUNCTION
 
-#include "SOFIE/model/RModel_Base.hxx"
+#include "SOFIE/RModel_Base.hxx"
 #include "SOFIE/utils/SOFIE_common.hxx"
 #include "SOFIE/operators/ROperator.hxx"
 

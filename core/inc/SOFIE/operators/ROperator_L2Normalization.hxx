@@ -1,7 +1,7 @@
 #ifndef SOFIE_ROPERATOR_L2NORMALIZATION
 #define SOFIE_ROPERATOR_L2NORMALIZATION
 
-#include "SOFIE/model/RModel.hxx"
+#include "SOFIE/RModel.hxx"
 #include "SOFIE/operators/ROperator_ALPAKA.hxx"
 #include "SOFIE/utils/SOFIE_common.hxx"
 
@@ -23,7 +23,7 @@ private:
    std::vector<Dim> fShapeX;
    // Length of the last (normalized) dimension, and product of every other
    // dimension, each as an expression string — a plain number for a fully
-   // static shape, or a symbolic expression (e.g. "n_elements") when fShapeX
+   // static shape, or a symbolic expression when fShapeX
    // carries a dynamic dimension. Computed once in Initialize() and reused
    // by both the CPU and GPU/alpaka code generators.
    std::string fVectorLength;
@@ -185,7 +185,7 @@ public:
       const std::string epsilon = ToStringHighPrec(fEpsilon);
       std::stringstream out;
 
-      // fVectorLength/fNumVectors may be symbolic expressions (e.g. "n_elements")
+      // fVectorLength/fNumVectors may be symbolic expressions
       // rather than literal numbers; this code is emitted directly into
       // _infer_impl's body, which already has the model's dynamic shape
       // parameters in scope as plain local variables/arguments, so referencing

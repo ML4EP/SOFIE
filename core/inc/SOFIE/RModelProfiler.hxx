@@ -1,7 +1,7 @@
 #ifndef SOFIE_RMODELPROFILER
 #define SOFIE_RMODELPROFILER
 
-#include "SOFIE/model/RModel.hxx"
+#include "SOFIE/RModel.hxx"
 
 namespace SOFIE {
 

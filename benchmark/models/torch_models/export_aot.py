@@ -7,7 +7,7 @@ Usage:
 
 With no arguments, exports every point for every available family. Skips
 any family whose torch_models/<family>.py
-fails to import — e.g. mambav2 (see torch_models/mambav2.py).
+fails to import.
 """
 
 import sys

@@ -1,7 +1,7 @@
 // Operators without an alpaka implementation are rejected by the generation
 // for the GPU, with an error naming the operator.
 
-#include "SOFIE/model/RModel.hxx"
+#include "SOFIE/RModel.hxx"
 #include "SOFIE/operators/ROperator_BasicUnary.hxx"
 #include "SOFIE/operators/ROperator_Erf.hxx"
 #include "SOFIE/operators/ROperator_Relu.hxx"

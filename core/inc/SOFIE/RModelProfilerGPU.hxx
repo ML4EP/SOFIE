@@ -3,7 +3,7 @@
 
 #include <string>
 #include <cstddef>
-#include "SOFIE/model/RModel.hxx"
+#include "SOFIE/RModel.hxx"
 
 namespace SOFIE {
 

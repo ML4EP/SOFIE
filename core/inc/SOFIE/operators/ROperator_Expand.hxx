@@ -3,7 +3,7 @@
 
 #include "SOFIE/utils/SOFIE_common.hxx"
 #include "SOFIE/operators/ROperator_ALPAKA.hxx"
-#include "SOFIE/model/RModel.hxx"
+#include "SOFIE/RModel.hxx"
 
 #include <sstream>
 namespace SOFIE{
@@ -39,8 +39,9 @@ public:
 
    bool SupportsStridedInput() const override { return true; }
 
+   std::vector<std::string> GetHelperFunctions() override { return {"UnidirectionalBroadcast"}; }
+
    void Initialize(RModel& model) override {
-      model.AddNeededHelperFunction("UnidirectionalBroadcast");
       // input must be a graph input, or already initialized intermediate tensor
       if (!model.CheckIfTensorAlreadyExist(fNX)) {
         throw std::runtime_error("SOFIE Expand Op Input Tensor " + fNX + " is not found in model");

@@ -3,7 +3,7 @@
 
 #include <SOFIE/utils/SOFIE_common.hxx>
 #include <SOFIE/operators/ROperator.hxx>
-#include <SOFIE/model/RModel.hxx>
+#include <SOFIE/RModel.hxx>
 
 #include <memory>
 #include <sstream>
@@ -126,6 +126,13 @@ public:
    /*! \brief Returns the blas routines needed to compile the generated code
     */
    std::vector<std::string> GetBlasRoutines() override { return {std::string("Gemm"), std::string("Axpy")}; }
+   std::vector<std::string> GetHelperFunctions() override
+   {
+      std::vector<std::string> helpers{"col2im"};
+      if (!fNB.empty())
+         helpers.push_back("BroadcastConvBias");
+      return helpers;
+   }
 };
 
 template <typename T>
@@ -287,10 +294,6 @@ void ROperator_ConvTranspose<T>::Initialize(RModel &model)
    fImcol = fNY + "_xcol";
    fOutputTensorNames.emplace_back(fConvK);
    fOutputTensorNames.emplace_back(fImcol);
-
-   model.AddNeededHelperFunction("col2im");
-   if (!fNB.empty())
-      model.AddNeededHelperFunction("BroadcastConvBias");
 }
 
 template <typename T>

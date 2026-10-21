@@ -1,7 +1,7 @@
 #ifndef SOFIE_ROPERATOR_RNN
 #define SOFIE_ROPERATOR_RNN
 
-#include "SOFIE/model/RModel.hxx"
+#include "SOFIE/RModel.hxx"
 #include "SOFIE/operators/ROperator.hxx"
 #include "SOFIE/utils/SOFIE_common.hxx"
 
@@ -133,7 +133,7 @@ template <typename T> class ROperator_RNN final : public ROperator {
     */
    std::string Generate(std::string OpName) override;
 
-   // generate code for Session data members (e.g. internal vectors)
+   // generate code for Session data members
    std::string GenerateSessionMembersCode(std::string opName) override;
 
    /*! \brief The data input can be read through its strides: it is gathered in the internal input buffer
@@ -289,7 +289,7 @@ auto ROperator_RNN<T>::Initialize(RModel &model) -> void
    model.AddNeededStdLib("cmath");
 }
 
-// generate code for Session data members (e.g. internal vectors)
+// generate code for Session data members
 template <typename T>
 std::string ROperator_RNN<T>::GenerateSessionMembersCode(std::string opName)
 {

@@ -2,7 +2,7 @@
 // Description:
 //    This program generates a RModel_GraphIndependent for testing
 
-#include "SOFIE/model/RModel_GraphIndependent.hxx"
+#include "SOFIE/RModel_GraphIndependent.hxx"
 #include "SOFIE/functions/FunctionList.hxx"
 #include "SOFIE/utils/SOFIE_common.hxx"
 

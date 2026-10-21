@@ -3,7 +3,7 @@
 
 #include "SOFIE/utils/SOFIE_common.hxx"
 #include "SOFIE/operators/ROperator_ALPAKA.hxx"
-#include "SOFIE/model/RModel.hxx"
+#include "SOFIE/RModel.hxx"
 
 #include <sstream>
 namespace SOFIE {
@@ -366,7 +366,6 @@ public:
       op += "}\n\n";
 
       op += "// drain: flush whatever's left, required for correctness in general\n";
-      op += "// (e.g. a short axis may never trigger a fill-driven flush above)\n";
       op += "if (rsN > 0) {\n";
       op += emitLockAcquire();
       op += "alpaka::mem_fence(acc, alpaka::memory_scope::Device{});\n";

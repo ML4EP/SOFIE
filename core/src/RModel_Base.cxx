@@ -4,7 +4,7 @@
 #include <set>
 #include <sstream>
 #include <vector>
-#include "SOFIE/model/RModel_Base.hxx"
+#include "SOFIE/RModel_Base.hxx"
 #include "SOFIE/utils/SOFIE_formatter.hxx"
 
 
@@ -85,15 +85,6 @@ void RModel_Base::EmitHelperFunctionsCode()
         includes += "\n" + fHeaderIncludesTail;
     replaceMarker(kHelperIncludesMarker, includes);
     replaceMarker(kHelperFunctionsMarker, code.definitions);
-
-    if (!code.cladDefinitions.empty()) {
-        auto pos = fGC.rfind("#endif");
-        if (pos != std::string::npos) {
-            fGC.insert(pos, code.cladDefinitions + "\n");
-        } else {
-            fGC += code.cladDefinitions;
-        }
-    }
 }
 
 void RModel_Base::FinalizeGeneratedCode()
@@ -132,7 +123,9 @@ void RModel_Base::GenerateHeaderInfo_GPU_ALPAKA(std::string& hgname) {
     fGC += "\nnamespace SOFIE_" + fName + "{\n";
     fGC += kHelperFunctionsMarker;
 
-    fGC += "\nusing Dim1D = alpaka::DimInt<1>;\n";
+    fGC += "\n// one-dimensional alpaka dimension\n";
+    fGC += "using Dim1D = alpaka::DimInt<1>;\n";
+    fGC += "// work division covering numElems elements with blocks of blockSz threads\n";
     fGC += "template<typename TDim, typename TIdx>\n";
     fGC += "inline alpaka::WorkDivMembers<TDim, TIdx> sofie_workdiv(\n";
     fGC += "alpaka::Vec<TDim, TIdx> const& numElems, TIdx blockSz = TIdx{256})\n{\n";
@@ -147,6 +140,7 @@ void RModel_Base::GenerateHeaderInfo_GPU_ALPAKA(std::string& hgname) {
 
     if (fStridedInput) {
         // layout of an input tensor read through its strides: logical shape and strides (in elements)
+        fGC += "// logical shape and strides (in elements) of an input tensor read through its strides\n";
         fGC += "template<std::size_t R>\n";
         fGC += "struct sofie_strided_layout {\n";
         fGC += "std::size_t shape[R];\n";

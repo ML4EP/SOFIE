@@ -1,7 +1,7 @@
 #ifndef SOFIE_ROPERATOR_GRU
 #define SOFIE_ROPERATOR_GRU
 
-#include "SOFIE/model/RModel.hxx"
+#include "SOFIE/RModel.hxx"
 #include "SOFIE/operators/ROperator.hxx"
 #include "SOFIE/utils/SOFIE_common.hxx"
 
