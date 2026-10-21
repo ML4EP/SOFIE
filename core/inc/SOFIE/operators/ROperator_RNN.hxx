@@ -1,0 +1,718 @@
+#ifndef SOFIE_ROPERATOR_RNN
+#define SOFIE_ROPERATOR_RNN
+
+#include "SOFIE/model/RModel.hxx"
+#include "SOFIE/operators/ROperator.hxx"
+#include "SOFIE/utils/SOFIE_common.hxx"
+
+#include <memory>
+#include <sstream>
+#include <vector>
+
+namespace SOFIE {
+
+/*! \brief Recurrent Neural Network operator
+ *
+ * Inference code generation for one-layer vanilla RNN. Supports forward, reverse and bidirectional RNNs.
+ * See the <a href="https://github.com/onnx/onnx/blob/master/docs/Operators.md#RNN">ONNX documentation</a>
+ * for details about the supported RNN architectures.
+ */
+template <typename T> class ROperator_RNN final : public ROperator {
+ private:
+   std::vector<float> fAttrActivationAlpha;   ///< Scaling values used by some activation functions
+   std::vector<float> fAttrActivationBeta;    ///< Scaling values used by some activation functions
+   std::vector<std::string> fAttrActivations; ///< Activation functions
+   float fAttrClip;                           ///< Clip threshold
+   std::string fAttrDirection;                ///< Direction of processing
+   size_t fAttrHiddenSize;                    ///< Number of the hidden layers
+   size_t fAttrLayout;                        ///< Data layout
+  bool fUseSession = false;
+
+   std::string fNX;                           ///< Name of the input
+   std::string fNW;                           ///< Name of the weights
+   std::string fNR;                           ///< Name of the recurrence
+   std::string fNB;                           ///< Name of the bias
+   std::string fNSequence_lens;               ///< Name of the length of the sequences
+   std::string fNInitial_h;                   ///< Name of the initial value of the hidden states
+   std::string fNY;                           ///< Name of the output
+   std::string fNY_h;                         ///< Name of the last sequence of the output
+
+   std::vector<size_t> fShapeX;               ///< Shape of the input
+   std::vector<size_t> fShapeW;               ///< Shape of the weights
+   std::vector<size_t> fShapeR;               ///< Shape of the recurrence
+   std::vector<size_t> fShapeB;               ///< Shape of the bias
+   std::vector<size_t> fShapeSequence_lens;   ///< Shape of the length of the sequences
+   std::vector<size_t> fShapeInitial_h;       ///< Shape of the initial value of the hidden states
+   std::vector<size_t> fShapeY;               ///< Shape of the output
+   std::vector<size_t> fShapeY_h;             ///< Shape of the last sequence of the output
+
+   std::string fType; ///< Type of the tensors
+
+ public:
+   /*! Default constructor of ROperator_RNN */
+   ROperator_RNN() {}
+
+   /*! \brief Constructor of ROperator_RNN from the attributes
+    *
+    * \param activation_alpha scaling values used by some activation functions
+    * \param activation_beta scaling values used by some activation functions
+    * \param activations activation functions
+    * \param clip clip threshold
+    * \param direction direction of processing of the sequneces
+    * \param hidden_size number of hidden layers
+    * \param layout data layout
+    * \param nameX name of the input tensor
+    * \param nameW name of the weight tensor
+    * \param nameR name of the recurrence tensor
+    * \param nameB name of the bias tensor
+    * \param nameSequence_lens name of the length of the sequences
+    * \param nameInitial_h name of the initial value of the hidden states
+    * \param nameY name of the output
+    * \param nameY_h name of the last sequence of the output
+    */
+   ROperator_RNN(std::vector<float> activation_alpha,
+                 std::vector<float> activation_beta,
+                 std::vector<std::string> activations, float clip,
+                 std::string direction, size_t hidden_size, size_t layout,
+                 std::string nameX, std::string nameW, std::string nameR,
+                 std::string nameB, std::string nameSequence_lens,
+                 std::string nameInitial_h, std::string nameY,
+                 std::string nameY_h)
+       : fAttrActivationAlpha(activation_alpha),
+         fAttrActivationBeta(activation_beta), fAttrActivations(activations),
+         fAttrClip(clip), fAttrDirection(direction),
+         fAttrHiddenSize(hidden_size), fAttrLayout(layout),
+         fNX(UTILITY::Clean_name(nameX)), fNW(UTILITY::Clean_name(nameW)),
+         fNR(UTILITY::Clean_name(nameR)), fNB(UTILITY::Clean_name(nameB)),
+         fNSequence_lens(UTILITY::Clean_name(nameSequence_lens)),
+         fNInitial_h(UTILITY::Clean_name(nameInitial_h)),
+         fNY(UTILITY::Clean_name(nameY)), fNY_h(UTILITY::Clean_name(nameY_h)) {
+      if (std::is_same<T, float>::value) {
+         fType = "float";
+      } else {
+         throw std::runtime_error(
+             "SOFIE Encountered unsupported type parsing a RNN operator");
+      }
+
+      fInputTensorNames = { fNX, fNW, fNR };
+      if(!fNB.empty()){
+         fInputTensorNames.emplace_back(fNB);
+      }
+      if(!fNSequence_lens.empty()){
+         fInputTensorNames.emplace_back(fNSequence_lens);
+      }
+      if(!fNInitial_h.empty()){
+         fInputTensorNames.emplace_back(fNInitial_h);
+      }
+
+      fOutputTensorNames = { };
+      if(!fNY.empty()){
+         fOutputTensorNames.emplace_back(fNY);
+      }
+      if(!fNY_h.empty()){
+         fOutputTensorNames.emplace_back(fNY_h);
+      }
+   }
+
+   /*! \brief Infers the shape of the output tensors
+    *
+    * \param input shape of the input tensors
+    */
+   std::vector<std::vector<size_t>>
+   ShapeInference(std::vector<std::vector<size_t>> input);
+
+   /*! \brief Initialize the model
+    *
+    * \param model Model
+    */
+   void Initialize(RModel &) override;
+
+   /*! \brief Generates the inference code
+    *
+    * \param OpName name of the operator
+    */
+   std::string Generate(std::string OpName) override;
+
+   // generate code for Session data members (e.g. internal vectors)
+   std::string GenerateSessionMembersCode(std::string opName) override;
+
+   /*! \brief The data input can be read through its strides: it is gathered in the internal input buffer
+    */
+   bool SupportsStridedInput() const override { return true; }
+
+   /*! \brief Returns the blas routines needed to compile the generated code
+    */
+   std::vector<std::string> GetBlasRoutines() override { return { std::string("Gemm"), std::string("Axpy") }; }
+};
+
+template <typename T>
+auto ROperator_RNN<T>::ShapeInference(std::vector<std::vector<size_t>> input) -> std::vector<std::vector<size_t>>
+{
+   size_t num_directions = input[1][0];
+   size_t hidden_size = input[1][1];
+   if (fAttrLayout == 0) {
+      size_t seq_length = input[0][0];
+      size_t batch_size = input[0][1];
+      std::vector<std::vector<size_t>> ret(
+         {{seq_length, num_directions, batch_size, hidden_size}, {num_directions, batch_size, hidden_size}});
+      return ret;
+   } else {
+      size_t batch_size = input[0][0];
+      size_t seq_length = input[0][1];
+      std::vector<std::vector<size_t>> ret(
+         {{batch_size, seq_length, num_directions, hidden_size}, {batch_size, num_directions, hidden_size}});
+      return ret;
+   }
+}
+
+template <typename T>
+auto ROperator_RNN<T>::Initialize(RModel &model) -> void
+{
+   fUseSession = model.UseSession();
+   if (!model.CheckIfTensorAlreadyExist(fNX)) {
+      throw std::runtime_error("SOFIE RNN Op input tensor " + fNX + "  is not found in model.");
+   }
+   fShapeX = model.GetTensorShape(fNX);
+   if (fShapeX.size() != 3) {
+      throw std::runtime_error("SOFIE RNN Op input tensor " + fNX + " is not of 3 dimensions.");
+   }
+   fHasStridedInput = model.IsStridedInputTensor(fNX);
+   for (const auto &name : fInputTensorNames)
+      if (name != fNX && model.IsStridedInputTensor(std::string(name)))
+         throw std::runtime_error("SOFIE RNN Op - strided input is only supported for the data tensor X");
+
+   if (!model.CheckIfTensorAlreadyExist(fNW)) {
+      throw std::runtime_error("SOFIE RNN Op input tensor " + fNW + "  is not found in model.");
+   }
+   fShapeW = model.GetTensorShape(fNW);
+   if (fShapeW.size() != 3) {
+      throw std::runtime_error("SOFIE RNN Op input tensor " + fNW + " is not of 3 dimensions.");
+   }
+   if (!model.CheckIfTensorAlreadyExist(fNR)) {
+      throw std::runtime_error("SOFIE RNN Op input tensor " + fNR + "  is not found in model.");
+   }
+   fShapeR = model.GetTensorShape(fNR);
+   if (fShapeR.size() != 3) {
+      throw std::runtime_error("SOFIE RNN Op input tensor " + fNR + " is not of 3 dimensions.");
+   }
+   if (!fNB.empty()) {
+      if (!model.CheckIfTensorAlreadyExist(fNB)) {
+         throw std::runtime_error("SOFIE RNN op input tensor " + fNB + " is not  found in model.");
+      }
+      fShapeB = model.GetTensorShape(fNB);
+      if (fShapeB.size() != 2 && fShapeB.size() != 4) {
+         throw std::runtime_error("SOFIE RNN op input tensor " + fNB + " is not of 2 or 4 dimensions.");
+      }
+      if (fShapeB.size() == 2) {
+         auto original_data = model.GetInitializedTensorData(fNB);
+         size_t num_directions = fShapeW[0];
+         size_t seq_length = (fAttrLayout == 0) ? fShapeX[0] : fShapeX[1];
+         size_t batch_size = (fAttrLayout == 0) ? fShapeX[1] : fShapeX[0];
+         if (fType == "float") {
+            float *original_bias = static_cast<float *>(original_data.get());
+            float *new_bias = new float[num_directions * seq_length * batch_size * fAttrHiddenSize];
+            std::vector<float> sum(fAttrHiddenSize);
+            for (size_t direction = 0; direction < num_directions; direction++) {
+               for (size_t h = 0; h < fAttrHiddenSize; h++) {
+                  sum[h] = original_bias[direction * 2 * fAttrHiddenSize + h] +
+                           original_bias[(2 * direction + 1) * fAttrHiddenSize + h];
+               }
+               for (size_t seq = 0; seq < seq_length; seq++) {
+                  for (size_t batch = 0; batch < batch_size; batch++) {
+                     size_t bias_offset = direction * seq_length * batch_size * fAttrHiddenSize +
+                                          seq * batch_size * fAttrHiddenSize + batch * fAttrHiddenSize;
+                     std::copy(sum.begin(), sum.end(), new_bias + bias_offset);
+                  }
+               }
+            }
+            std::vector<size_t> new_bias_shape = {num_directions, seq_length, batch_size, fAttrHiddenSize};
+            std::shared_ptr<void> new_bias_ptr(new_bias, std::default_delete<float[]>());
+            model.UpdateInitializedTensor(fNB, model.GetTensorType(fNB), new_bias_shape, new_bias_ptr);
+            fShapeB = model.GetTensorShape(fNB);
+         }
+      }
+   }
+   if (!fNSequence_lens.empty()) {
+      if (!model.CheckIfTensorAlreadyExist(fNSequence_lens)) {
+         throw std::runtime_error("SOFIE RNN Op input tensor " + fNSequence_lens + "is not found in model.");
+      }
+      fShapeSequence_lens = model.GetTensorShape(fNSequence_lens);
+      if (fShapeSequence_lens.size() != 1) {
+         throw std::runtime_error("SOFIE RNN Op input tensor " + fNSequence_lens + " is not of 1 dimension.");
+      }
+   }
+   if (!fNInitial_h.empty()) {
+      if (!model.CheckIfTensorAlreadyExist(fNInitial_h)) {
+         throw std::runtime_error("SOFIE RNN Op input tensor " + fNInitial_h + " is not found in model.");
+      }
+      fShapeInitial_h = model.GetTensorShape(fNInitial_h);
+      if (fShapeInitial_h.size() != 3) {
+         throw std::runtime_error("SOFIE RNN Op input tensor " + fNInitial_h + " is not of 3 dimensions.");
+      }
+   }
+   if (!fNY.empty()) {
+      fShapeY = ShapeInference({fShapeX, fShapeW})[0];
+      if (!model.CheckIfTensorAlreadyExist(fNY)) {
+         model.AddIntermediateTensor(fNY, model.GetTensorType(fNX), fShapeY);
+      }
+   }
+   if (!fNY_h.empty()) {
+      fShapeY_h = ShapeInference({fShapeX, fShapeW})[1];
+      if (!model.CheckIfTensorAlreadyExist(fNY_h)) {
+         model.AddIntermediateTensor(fNY_h, model.GetTensorType(fNX), fShapeY_h);
+      }
+   }
+   for (auto &activation : fAttrActivations) {
+      if (activation != "Relu" && activation != "Tanh" && activation != "Sigmoid" && activation != "Affine" &&
+          activation != "LeakyRelu" && activation != "ThresholdRelu" && activation != "ScaledTanh" &&
+          activation != "HardSigmoid" && activation != "Elu" && activation != "Softsign" && activation != "Softplus") {
+         throw std::runtime_error("SOFIE - Activation function " + activation + " not implemented");
+      }
+   }
+   if (fAttrDirection != "forward" && fAttrDirection != "backward" && fAttrDirection != "bidirectional") {
+      throw std::runtime_error("SOFIE - Invalid RNN direction fAttrDirection = " + fAttrDirection);
+   }
+   if (fAttrHiddenSize != fShapeW[1]) {
+      throw std::runtime_error("SOFIE - fAttrHiddenSize must be equal to " + std::to_string(fShapeW[1]));
+   }
+   if (fAttrLayout > 1) {
+      throw std::runtime_error("SOFIE - Layout fAttrLayout = " + std::to_string(fAttrLayout) +
+                               " must be 0 (timewise) or 1 (batchwise)");
+   }
+   if (fAttrActivations.empty()) {
+      if (fAttrDirection == "bidirectional") {
+         fAttrActivations = {"Tanh", "Tanh"};
+      } else {
+         fAttrActivations = {"Tanh"};
+      }
+   }
+   model.AddNeededStdLib("cmath");
+}
+
+// generate code for Session data members (e.g. internal vectors)
+template <typename T>
+std::string ROperator_RNN<T>::GenerateSessionMembersCode(std::string opName)
+{
+   opName = "op_" + opName;
+   std::stringstream out;
+
+   size_t num_directions = fShapeW[0];
+   size_t seq_length = (fAttrLayout == 0) ? fShapeX[0] : fShapeX[1];
+   size_t batch_size = (fAttrLayout == 0) ? fShapeX[1] : fShapeX[0];
+   size_t input_size = fShapeX[2];
+
+   struct Block {
+      std::string name;
+      size_t size;
+   };
+
+   std::vector<Block> blocks;
+
+   // (the input of a strided tensor is gathered in the input buffer)
+   if (fAttrLayout != 0 || fHasStridedInput)
+      blocks.push_back({"input", seq_length * batch_size * input_size});
+   if (fAttrLayout != 0)
+      blocks.push_back({"initial_hidden_state", num_directions * batch_size * fAttrHiddenSize});
+   blocks.push_back({"feedforward", seq_length * batch_size * fAttrHiddenSize});
+   if (fAttrLayout != 0 || fNY.empty()) {
+      blocks.push_back({"hidden_state", seq_length * num_directions * batch_size * fAttrHiddenSize});
+   }
+
+   size_t total_size = 0;
+   for (const auto &b : blocks) {
+      total_size += b.size;
+   }
+
+   out << "std::vector<" << fType << "> fVec_" << opName << "_buffer = std::vector<" << fType << ">(" << total_size
+       << ");\n";
+
+   std::size_t offset = 0;
+   for (const auto &b : blocks) {
+      out << fType << "* fVec_" << opName << "_" << b.name << " = fVec_" << opName << "_buffer.data() + " << offset
+          << ";\n";
+      offset += b.size;
+   }
+
+   out << "\n";
+
+   return out.str();
+}
+
+template <typename T>
+auto ROperator_RNN<T>::Generate(std::string OpName) -> std::string
+{
+   OpName = "op_" + OpName;
+   std::stringstream out;
+
+   size_t seq_length = (fAttrLayout == 0) ? fShapeX[0] : fShapeX[1];
+   size_t batch_size = (fAttrLayout == 0) ? fShapeX[1] : fShapeX[0];
+   size_t input_size = fShapeX[2];
+   size_t num_directions = fShapeW[0];
+
+   if (fAttrLayout == 0 && !fHasStridedInput) {
+      if (fType == "float") {
+         out << "float const*" << OpName << "_input = tensor_" << fNX << ";\n";
+      }
+   } else {
+      if (fHasStridedInput)
+         out << GenerateStridedOffsetLambda(OpName, fNX, ConvertShapeToDim(fShapeX));
+      if (fUseSession)
+         out << fType << " * " << OpName << "_input = this->fVec_" << OpName << "_input;\n";
+      else
+         out << fType << " " << OpName << "_input[" << seq_length * batch_size * input_size << "];\n";
+      out << "for(size_t seq = 0; seq < " << seq_length << "; seq++) {\n";
+      out << "for(size_t batch = 0; batch < " << batch_size << "; batch++) {\n";
+      out << "for(size_t i = 0; i < " << input_size << "; i++) {\n";
+      {
+         // logical (contiguous) index of the element of X, which is read through its strides if it is strided
+         const std::string index = (fAttrLayout == 0)
+            ? "seq * " + std::to_string(batch_size * input_size) + " + batch * " + std::to_string(input_size) + " + i"
+            : "batch * " + std::to_string(seq_length * input_size) + " + seq * " + std::to_string(input_size) + " + i";
+         out << OpName << "_input[seq * " << batch_size * input_size << " + batch * " << input_size
+             << " + i] = tensor_" << fNX << (fHasStridedInput ? "[xoff_" + OpName + "(" + index + ")]" : "[" + index + "]")
+             << ";\n";
+      }
+      out << "}\n";
+      out << "}\n";
+      out << "}\n";
+   }
+
+   if (!fNInitial_h.empty()) {
+      if (fAttrLayout == 0) {
+         out << fType << " *" << OpName << "_initial_hidden_state = " << " tensor_" << fNInitial_h << ";\n";
+      } else {
+         if (fUseSession)
+            out << fType << " * " << OpName << "_initial_hidden_state = this->fVec_" << OpName
+                << "_initial_hidden_state;\n";
+         else
+            out << fType << " " << OpName << "_initial_hidden_state[" << num_directions * batch_size * fAttrHiddenSize
+                << "] = {0};\n";
+
+         for (size_t direction = 0; direction < num_directions; direction++) {
+            out << "for(size_t batch = 0; batch < " << batch_size << "; batch++) {\n";
+            out << "for(size_t h = 0; h < " << fAttrHiddenSize << "; h++) {\n";
+            out << OpName << "_initial_hidden_state[" << direction * batch_size * fAttrHiddenSize
+                << " + batch * " << fAttrHiddenSize << " + h] = tensor_" << fNInitial_h << "[batch * "
+                << num_directions * fAttrHiddenSize << " + " << direction * fAttrHiddenSize << " + h];\n";
+            out << "}\n";
+            out << "}\n";
+         }
+      }
+   }
+
+   if (fUseSession)
+      out << fType << " * " << OpName << "_feedforward = this->fVec_" << OpName << "_feedforward;\n";
+   else
+      out << fType << " " << OpName << "_feedforward[" << seq_length * batch_size * fAttrHiddenSize
+          << "] = {0};\n";
+
+   if (fAttrLayout == 0 && !fNY.empty()) {
+      out << fType << " *" << OpName << "_hidden_state = tensor_" << fNY << ";\n";
+   } else {
+      if (fUseSession)
+         out << fType << " * " << OpName << "_hidden_state = this->fVec_" << OpName << "_hidden_state;\n";
+      else
+         out << fType << " " << OpName << "_hidden_state["
+             << seq_length * num_directions * batch_size * fAttrHiddenSize << "] = {0};\n";
+   }
+
+   out << "char " << OpName << "_transA = 'N';\n";
+   out << "char " << OpName << "_transB = 'T';\n";
+   out << "int " << OpName << "_m = " << seq_length * batch_size << ";\n";
+   out << "int " << OpName << "_n = " << fAttrHiddenSize << ";\n";
+   out << "int " << OpName << "_k = " << input_size << ";\n";
+   if (fType == "float") {
+      out << "float " << OpName << "_alpha = 1.;\n";
+      out << "float " << OpName << "_beta = .0;\n";
+   }
+   if (!fNB.empty()) {
+      out << "int " << OpName << "_bias_size = " << seq_length * batch_size * fAttrHiddenSize << ";\n";
+      out << "int " << OpName << "_incx = 1;\n";
+      out << "int " << OpName << "_incy = 1;\n";
+   }
+
+   for (size_t direction = 0; direction < num_directions; direction++) {
+      if (fType == "float") {
+         if (direction == 0) {
+            out << "BLAS::sgemm_(&" << OpName << "_transB, &" << OpName << "_transA, &" << OpName << "_n, &"
+                << OpName << "_m, &" << OpName << "_k, &" << OpName << "_alpha, tensor_" << fNW << ", &" << OpName
+                << "_k, " << OpName << "_input, &" << OpName << "_k, &" << OpName << "_beta, " << OpName
+                << "_feedforward, &" << OpName << "_n);\n";
+         } else {
+            out << "size_t " << OpName << "_w_offset = " << fAttrHiddenSize * input_size << ";\n";
+            out << "BLAS::sgemm_(&" << OpName << "_transB, &" << OpName << "_transA, &" << OpName << "_n, &"
+                << OpName << "_m, &" << OpName << "_k, &" << OpName << "_alpha, tensor_" << fNW << " + " << OpName
+                << "_w_offset, &" << OpName << "_k, " << OpName << "_input, &" << OpName << "_k, &" << OpName
+                << "_beta, " << OpName << "_feedforward, &" << OpName << "_n);\n";
+         }
+      }
+      if (!fNB.empty()) {
+         if (fType == "float") {
+            if (direction == 0) {
+               out << "BLAS::saxpy_(&" << OpName << "_bias_size, &" << OpName << "_alpha, tensor_" << fNB << ", &"
+                   << OpName << "_incx, " << OpName << "_feedforward, &" << OpName << "_incy);\n";
+            } else {
+               out << "size_t " << OpName << "_bias_offset = " << seq_length * batch_size * fAttrHiddenSize
+                   << ";\n";
+               out << "BLAS::saxpy_(&" << OpName << "_bias_size, &" << OpName << "_alpha, tensor_" << fNB << " + "
+                   << OpName << "_bias_offset, &" << OpName << "_incx, " << OpName << "_feedforward, &" << OpName
+                   << "_incy);\n";
+            }
+         }
+      }
+
+      out << "for (size_t seq = 0; seq < " << seq_length << "; seq++) {\n";
+      out << "size_t offset = seq * " << batch_size * fAttrHiddenSize << ";\n";
+      out << "size_t size = " << batch_size * fAttrHiddenSize << ";\n";
+      out << "size_t h_offset = seq * " << num_directions * batch_size * fAttrHiddenSize << " + "
+          << direction * batch_size * fAttrHiddenSize << ";\n";
+      out << "std::copy(" << OpName << "_feedforward + offset, " << OpName
+          << "_feedforward + offset + size, " << OpName << "_hidden_state + h_offset);\n";
+      out << "}\n";
+
+      out << "for (size_t seq = 0; seq < " << seq_length << "; seq++) {\n";
+      if (fAttrDirection == "backward" || direction == 1) {
+         out << "size_t index = " << seq_length - 1 << " - seq;\n";
+      } else {
+         out << "size_t index = seq;\n";
+      }
+
+      out << "int m2 = " << batch_size << ";\n";
+      out << "size_t offset = index * " << num_directions * batch_size * fAttrHiddenSize << " + "
+          << direction * batch_size * fAttrHiddenSize << ";\n";
+      out << "size_t size = " << batch_size * fAttrHiddenSize << ";\n";
+      out << "if (seq == 0) {\n";
+      if (!fNInitial_h.empty()) {
+         out << "size_t r_offset = " << direction * fAttrHiddenSize * fAttrHiddenSize << ";\n";
+         out << "size_t initial_hidden_state_offset = " << direction * batch_size * fAttrHiddenSize
+             << ";\n";
+         if (fType == "float") {
+            out << "BLAS::sgemm_(&" << OpName << "_transB, &" << OpName << "_transA, &" << OpName
+                << "_n, &m2, &" << OpName << "_n, &" << OpName << "_alpha, tensor_" << fNR << " + r_offset, &" << OpName
+                << "_n, " << OpName << "_initial_hidden_state + initial_hidden_state_offset, &" << OpName << "_n, &"
+                << OpName << "_alpha, " << OpName << "_hidden_state + offset, &" << OpName << "_n);\n";
+         }
+      }
+      out << "} else {\n";
+      out << "size_t r_offset = " << direction * fAttrHiddenSize * fAttrHiddenSize << ";\n";
+      if (fAttrDirection == "backward" || direction == 1) {
+         out << "size_t previous_offset = (index + 1) * "
+             << num_directions * batch_size * fAttrHiddenSize << " + " << direction * batch_size * fAttrHiddenSize
+             << ";\n";
+      } else {
+         out << "size_t previous_offset = (seq - 1) * "
+             << num_directions * batch_size * fAttrHiddenSize << " + " << direction * batch_size * fAttrHiddenSize
+             << ";\n";
+      }
+      if (fType == "float") {
+         out << "BLAS::sgemm_(&" << OpName << "_transB, &" << OpName << "_transA, &" << OpName
+             << "_n, &m2, &" << OpName << "_n, &" << OpName << "_alpha, tensor_" << fNR << " + r_offset, &" << OpName
+             << "_n, " << OpName << "_hidden_state + previous_offset, &" << OpName << "_n, &" << OpName << "_alpha, "
+             << OpName << "_hidden_state + offset, &" << OpName << "_n);\n";
+      }
+      out << "}\n";
+
+      if (fAttrClip > .0) {
+         out << "for (size_t i = offset; i < offset + size; i++) {\n";
+         if (fType == "float") {
+            out << "float x = (" << OpName << "_hidden_state[i] > " << -fAttrClip << ") ? " << OpName
+                << "_hidden_state[i] : " << -fAttrClip << ";\n";
+         }
+         out << OpName << "_hidden_state[i] = (x < " << fAttrClip << ") ? x : " << fAttrClip << ";\n";
+         out << "}\n";
+      }
+
+      if (fAttrActivations[direction] == "Relu") {
+         out << "for (size_t i = offset; i < offset + size; i++) {\n";
+         out << "if (" << OpName << "_hidden_state[i] < 0.)\n";
+         out << OpName << "_hidden_state[i] = 0.;\n";
+         out << "}\n";
+      } else if (fAttrActivations[direction] == "Tanh") {
+         out << "for (size_t i = offset; i < offset + size; i++) {\n";
+         if (fType == "float") {
+            out << "float ex = std::exp(-2 * " << OpName << "_hidden_state[i]);\n";
+         }
+         out << OpName << "_hidden_state[i] = (1. - ex) / (1. + ex);\n";
+         out << "}\n";
+      } else if (fAttrActivations[direction] == "Sigmoid") {
+         out << "for (size_t i = offset; i < offset + size; i++) {\n";
+         out << OpName << "_hidden_state[i] = 1. / (1. + std::exp(-" << OpName
+             << "_hidden_state[i]));\n";
+         out << "}\n";
+      } else if (fAttrActivations[direction] == "Affine") {
+         out << "for (size_t i = offset; i < offset + size; i++) {\n";
+         out << OpName << "_hidden_state[i] = " << fAttrActivationAlpha[direction] << " * "
+             << OpName << "_hidden_state[i] + " << fAttrActivationBeta[direction] << ";\n";
+         out << "}\n";
+      } else if (fAttrActivations[direction] == "ScaledTanh") {
+         out << "for (size_t i = offset; i < offset + size; i++) {\n";
+         if (fType == "float") {
+            out << "float ex = std::exp(-2 * " << fAttrActivationBeta[direction] << " * " << OpName
+                << "_hidden_state[i]);\n";
+         }
+         out << OpName << "_hidden_state[i] = " << fAttrActivationAlpha[direction]
+             << " * (1. - ex) / (1. + ex);\n";
+         out << "}\n";
+      } else if (fAttrActivations[direction] == "HardSigmoid") {
+         out << "for (size_t i = offset; i < offset + size; i++) {\n";
+         if (fType == "float") {
+            out << "float a = " << fAttrActivationAlpha[direction] << " * " << OpName
+                << "_hidden_state[i] + " << fAttrActivationBeta[direction] << ";\n";
+            out << "float b = (a > 0.) ? a : 0.;\n";
+         }
+         out << OpName << "_hidden_state[i] = (b < 1.) ? b : 1.;\n";
+         out << "}\n";
+      } else if (fAttrActivations[direction] == "LeakyRelu") {
+         out << "for (size_t i = offset; i < offset + size; i++) {\n";
+         out << "if (" << OpName << "_hidden_state[i] < 0.)\n";
+         out << OpName << "_hidden_state[i] = " << fAttrActivationAlpha[direction] << " * "
+             << OpName << "_hidden_state[i];\n";
+         out << "}\n";
+      } else if (fAttrActivations[direction] == "ThresholdRelu") {
+         out << "for (size_t i = offset; i < offset + size; i++) {\n";
+         out << "if (" << OpName << "_hidden_state[i] < " << fAttrActivationAlpha[direction] << ")\n";
+         out << OpName << "_hidden_state[i] = 0.;\n";
+         out << "}";
+      } else if (fAttrActivations[direction] == "Elu") {
+         out << "for (size_t i = offset; i < offset + size; i++) {\n";
+         out << "if (" << OpName << "_hidden_state[i] < 0.)\n";
+         out << OpName << "_hidden_state[i] = " << fAttrActivationAlpha[direction]
+             << " * std::exp(" << OpName << "_hidden_state[i] - 1.);\n";
+         out << "}\n";
+      } else if (fAttrActivations[direction] == "Softsign") {
+         out << "for (size_t i = offset; i < offset + size; i++) {\n";
+         out << OpName << "_hidden_state[i] = " << OpName << "_hidden_state[i] / (1. + abs("
+             << OpName << "_hidden_state[i]));\n";
+         out << "}\n";
+      } else {
+         out << "for (size_t i = offset; i < offset + size; i++) {\n";
+         out << OpName << "_hidden_state[i] = log(1. + std::exp(" << OpName
+             << "_hidden_state[i]));\n";
+         out << "}\n";
+         out << "}\n";
+      }
+      out << "}\n";
+   }
+
+   if (!fNSequence_lens.empty()) {
+      out << "for (size_t seq = 0; seq < " << seq_length << "; seq++) {\n";
+      out << "for (size_t batch = 0; batch < " << batch_size << "; batch++) {\n";
+      out << "if (seq >= tensor_" << fNSequence_lens << "[batch]) {\n";
+      out << "for (size_t h = 0; h < " << fAttrHiddenSize << "; h++) {\n";
+      if (num_directions == 1) {
+         out << OpName << "_hidden_state[seq * "
+             << num_directions * batch_size * fAttrHiddenSize << " + batch * " << fAttrHiddenSize << " + h] = 0.;\n";
+      } else {
+         out << OpName << "_hidden_state[seq * "
+             << num_directions * batch_size * fAttrHiddenSize << " + batch * " << fAttrHiddenSize << " + h] = 0.;\n";
+         out << OpName << "_hidden_state[seq * "
+             << num_directions * batch_size * fAttrHiddenSize << " + " << batch_size * fAttrHiddenSize << " + batch * "
+             << fAttrHiddenSize << " + h] = 0.;\n";
+      }
+      out << "}\n";
+      out << "}\n";
+      out << "}\n";
+      out << "}\n";
+   }
+
+   if (fAttrLayout == 0) {
+      if (!fNY_h.empty()) {
+         if (fNSequence_lens.empty()) {
+            size_t yh_size = batch_size * fAttrHiddenSize;
+            if (fAttrDirection == "backward") {
+               out << "std::copy(" << OpName << "_hidden_state, " << OpName << "_hidden_state + " << yh_size
+                   << ", tensor_" << fNY_h << ");\n";
+            } else {
+               size_t offset = (seq_length - 1) * num_directions * batch_size * fAttrHiddenSize;
+               out << "std::copy(" << OpName << "_hidden_state + " << offset << ", " << OpName
+                   << "_hidden_state + " << offset << " + " << yh_size << ", tensor_" << fNY_h << ");\n";
+            }
+            if (num_directions == 2) {
+               out << "std::copy(" << OpName << "_hidden_state + " << yh_size << ", " << OpName
+                   << "_hidden_state + " << 2 * yh_size << ", tensor_" << fNY_h << " + " << yh_size << ");\n";
+            }
+         } else {
+            if (fAttrDirection == "backward") {
+               out << "for (size_t batch = 0; batch < " << batch_size << "; batch++) {\n";
+               out << "size_t offset = batch * " << fAttrHiddenSize << ";\n";
+               out << "std::copy(" << OpName << "_hidden_state + offset, " << OpName
+                   << "_hidden_state + offset + " << fAttrHiddenSize << ", tensor_" << fNY_h << " + offset);\n";
+               out << "}\n";
+            } else {
+               out << "for (size_t batch = 0; batch < " << batch_size << "; batch++) {\n";
+               out << "size_t seq = " << "tensor_" << fNSequence_lens << "[batch] - 1;\n";
+               out << "size_t offset = seq * " << num_directions * batch_size * fAttrHiddenSize
+                   << " + batch * " << fAttrHiddenSize << ";\n";
+               out << "size_t yh_offset = batch * " << fAttrHiddenSize << ";\n";
+               out << "std::copy(" << OpName << "_hidden_state + offset, " << OpName
+                   << "_hidden_state + offset + " << fAttrHiddenSize << ", tensor_" << fNY_h << " + yh_offset);\n";
+               out << "}\n";
+            }
+            if (num_directions == 2) {
+               out << "for (size_t batch = 0; batch < " << batch_size << "; batch++) {\n";
+               out << "size_t offset = " << batch_size * fAttrHiddenSize << " + batch * " << fAttrHiddenSize
+                   << ";\n";
+               out << "size_t yh_offset = " << batch_size * fAttrHiddenSize << " + batch * "
+                   << fAttrHiddenSize << ";\n";
+               out << "std::copy(" << OpName << "_hidden_state + offset, " << OpName
+                   << "_hidden_state + offset + " << fAttrHiddenSize << ", tensor_" << fNY_h << " + yh_offset);\n";
+               out << "}\n";
+            }
+         }
+      }
+   } else {
+      if (!fNY.empty()) {
+         for (size_t direction = 0; direction < num_directions; direction++) {
+            out << "for (size_t seq = 0; seq < " << seq_length << "; seq++) {\n";
+            out << "for (size_t batch = 0; batch < " << batch_size << "; batch++) {\n";
+            out << "size_t offset = seq * " << num_directions * batch_size * fAttrHiddenSize << " + "
+                << direction * batch_size * fAttrHiddenSize << " + batch * " << fAttrHiddenSize << ";\n";
+            out << "size_t y_offset = batch * " << seq_length * num_directions * fAttrHiddenSize
+                << " + seq * " << num_directions * fAttrHiddenSize << " + " << direction * fAttrHiddenSize << ";\n";
+            out << "std::copy(" << OpName << "_hidden_state + offset, " << OpName
+                << "_hidden_state + offset + " << fAttrHiddenSize << ", tensor_" << fNY << " + y_offset);\n";
+            out << "}\n";
+            out << "}\n";
+         }
+      }
+      if (!fNY_h.empty()) {
+         if (fAttrDirection == "backward") {
+            out << "for (size_t batch = 0; batch < " << batch_size << "; batch++) {\n";
+            out << "size_t offset = batch * " << fAttrHiddenSize << ";\n";
+            out << "size_t yh_offset = batch * " << num_directions * fAttrHiddenSize << ";\n";
+            out << "std::copy(" << OpName << "_hidden_state + offset, " << OpName
+                << "_hidden_state + offset + " << fAttrHiddenSize << ", tensor_" << fNY_h << " + yh_offset);\n";
+            out << "}\n";
+         } else {
+            out << "for (size_t batch = 0; batch < " << batch_size << "; batch++) {\n";
+            if (fNSequence_lens.empty()) {
+               out << "size_t seq = " << seq_length - 1 << ";\n";
+            } else {
+               out << "size_t seq = " << "tensor_" << fNSequence_lens << "[batch] - 1;\n";
+            }
+            out << "size_t offset = seq * " << num_directions * batch_size * fAttrHiddenSize
+                << " + batch * " << fAttrHiddenSize << ";\n";
+            out << "size_t yh_offset = batch * " << num_directions * fAttrHiddenSize << ";\n";
+            out << "std::copy(" << OpName << "_hidden_state + offset, " << OpName
+                << "_hidden_state + offset + " << fAttrHiddenSize << ", tensor_" << fNY_h << " + yh_offset);\n";
+            out << "}\n";
+         }
+         if (num_directions == 2) {
+            out << "for (size_t batch = 0; batch < " << batch_size << "; batch++) {\n";
+            out << "size_t offset = " << batch_size * fAttrHiddenSize << " + batch * " << fAttrHiddenSize
+                << ";\n";
+            out << "size_t yh_offset = batch * " << num_directions * fAttrHiddenSize << " + "
+                << fAttrHiddenSize << ";\n";
+            out << "std::copy(" << OpName << "_hidden_state + offset, " << OpName
+                << "_hidden_state + offset + " << fAttrHiddenSize << ", tensor_" << fNY_h << " + yh_offset);\n";
+            out << "}\n";
+         }
+      }
+   }
+
+   return out.str();
+}
+
+} // namespace SOFIE
+
+#endif

@@ -1,7 +1,7 @@
 // Author: Sanjiban Sengupta
 
-#include "SOFIE/RModel_Base.hxx"
-#include "SOFIE/RModel.hxx"
+#include "SOFIE/model/RModel_Base.hxx"
+#include "SOFIE/model/RModel.hxx"
 #include "SOFIE/RModelParser_ONNX.hxx"
 
 using namespace SOFIE;

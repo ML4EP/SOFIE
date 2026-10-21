@@ -1,5 +1,5 @@
 #include "SOFIE/RModelParser_ONNX.hxx"
-#include "SOFIE/ROperator_Gather.hxx"
+#include "SOFIE/operators/ROperator_Gather.hxx"
 #include "onnx.hxx"
 #include <stdexcept>
 

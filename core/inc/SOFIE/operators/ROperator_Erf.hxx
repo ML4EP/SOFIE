@@ -1,0 +1,70 @@
+#ifndef SOFIE_ROPERATOR_Erf
+#define SOFIE_ROPERATOR_Erf
+
+#include "SOFIE/utils/SOFIE_common.hxx"
+#include "SOFIE/operators/ROperator.hxx"
+#include "SOFIE/model/RModel.hxx"
+
+#include <sstream>
+
+namespace SOFIE{
+
+template <typename T>
+class ROperator_Erf final : public ROperator
+{
+
+private:
+
+   std::string fNX;
+   std::string fNY;
+   std::vector<Dim> fShape;
+
+public:
+   ROperator_Erf(){}
+   ROperator_Erf(std::string nameX, std::string nameY):
+      fNX(UTILITY::Clean_name(nameX)), fNY(UTILITY::Clean_name(nameY)){
+         fInputTensorNames = { fNX };
+         fOutputTensorNames = { fNY };
+      }
+
+   void Initialize(RModel& model) override {
+       //input must be a graph input, or already initialized intermediate tensor
+      if (model.CheckIfTensorAlreadyExist(fNX) == false){
+        throw std::runtime_error("SOFIE Erf Op Input Tensor is not found in model");
+      }
+      fShape = model.GetDimTensorShape(fNX);
+      fHasStridedInput = model.IsStridedInputTensor(fNX) && !fShape.empty();
+      model.AddIntermediateTensor(fNY, model.GetTensorType(fNX), fShape);
+   }
+
+   bool SupportsStridedInput() const override { return true; }
+
+
+
+   std::string Generate(std::string OpName) override {
+      OpName = "op_" + OpName;
+      if (fShape.empty()) {
+         throw std::runtime_error("SOFIE Erf operator called to Generate without being initialized first");
+      }
+      std::stringstream out;
+      std::string length = ConvertDimShapeToLength(fShape);
+      out << "\n//------ ERF\n";
+      if (fHasStridedInput) {
+         out << GenerateStridedUnaryLoop(OpName, fNX, fNY, fShape,
+                                         [](const std::string &v) { return "std::erf(" + v + ")"; });
+         return out.str();
+      }
+      out << "for (int id = 0; id < " << length << " ; id++){\n";
+      out << "tensor_" << fNY << "[id] = std::erf(tensor_" << fNX << "[id]);\n";
+      out << "}\n";
+      return out.str();
+   }
+
+   std::vector<std::string> GetStdLibs() override { return { std::string("cmath") };}
+   
+};
+
+}//SOFIE
+
+
+#endif //SOFIE_ROPERATOR_Erf

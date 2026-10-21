@@ -1,0 +1,131 @@
+#ifndef SOFIE_ROPERATOR_Sigmoid
+#define SOFIE_ROPERATOR_Sigmoid
+
+#include "SOFIE/utils/SOFIE_common.hxx"
+#include "SOFIE/operators/ROperator_ALPAKA.hxx"
+#include "SOFIE/model/RModel.hxx"
+
+#include <sstream>
+
+namespace SOFIE{
+
+template <typename T>
+class ROperator_Sigmoid final : public ROperator_ALPAKA
+{
+
+private:
+
+   std::string fNX;
+   std::string fNY;
+   std::vector<Dim> fShape;
+
+public:
+   ROperator_Sigmoid(){}
+   ROperator_Sigmoid(std::string nameX, std::string nameY):
+      fNX(UTILITY::Clean_name(nameX)), fNY(UTILITY::Clean_name(nameY)){
+         fKind = OperatorKind::SIGMOID;
+         fInputTensorNames = { fNX };
+         fOutputTensorNames = { fNY };
+      }
+
+   void Initialize(RModel& model) override {
+      if (model.CheckIfTensorAlreadyExist(fNX) == false){   //input must be a graph input, or already initialized intermediate tensor
+         throw std::runtime_error("SOFIE Sigmoid Op Input Tensor is not found in model");
+      }
+      fShape = model.GetDimTensorShape(fNX);
+      fHasStridedInput = model.IsStridedInputTensor(fNX) && !fShape.empty();
+      model.AddIntermediateTensor(fNY, model.GetTensorType(fNX), fShape);
+   }
+
+   bool SupportsStridedInput() const override { return true; }
+
+
+   std::string Generate(std::string opName) override {
+      if (fShape.empty()){
+         throw std::runtime_error("SOFIE Operator Sigmoid called to Generate without being initialized first");
+      }
+      std::stringstream out;
+      auto length = ConvertDimShapeToLength(fShape);
+      out << "\n//------ Sigmoid -- " << opName << "\n";
+      if (fHasStridedInput) {
+         out << GenerateStridedUnaryLoop("op_" + opName, fNX, fNY, fShape,
+                                         [](const std::string &v) { return "1 / (1 + std::exp( - " + v + "))"; });
+         return out.str();
+      }
+      out << "for (int id = 0; id < " << length << " ; id++){\n";
+      out << "tensor_" << fNY << "[id] = 1 / (1 + std::exp( - tensor_"  << fNX << "[id]));\n";
+      out << "}\n";
+      return out.str();
+   }
+
+   std::string Generate_GPU_Kernel_ALPAKA(std::string /*opName*/) override {
+      if (fHasStridedInput)
+         return GenerateStridedUnaryKernel("SigmoidStridedKernel", "SIGMOID",
+                                           [this](const std::string &v) { return GetElementwiseExpr(v); });
+      std::string op;
+      op = "\n//------ SIGMOID_KERNEL_ALPAKA\n";
+      op += "struct SigmoidKernel {\n";
+      op += "template<typename TAcc, typename T>\n";
+      op += "ALPAKA_FN_ACC void operator()(TAcc const & acc, T const* __restrict__ data, T* __restrict__ out, std::size_t numElements) const {\n";
+      op += "const auto idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
+      op += "if(idx < numElements) {\n";
+      op += "out[idx] = static_cast<T>(1) / (static_cast<T>(1) + exp(-data[idx]));\n";
+      op += "}\n";
+      op += "}\n";
+      op += "};\n";
+      return op;
+   }
+
+
+   std::string Generate_GPU_Kernel_Definitions_ALPAKA(std::string /*opName*/) override {
+      if (fHasStridedInput)
+         return "SigmoidStridedKernel sigmoidStridedKernel;\n";
+      return "SigmoidKernel sigmoidKernel;\n";
+   }
+
+   std::string Generate_GPU_ALPAKA(std::string OpName) override {
+      OpName = "op_" + OpName;
+      if (fShape.empty()) {
+         throw std::runtime_error("SOFIE Operator Sigmoid called to Generate without being initialized first");
+      }
+
+      if (fHasStridedInput)
+         return GenerateStridedUnaryLaunch(OpName, "sigmoidStridedKernel", "SIGMOID", fNX, fNY, fShape);
+
+      std::stringstream out;
+      std::string length = ConvertDimShapeToLength(fShape);
+      out << "\n//------ SIGMOID_GPU_ALPAKA\n";
+      out << "auto const elementsPerThread_"<<fNX<<" = Vec::all(static_cast<Idx>(1));\n";
+      out << "auto const elementsPerGrid_"<<fNX<<" = Vec::all(Idx{"<< length << "});\n";
+      out << "auto const workDiv_" << fNX << " = sofie_workdiv(elementsPerGrid_" << fNX << ");\n";
+      out << "auto task_" << OpName << " = alpaka::createTaskKernel<Acc>(workDiv_" << fNX
+         << ", sigmoidKernel, alpaka::getPtrNative(deviceBuf_" << fNX
+         << "), alpaka::getPtrNative(deviceBuf_" << fNY << "), static_cast<Idx>(" << length << "));\n";
+      out << "alpaka::enqueue(queue, task_" << OpName << ");\n";
+      return out.str();
+   }
+
+   std::string GetFusableOutputTensorName() override {
+      return fNY;
+   }
+
+   bool IsElementwise() const override { return !fHasStridedInput; }
+   std::string GetElementwiseExpr(const std::string& v) const override {
+      return "static_cast<T>(1) / (static_cast<T>(1) + exp(-(" + v + ")))";
+   }
+
+   void UpdateFusableTensorName(std::string fusable_tensor_name, const std::function<void(const std::string&)>& removal_func){
+      removal_func(fNX);
+      removal_func(fNY);
+      fNX = fusable_tensor_name;
+      fNY = fusable_tensor_name;
+      fInputTensorNames[0] =  fNX;
+      fOutputTensorNames[0] = fNY;
+   }
+
+   std::vector<std::string> GetStdLibs() override { return { std::string("cmath") };}
+};
+
+}//SOFIE
+
+#endif //SOFIE_ROPERATOR_Sigmoid

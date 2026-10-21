@@ -4,7 +4,7 @@
 
 #include "common/lowrank_test_utils.h"
 
-#include "SOFIE/SOFIEHelpers.hxx"
+#include "SOFIE/utils/SOFIEHelpers.hxx"
 
 #include "LowRankGemm_Dense.hxx"
 #include "LowRankGemm_LowRank.hxx"

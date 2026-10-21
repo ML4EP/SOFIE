@@ -1,5 +1,5 @@
 #include "SOFIE/RModelParser_ONNX.hxx"
-#include "SOFIE/ROperator_SDPA.hxx"
+#include "SOFIE/operators/ROperator_SDPA.hxx"
 #include "onnx.hxx"
 
 namespace SOFIE {

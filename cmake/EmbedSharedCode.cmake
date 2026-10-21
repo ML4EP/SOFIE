@@ -1,4 +1,4 @@
-# Embeds the helper snippets in core/inc/SOFIE/Shared/*.inc as C string constants.
+# Embeds the helper snippets in core/inc/SOFIE/utils/Shared/*.inc as C string constants.
 #
 # Those snippets are the single source of code needed both by the code generator 
 # and by the generated code. Embedding them at build time avoids code duplication

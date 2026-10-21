@@ -1,5 +1,5 @@
 #include "SOFIE/RModelParser_ONNX.hxx"
-#include "SOFIE/ROperator_Erf.hxx"
+#include "SOFIE/operators/ROperator_Erf.hxx"
 #include "onnx.hxx"
 namespace SOFIE {
 

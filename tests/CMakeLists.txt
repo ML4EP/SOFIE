@@ -123,7 +123,6 @@ foreach(onnx_file ${ONNX_FILES})
     string(APPEND ALL_CAPTURES "${cap}")
 endforeach()
 
-# alpaka tests use the same set of models as the CPU tests.
 set(ALPAKA_CAPTURES "${ALL_CAPTURES}")
 
 set(EMIT_CAPTURES "${ALPAKA_CAPTURES}")
@@ -462,6 +461,14 @@ SOFIE_GENERATE_EXECUTABLE(TestAlpakaOperatorSupport cpu/TestAlpakaOperatorSuppor
 SOFIE_ADD_TEST(TestAlpakaOperatorSupport
                   EXEC ./TestAlpakaOperatorSupport
                   FIXTURES_REQUIRED sofie-test-alpaka-operator-support-build)
+
+SOFIE_GENERATE_EXECUTABLE(TestFormatGeneratedCode cpu/TestFormatGeneratedCode.cxx
+  LIBRARIES SOFIE_core GTest::gtest GTest::gtest_main
+  FIXTURES_SETUP sofie-test-format-generated-code-build
+)
+SOFIE_ADD_TEST(TestFormatGeneratedCode
+                  EXEC ./TestFormatGeneratedCode
+                  FIXTURES_REQUIRED sofie-test-format-generated-code-build)
 
 SOFIE_GENERATE_EXECUTABLE(TestSofieParser cpu/TestSofieParser.cxx
   LIBRARIES SOFIE_core SOFIE_parsers GTest::gtest GTest::gtest_main

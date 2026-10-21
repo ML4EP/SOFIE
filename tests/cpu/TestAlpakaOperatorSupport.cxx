@@ -1,14 +1,16 @@
 // Operators without an alpaka implementation are rejected by the generation
 // for the GPU, with an error naming the operator.
 
-#include "SOFIE/RModel.hxx"
-#include "SOFIE/ROperator_BasicUnary.hxx"
-#include "SOFIE/ROperator_Erf.hxx"
-#include "SOFIE/ROperator_Relu.hxx"
-#include "SOFIE/ROperator_SubGraph.hxx"
+#include "SOFIE/model/RModel.hxx"
+#include "SOFIE/operators/ROperator_BasicUnary.hxx"
+#include "SOFIE/operators/ROperator_Erf.hxx"
+#include "SOFIE/operators/ROperator_Relu.hxx"
+#include "SOFIE/operators/ROperator_SubGraph.hxx"
+#include "SOFIE/operators/ROperator_Tile.hxx"
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <string>
 
 using namespace SOFIE;
@@ -82,4 +84,13 @@ TEST(AlpakaOperatorSupport, OperatorOfASubGraphIsChecked)
    const std::string error = GpuGenerationError(model);
    EXPECT_NE(error.find("has no alpaka implementation"), std::string::npos) << error;
    EXPECT_NE(error.find("ROperator_Erf"), std::string::npos) << error;
+}
+
+TEST(AlpakaOperatorSupport, TileFusionDataInputIndicesAreValidInputs)
+{
+   ROperator_Tile<float> tile("repeats", "X", "Y");
+   const auto inputs = tile.GetOpInputTensors();
+   const auto indices = tile.GetFusionDataInputIndices();
+   ASSERT_FALSE(indices.empty());
+   EXPECT_TRUE(std::all_of(indices.begin(), indices.end(), [&](size_t i) { return i < inputs.size(); }));
 }

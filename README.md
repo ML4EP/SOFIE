@@ -182,7 +182,7 @@ per-operator timing and memory reporting directly in the generated session struc
 ### CPU inference
 
 ```cpp
-#include "SOFIE/RModel.hxx"
+#include "SOFIE/model/RModel.hxx"
 #include "SOFIE/RModelParser_ONNX.hxx"
 
 SOFIE::RModelParser_ONNX parser;

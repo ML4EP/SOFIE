@@ -69,8 +69,8 @@
 #include "StridedGemmBiasRelu.hxx"
 #include "StridedGemmTransAB.hxx"
 
-#include "SOFIE/RModel.hxx"
-#include "SOFIE/ROperator_Gemm.hxx"
+#include "SOFIE/model/RModel.hxx"
+#include "SOFIE/operators/ROperator_Gemm.hxx"
 
 #include "common/strided_input_test_utils.h"
 
