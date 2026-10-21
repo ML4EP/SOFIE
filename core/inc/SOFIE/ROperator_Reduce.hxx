@@ -618,9 +618,14 @@ public:
       // ---- shared-memory tree reduction down to one warp's worth of partials ----
       // Stops once the active thread count fits in a single warp; the final
       // warp-width combine below uses shuffles instead of shared memory.
+      // The shuffle stage must not span more lanes than the block has threads:
+      // a 32-thread block on a 64-wide AMD wavefront would read lanes 32-63,
+      // which hold no thread and come back as garbage.
       op += SP + SP + SP + "std::int32_t const warpSize = alpaka::warp::getSize(acc);\n";
+      op += SP + SP + SP + "std::int32_t const width = warpSize < static_cast<std::int32_t>(" + bsExpr
+            + ") ? warpSize : static_cast<std::int32_t>(" + bsExpr + ");\n";
       op += SP + SP + SP + "for (std::size_t s = " + halfBsExpr
-            + "; s >= static_cast<std::size_t>(warpSize); s >>= 1u) {\n";
+            + "; s >= static_cast<std::size_t>(width); s >>= 1u) {\n";
       op += SP + SP + SP + SP + "if (thread_id < s) {\n";
       if (Op == ReduceProd)
          op += SP + SP + SP + SP + SP + "shmem[thread_id] *= shmem[thread_id + s];\n";
@@ -634,9 +639,9 @@ public:
       op += SP + SP + SP + SP + "alpaka::syncBlockThreads(acc);\n";
       op += SP + SP + SP + "}\n\n";
 
-      op += SP + SP + SP + "if (thread_id < static_cast<std::size_t>(warpSize)) {\n";
+      op += SP + SP + SP + "if (thread_id < static_cast<std::size_t>(width)) {\n";
       op += SP + SP + SP + SP + "T val = shmem[thread_id];\n";
-      op += SP + SP + SP + SP + "for (std::int32_t offset = warpSize / 2; offset > 0; offset >>= 1) {\n";
+      op += SP + SP + SP + SP + "for (std::int32_t offset = width / 2; offset > 0; offset >>= 1) {\n";
       op += SP + SP + SP + SP + SP
             + "T const other = alpaka::warp::shfl_down(acc, val, static_cast<std::uint32_t>(offset));\n";
       if (Op == ReduceProd)
@@ -670,7 +675,7 @@ public:
          op += SP + SP + SP + SP + SP + "output[out_idx] = result;\n";
       }
       op += SP + SP + SP + SP + "}\n";
-      op += SP + SP + SP + "}\n"; // end if (thread_id < warpSize)
+      op += SP + SP + SP + "}\n"; // end if (thread_id < width)
 
       op += SP + SP + "}\n"; // end operator()
       op += SP + "};\n";     // end struct
