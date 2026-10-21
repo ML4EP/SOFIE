@@ -246,7 +246,7 @@ public:
          out += SP + SP + SP + SP + SP + SP + "T stepA = static_cast<T>(1);\n";
          out += SP + SP + SP + SP + SP + SP + "T stepB = static_cast<T>(0);\n";
          out += SP + SP + SP + SP + SP + SP + "if (t < L) {\n";
-         out += SP + SP + SP + SP + SP + SP + SP + "stepA = SOFIE_DEVICE_exp(acc, dt_vals[i] * A_val);\n";
+         out += SP + SP + SP + SP + SP + SP + SP + "stepA = alpaka::math::exp(acc, dt_vals[i] * A_val);\n";
          out += SP + SP + SP + SP + SP + SP + SP + "stepB = B[b * N * L + n * L + t] * delta_u_vals[i];\n";
          out += SP + SP + SP + SP + SP + SP + "}\n";
          out += SP + SP + SP + SP + SP + SP + "localB = stepB + stepA * localB;\n";
@@ -356,7 +356,7 @@ public:
          out += SP + SP + SP + SP + "T contribution = static_cast<T>(0);\n\n";
 
          out += SP + SP + SP + SP + "if (active) {\n";
-         out += SP + SP + SP + SP + SP + "T const dA = SOFIE_DEVICE_exp(acc, dt * A[d * N + thread_idx]);\n";
+         out += SP + SP + SP + SP + SP + "T const dA = alpaka::math::exp(acc, dt * A[d * N + thread_idx]);\n";
          out += SP + SP + SP + SP + SP + "T const dBu = dt * B[b * N * L + thread_idx * L + t] * u_val;\n";
          out += SP + SP + SP + SP + SP + "state_val = dA * state_val + dBu;\n";
          out += SP + SP + SP + SP + SP + "contribution = C[b * N * L + thread_idx * L + t] * state_val;\n";

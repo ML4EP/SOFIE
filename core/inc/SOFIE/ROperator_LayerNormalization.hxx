@@ -648,7 +648,7 @@ public:
          op += SP + SP + SP + SP + SP + "sum += tmp * tmp;\n";
          for (size_t j = fAxis; j < fSize; ++j) op += SP + SP + SP + SP + "}\n";
          op += SP + SP + SP + SP + "T const invStdDev = static_cast<T>(1) / "
-            "SOFIE_DEVICE_sqrt(acc, sum / static_cast<T>(" + fNormalizedLength
+            "alpaka::math::sqrt(acc, sum / static_cast<T>(" + fNormalizedLength
             + ") + static_cast<T>(" + std::to_string(fAttrEpsilon) + "));\n\n";
 
          if (!fNMean.empty())

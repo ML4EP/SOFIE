@@ -117,13 +117,10 @@ void RModel_Base::GenerateHeaderInfo_GPU_ALPAKA(std::string& hgname) {
     if (fUseWeightFile)
         fGC += "#include <fstream>\n";
 
+    fGC += "\nnamespace SOFIE_" + fName + "{\n";
+    fGC += kHelperFunctionsMarker;
 
-    fGC += "\n#ifndef SOFIE_ALPAKA_DIM1D_DEFINED\n";
-    fGC += "#define SOFIE_ALPAKA_DIM1D_DEFINED\n";
-    fGC += "using Dim1D = alpaka::DimInt<1>;\n";
-    fGC += "#endif // SOFIE_ALPAKA_DIM1D_DEFINED\n";
-    fGC += "\n#ifndef SOFIE_ALPAKA_WORKDIV_DEFINED\n";
-    fGC += "#define SOFIE_ALPAKA_WORKDIV_DEFINED\n";
+    fGC += "\nusing Dim1D = alpaka::DimInt<1>;\n";
     fGC += "template<typename TDim, typename TIdx>\n";
     fGC += "inline alpaka::WorkDivMembers<TDim, TIdx> sofie_workdiv(\n";
     fGC += "    alpaka::Vec<TDim, TIdx> const& numElems, TIdx blockSz = TIdx{256})\n{\n";
@@ -135,12 +132,9 @@ void RModel_Base::GenerateHeaderInfo_GPU_ALPAKA(std::string& hgname) {
     fGC += "        alpaka::Vec<TDim, TIdx>::all(blockSz),\n";
     fGC += "        alpaka::Vec<TDim, TIdx>::all(TIdx{1}));\n";
     fGC += "}\n";
-    fGC += "#endif // SOFIE_ALPAKA_WORKDIV_DEFINED\n";
 
     if (fStridedInput) {
         // layout of an input tensor read through its strides: logical shape and strides (in elements)
-        fGC += "\n#ifndef SOFIE_ALPAKA_STRIDED_DEFINED\n";
-        fGC += "#define SOFIE_ALPAKA_STRIDED_DEFINED\n";
         fGC += "template<std::size_t R>\n";
         fGC += "struct sofie_strided_layout {\n";
         fGC += "    std::size_t shape[R];\n";
@@ -156,36 +150,7 @@ void RModel_Base::GenerateHeaderInfo_GPU_ALPAKA(std::string& hgname) {
         fGC += "    }\n";
         fGC += "    return offset;\n";
         fGC += "}\n";
-        fGC += "#endif // SOFIE_ALPAKA_STRIDED_DEFINED\n";
     }
-
-    // Macros that redirect alpaka two-argument device-math calls to direct C/C++ calls
-    // when compiled by NVCC's device pass (__CUDA_ARCH__ defined).  The normal alpaka
-    // form is used in host compilation and on non-CUDA backends.
-    // This prevents the deep template instantiation of alpaka's device-math dispatch
-    // from corrupting NVCC's namespace tracking (which would misattribute Session to
-    // <unnamed> when multiple model headers are included in the same translation unit).
-    fGC += "\n#ifndef SOFIE_ALPAKA_DEVICE_MATH_DEFINED\n";
-    fGC += "#define SOFIE_ALPAKA_DEVICE_MATH_DEFINED\n";
-    fGC += "#if defined(__CUDA_ARCH__)\n";
-    for (const char* fn : {"exp","sqrt","log","sin","cos","abs","pow","atan2","atan",
-                           "floor","ceil","round","cbrt","tanh","sinh","cosh"}) {
-        std::string sfn = fn;
-        // pow and atan2 take two numeric args plus acc; handle with variadic macro.
-        // All others: SOFIE_DEVICE_fn(acc, x) -> ::fn(x)
-        fGC += "#define SOFIE_DEVICE_" + sfn + "(acc, ...) ::" + sfn + "(__VA_ARGS__)\n";
-    }
-    fGC += "#else\n";
-    for (const char* fn : {"exp","sqrt","log","sin","cos","abs","pow","atan2","atan",
-                           "floor","ceil","round","cbrt","tanh","sinh","cosh"}) {
-        std::string sfn = fn;
-        fGC += "#define SOFIE_DEVICE_" + sfn + "(acc, ...) " + sfn + "(acc, __VA_ARGS__)\n";
-    }
-    fGC += "#endif // __CUDA_ARCH__\n";
-    fGC += "#endif // SOFIE_ALPAKA_DEVICE_MATH_DEFINED\n";
-
-    fGC += "\nnamespace SOFIE_" + fName + "{\n";
-    fGC += kHelperFunctionsMarker;
 }
 
 void RModel_Base::OutputGenerated(std::string filename, bool append) {

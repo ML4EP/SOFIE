@@ -25,7 +25,7 @@ namespace SOFIE {
 namespace {
 
 /// The fusion description of an operator (how it maps its inputs to its outputs, its expressions...) is given by its
-/// Alpaka interface. An operator which has none is not fused: it has an unsupported fusion mapping.
+/// alpaka interface. An operator which has none is not fused: it has an unsupported fusion mapping.
 class FusionOp {
    const ROperator &fOp;
    const ROperator_ALPAKA *fGpu;

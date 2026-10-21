@@ -1,5 +1,5 @@
 #pragma once
-// GPU occupancy/utilization sampler for the SOFIE Alpaka benchmark.
+// GPU occupancy/utilization sampler for the SOFIE alpaka benchmark.
 //
 // It currently only supports NVIDIA CUDA. 
 // NVML's `nvmlDeviceGetUtilizationRates` reports the percentage of the last

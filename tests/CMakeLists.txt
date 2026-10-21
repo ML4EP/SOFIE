@@ -83,10 +83,10 @@ else()
   set(CHECKED_IN_MODELS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/models/onnx)
 endif()
 
-option(ENABLE_ALPAKA_TESTS "Enable Alpaka-based SOFIE tests" OFF)
+option(ENABLE_ALPAKA_TESTS "Enable alpaka-based SOFIE tests" OFF)
 
 set(ALPAKA_BACKEND "cuda"
-    CACHE STRING "Alpaka backend to test (cuda, cpu, hip, sycl)")
+    CACHE STRING "alpaka backend to test (cuda, cpu, hip, sycl)")
 set_property(CACHE ALPAKA_BACKEND PROPERTY STRINGS cuda cpu hip sycl)
 
 ############################################################################
@@ -101,7 +101,7 @@ set(CAPTURE_STR
         std::cerr << \"[SKIP] Multiple outputs are not supported for @1\" << std::endl;\n\
     } else if (msg.find(\"is of a data type which is not yet supported\") != std::string::npos) {\n\
         std::cerr << \"[SKIP] Operator with unsupported data type in @1: \" << msg << std::endl;\n\
-    } else if (msg.find(\"has no Alpaka implementation\") != std::string::npos) {\n\
+    } else if (msg.find(\"has no alpaka implementation\") != std::string::npos) {\n\
         std::cerr << \"[SKIP] Operator without GPU implementation in @1: \" << msg << std::endl;\n\
     } else {\n\
         std::cerr << \"[ERROR] Failed processing @1: \" << msg << std::endl;\n\
@@ -123,7 +123,7 @@ foreach(onnx_file ${ONNX_FILES})
     string(APPEND ALL_CAPTURES "${cap}")
 endforeach()
 
-# Alpaka tests use the same set of models as the CPU tests.
+# alpaka tests use the same set of models as the CPU tests.
 set(ALPAKA_CAPTURES "${ALL_CAPTURES}")
 
 set(EMIT_CAPTURES "${ALPAKA_CAPTURES}")
@@ -196,7 +196,7 @@ SOFIE_ADD_TEST(
 )
 
 ############################################################################
-# Alpaka tests
+# alpaka tests
 ############################################################################
 if (ENABLE_ALPAKA_TESTS)
 
@@ -220,7 +220,7 @@ if (ENABLE_ALPAKA_TESTS)
   FetchContent_MakeAvailable(alpaka)
 
   ##########################################################################
-  # Alpaka emitter
+  # alpaka emitter
   ##########################################################################
 SOFIE_GENERATE_EXECUTABLE(
       emitFromONNXAlpaka
@@ -246,7 +246,7 @@ SOFIE_GENERATE_EXECUTABLE(
   ##########################################################################
   if (_alpaka_backend STREQUAL "cuda")
 
-    message(STATUS "Enabling Alpaka CUDA tests")
+    message(STATUS "Enabling alpaka CUDA tests")
 
     enable_language(CUDA)
     find_package(CUDAToolkit REQUIRED)

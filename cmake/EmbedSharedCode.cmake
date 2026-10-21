@@ -1,8 +1,7 @@
 # Embeds the helper snippets in core/inc/SOFIE/Shared/*.inc as C string constants.
 #
-# Those snippets are the single source of code needed both by the code generator (it #includes them in
-# SOFIE_common.hxx) and by the generated code (it emits their text). Embedding them at build time avoids keeping
-# a second copy of the same code as a string literal.
+# Those snippets are the single source of code needed both by the code generator 
+# and by the generated code. Embedding them at build time avoids code duplication
 #
 # Usage: cmake -DOUT=<file.cxx> -DDIR=<Shared dir> -DNAMES="A;B;..." -P EmbedSharedCode.cmake
 # Each <Name>.inc becomes   SOFIE::shared_code::kShared_<Name>
@@ -15,7 +14,6 @@ foreach(name IN LISTS NAMES)
   string(APPEND content "extern const char *const kShared_${name} = R\"SOFIE_SHARED(\n${code})SOFIE_SHARED\";\n")
 endforeach()
 string(APPEND content "} // namespace shared_code\n} // namespace SOFIE\n")
-# only touch the file when the content changes, to avoid needless rebuilds
 set(old "")
 if(EXISTS "${OUT}")
   file(READ "${OUT}" old)

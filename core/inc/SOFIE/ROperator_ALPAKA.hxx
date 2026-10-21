@@ -15,9 +15,8 @@ namespace SOFIE {
 
 inline std::set<OperatorKind> FusableKinds = { OperatorKind::RELU, OperatorKind::LAYERNORM, OperatorKind::BATCHNORM};
 
-/// Interface of the operators which can be generated for the GPU with Alpaka (RModel::GenerateGPU_ALPAKA): the
-/// generation of their kernels and of their launch, and the description of how they are fused with other operators.
-/// An operator which does not derive from it has no Alpaka implementation.
+/// Interface of the operators which can be generated for the GPU with alpaka: the
+/// generation of their kernels and of their launch.
 class ROperator_ALPAKA : public ROperator {
 
 public:
@@ -37,9 +36,6 @@ public:
    virtual std::string Generate_GPU_Kernel_Definitions_ALPAKA(std::string /*opName*/) { return ""; }
    virtual std::string GetFusableOutputTensorName() { return "";}
    virtual std::string GetBlasConfig() { return ""; }
-   // most operators issue a single cuBLASLt GEMM call and so need at most one layout
-   // config; operators that chain multiple GEMM calls of different shapes
-   //  override this to register one config per call.
    virtual std::vector<std::string> GetBlasConfigs() {
       auto c = GetBlasConfig();
       if (c.empty())
@@ -53,8 +49,6 @@ public:
    // Returns the C++ expression applying this op to inputVar (a local T variable) for fused kernel generation
    virtual std::string GetElementwiseExpr(const std::string& /*inputVar*/) const { return ""; }
 
-   // DNNFusion-style input/output mapping classification.
-   // One-To-One, One-To-Many, Many-To-Many, Reorganize, Shuffle
    virtual EFusionMappingType GetFusionMappingType() const
    {
       return IsElementwise() ? EFusionMappingType::OneToOne : EFusionMappingType::Unsupported;
@@ -62,7 +56,7 @@ public:
 
    // Returns the expression produced by this operator from its input
    // expressions. The default implementation adapts the existing unary
-   // GetElementwiseExpr interface.
+   // GetElementwiseExpr interface
    virtual std::string GetFusionExpr(const std::vector<std::string> &inputs) const
    {
       if (inputs.size() != 1)
@@ -255,10 +249,10 @@ protected:
    }
 };
 
-/// the Alpaka interface of an operator known to have one (see RModel::CheckAlpakaOperators)
+/// the alpaka interface of an operator known to have one
 inline ROperator_ALPAKA &AlpakaOp(ROperator &op) { return dynamic_cast<ROperator_ALPAKA &>(op); }
 
-/// the Alpaka interface of an operator, or nullptr if it has no Alpaka implementation
+/// the alpaka interface of an operator, or nullptr if it has no alpaka implementation
 inline ROperator_ALPAKA *GetAlpaka(ROperator &op) { return dynamic_cast<ROperator_ALPAKA *>(&op); }
 inline const ROperator_ALPAKA *GetAlpaka(const ROperator &op) { return dynamic_cast<const ROperator_ALPAKA *>(&op); }
 

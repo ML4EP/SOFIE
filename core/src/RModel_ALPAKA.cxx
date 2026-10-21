@@ -772,8 +772,8 @@ void RModel::CheckAlpakaOperators() const
       char *demangled = abi::__cxa_demangle(typeid(op).name(), nullptr, nullptr, &status);
       const std::string type = status == 0 && demangled ? demangled : typeid(op).name();
       std::free(demangled);
-      throw std::runtime_error("sofie: GPU (Alpaka) generation of model " + fName + ": operator " + std::to_string(id) +
-                               " (" + type + ") has no Alpaka implementation");
+      throw std::runtime_error("sofie: GPU (alpaka) generation of model " + fName + ": operator " + std::to_string(id) +
+                               " (" + type + ") has no alpaka implementation");
    }
    for (const auto &graph : fSubGraphs)
       graph->CheckAlpakaOperators();

@@ -179,7 +179,7 @@ static int EmitBenchmarkModel(const std::string &onnxPath,
     if (isDynamicFamily)
         baseInfo = &EnsureBaseFamilyGenerated(baseOnnxPath, baseModelName, outDir);
 
-    // Generate SOFIE GPU/Alpaka inference code for this exact model object —
+    // Generate SOFIE GPU/alpaka inference code for this exact model object —
     // this calls Initialize() which runs shape inference on all operators.
     // Output tensor shapes are only available *after* Initialize(), so we
     // must call GenerateGPU_ALPAKA() before querying output metadata.

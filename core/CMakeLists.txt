@@ -86,7 +86,7 @@ set(sources_cxx
 )
 
 # helper code shared by the generator and the generated code: written once in inc/SOFIE/Shared/*.inc,
-# #included by SOFIE_common.hxx and embedded as a string for the generated code
+# embedded as a string for the generated code
 set(shared_code_names ConvertShapeToLength ConvertShapeToString Broadcast BroadcastConvBias MemoryPlanner)
 set(shared_code_dir "${CMAKE_CURRENT_SOURCE_DIR}/inc/SOFIE/Shared")
 set(shared_code_cxx "${CMAKE_CURRENT_BINARY_DIR}/SOFIE_shared_code.cxx")

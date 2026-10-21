@@ -25,7 +25,7 @@ private:
    // dimension, each as an expression string — a plain number for a fully
    // static shape, or a symbolic expression (e.g. "n_elements") when fShapeX
    // carries a dynamic dimension. Computed once in Initialize() and reused
-   // by both the CPU and GPU/Alpaka code generators.
+   // by both the CPU and GPU/alpaka code generators.
    std::string fVectorLength;
    std::string fNumVectors;
    T fEpsilon = static_cast<T>(0);

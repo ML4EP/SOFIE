@@ -1,6 +1,5 @@
-// Operators without an Alpaka implementation (they do not derive from ROperator_ALPAKA) are rejected by the generation
-// for the GPU, with an error naming the operator, instead of generating a model which silently skips them. The
-// generation only needs SOFIE_core: the Alpaka code is generated but not compiled here.
+// Operators without an alpaka implementation are rejected by the generation
+// for the GPU, with an error naming the operator.
 
 #include "SOFIE/RModel.hxx"
 #include "SOFIE/ROperator_BasicUnary.hxx"
@@ -50,19 +49,18 @@ TEST(AlpakaOperatorSupport, OperatorWithoutAlpakaImplementationIsRejected)
 {
    auto model = BuildModel("AlpakaErf", std::make_unique<ROperator_Erf<float>>("X", "Y"));
    const std::string error = GpuGenerationError(model);
-   EXPECT_NE(error.find("has no Alpaka implementation"), std::string::npos) << error;
+   EXPECT_NE(error.find("has no alpaka implementation"), std::string::npos) << error;
    EXPECT_NE(error.find("ROperator_Erf"), std::string::npos) << error;
    EXPECT_NE(error.find("AlpakaErf"), std::string::npos) << error;
 }
 
-// the CPU generation of the same model is not affected
 TEST(AlpakaOperatorSupport, OperatorWithoutAlpakaImplementationIsGeneratedForTheCpu)
 {
    auto model = BuildModel("CpuErf", std::make_unique<ROperator_Erf<float>>("X", "Y"));
    EXPECT_NO_THROW(model.Generate(Options::kNoWeightFile));
 }
 
-// the operators of the branches of an If are checked too
+// the operators of the branches of an If are checked
 TEST(AlpakaOperatorSupport, OperatorOfASubGraphIsChecked)
 {
    auto thenGraph = std::make_unique<RModel>("then_branch", "now");
@@ -82,6 +80,6 @@ TEST(AlpakaOperatorSupport, OperatorOfASubGraphIsChecked)
    model.AddOutputTensorNameList({"Y"});
 
    const std::string error = GpuGenerationError(model);
-   EXPECT_NE(error.find("has no Alpaka implementation"), std::string::npos) << error;
+   EXPECT_NE(error.find("has no alpaka implementation"), std::string::npos) << error;
    EXPECT_NE(error.find("ROperator_Erf"), std::string::npos) << error;
 }

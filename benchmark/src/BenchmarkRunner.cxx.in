@@ -1,4 +1,4 @@
-// SOFIE Alpaka Benchmark Runner — main TU
+// SOFIE alpaka Benchmark Runner — main TU
 // Auto-configured by CMake — do not edit directly.
 //
 // Execution model:
@@ -235,7 +235,7 @@ int main(int argc, char *argv[]) {
 #endif
 
 #ifdef SOFIE_BENCHMARK_PROFILE
-    std::printf("=== SOFIE Alpaka Profiler ===\n");
+    std::printf("=== SOFIE alpaka Profiler ===\n");
     std::printf("Backend: @SOFIE_BENCHMARK_BACKEND@  |  Warmup: %d  |  Iterations: %d\n\n",
                 warmup, iterations);
 
@@ -272,7 +272,7 @@ int main(int argc, char *argv[]) {
 #endif
 
 #else
-    std::printf("=== SOFIE Alpaka Benchmark ===\n");
+    std::printf("=== SOFIE alpaka Benchmark ===\n");
     std::printf("Backend: @SOFIE_BENCHMARK_BACKEND@  |  Warmup: %d  |  Iterations: %d", warmup, iterations);
 #ifdef SOFIE_BENCHMARK_ORT
     if (run_ort) std::printf("  |  ORT-GPU: ON");

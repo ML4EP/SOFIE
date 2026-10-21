@@ -59,7 +59,7 @@ inline BenchmarkConfig ParseArgs(int argc, char *argv[]) {
         else if (arg == "--verbose" || arg == "-v")
             cfg.verbose = true;
         else if (arg == "--help" || arg == "-h") {
-            std::cout << "SOFIE Alpaka Benchmark\n\n"
+            std::cout << "SOFIE alpaka Benchmark\n\n"
                       << "Options:\n"
                       << "  --warmup,     -w <N>   Warmup iterations (default: 10)\n"
                       << "  --iterations, -n <N>   Benchmark iterations (default: 100)\n"
@@ -80,7 +80,7 @@ inline void PrintDeviceInfo(const std::string &deviceName) {
 }
 
 inline void PrintHeader(const BenchmarkConfig &cfg, const std::string &deviceName = "") {
-    std::cout << "\n=== SOFIE Alpaka Benchmark ===\n";
+    std::cout << "\n=== SOFIE alpaka Benchmark ===\n";
     if (!deviceName.empty())
         PrintDeviceInfo(deviceName);
     std::cout << "Warmup: " << cfg.warmupIter
