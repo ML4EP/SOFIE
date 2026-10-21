@@ -2,7 +2,7 @@
 #define SOFIE_ROPERATOR_SLICE
 
 #include "SOFIE/SOFIE_common.hxx"
-#include "SOFIE/ROperator.hxx"
+#include "SOFIE/ROperator_ALPAKA.hxx"
 #include "SOFIE/RModel.hxx"
 
 #include <cassert>
@@ -13,7 +13,7 @@ namespace SOFIE{
 // slice operator
 
 template <typename IType>
-class ROperator_Slice final : public ROperator
+class ROperator_Slice final : public ROperator_ALPAKA
 {
 
 private:

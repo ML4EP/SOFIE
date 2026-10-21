@@ -3,7 +3,7 @@
 
 
  #include "SOFIE/SOFIE_common.hxx"
- #include "SOFIE/ROperator.hxx"
+ #include "SOFIE/ROperator_ALPAKA.hxx"
  #include "SOFIE/RModel.hxx"
 
  #include <sstream>
@@ -13,7 +13,7 @@
  #include <limits>
  namespace SOFIE{
 
-     class ROperator_Concat final : public ROperator
+     class ROperator_Concat final : public ROperator_ALPAKA
      {
      private:
          int fAxis=0;

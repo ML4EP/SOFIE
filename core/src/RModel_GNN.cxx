@@ -70,7 +70,8 @@ RModel_GNN::RModel_GNN(GNN_Init& graph_input_struct) {
 
 void RModel_GNN::Generate() {
     std::string hgname;
-    AddNeededCustomHeader("SOFIE/SOFIE_common.hxx");
+    AddNeededCustomHeader("SOFIE/RTensor.hxx");
+    AddNeededHelperFunction("GNN_Data");
     GenerateHeaderInfo(hgname);
 
     std::ofstream f;
@@ -179,7 +180,7 @@ void RModel_GNN::Generate() {
     fGC += "std::vector<float> fNodeEdgeAggregate = std::vector<float>(" + n_num + "*" + n_size_input + ", 0);\n";
     fGC += "std::vector<float> fNodeAggregateTemp;\n";
 
-    fGC += "\nvoid infer(SOFIE::GNN_Data& input_graph){\n";
+    fGC += "\nvoid infer(GNN_Data& input_graph){\n";
 
     // computing updated edge attributes
     fGC += "\n// --- Edge Update ---\n";

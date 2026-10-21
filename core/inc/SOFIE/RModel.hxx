@@ -218,6 +218,10 @@ public:
    void ForEachInferArg_GPU_ALPAKA(const std::function<void(const std::string &)> &onParam,
                                    const std::function<void(const std::string &)> &onInput) const;
 
+   /// all the operators (also of the sub-graphs) must have an Alpaka implementation, i.e. derive from ROperator_ALPAKA:
+   /// throws an error naming the first which has none
+   void CheckAlpakaOperators() const;
+
    // generate the _infer_impl signature using ViewPlainPtr types instead of Buf types
    std::string GenerateImplSignature_GPU_ALPAKA(bool isdecl = true);
 

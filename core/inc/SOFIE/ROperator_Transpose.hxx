@@ -2,7 +2,7 @@
 #define SOFIE_ROPERATOR_TRANSPOSE
 
 #include "SOFIE/SOFIE_common.hxx"
-#include "SOFIE/ROperator.hxx"
+#include "SOFIE/ROperator_ALPAKA.hxx"
 #include "SOFIE/RModel.hxx"
 
 #include <sstream>
@@ -13,7 +13,7 @@ namespace SOFIE{
 
 
 
-class ROperator_Transpose final : public ROperator
+class ROperator_Transpose final : public ROperator_ALPAKA
 {
 
 private:

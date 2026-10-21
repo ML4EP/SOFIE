@@ -3,6 +3,7 @@
 #include <functional>
 #include <iostream>
 #include <iterator>
+#include <numeric>
 #include <optional>
 #include <set>
 #include <span>
@@ -14,6 +15,7 @@
 
 #include "SOFIE/RModel.hxx"
 #include "SOFIE/RModelFusion_ALPAKA.hxx"
+#include "SOFIE/ROperator_ALPAKA.hxx"
 #include "SOFIE/ROperator_Gemm.hxx"
 #include "SOFIE/ROperator_LeakyRelu.hxx"
 #include "SOFIE/ROperator_Relu.hxx"
@@ -21,6 +23,80 @@
 namespace SOFIE {
 
 namespace {
+
+/// The fusion description of an operator (how it maps its inputs to its outputs, its expressions...) is given by its
+/// Alpaka interface. An operator which has none is not fused: it has an unsupported fusion mapping.
+class FusionOp {
+   const ROperator &fOp;
+   const ROperator_ALPAKA *fGpu;
+
+public:
+   explicit FusionOp(const ROperator &op) : fOp(op), fGpu(GetAlpaka(op)) {}
+
+   std::span<const std::string_view> GetOpInputTensors() const { return fOp.GetOpInputTensors(); }
+   std::span<const std::string_view> GetOpOutputTensors() const { return fOp.GetOpOutputTensors(); }
+
+   EFusionMappingType GetFusionMappingType() const
+   {
+      return fGpu ? fGpu->GetFusionMappingType() : EFusionMappingType::Unsupported;
+   }
+   std::vector<size_t> GetFusionDataInputIndices() const
+   {
+      if (fGpu)
+         return fGpu->GetFusionDataInputIndices();
+      std::vector<size_t> indices(fOp.GetOpInputTensors().size());
+      std::iota(indices.begin(), indices.end(), size_t{0});
+      return indices;
+   }
+   bool SupportsFusionTypes(const std::vector<ETensorType> &inputTypes, ETensorType outputType) const
+   {
+      return fGpu && fGpu->SupportsFusionTypes(inputTypes, outputType);
+   }
+   std::string GetFusionExpr(const std::vector<std::string> &inputs) const
+   {
+      return fGpu ? fGpu->GetFusionExpr(inputs) : std::string();
+   }
+   std::string GetFusionInputIndexExpr(size_t inputIndex, const std::string &outputIndex,
+                                       const std::vector<Dim> &inputShape, const std::vector<Dim> &outputShape) const
+   {
+      return fGpu ? fGpu->GetFusionInputIndexExpr(inputIndex, outputIndex, inputShape, outputShape) : std::string();
+   }
+   std::string GetFusionInputIndexExprForOutput(size_t inputIndex, size_t outputTensorIndex,
+                                                const std::string &outputIndex, const std::vector<Dim> &inputShape,
+                                                const std::vector<Dim> &outputShape) const
+   {
+      return fGpu ? fGpu->GetFusionInputIndexExprForOutput(inputIndex, outputTensorIndex, outputIndex, inputShape,
+                                                           outputShape)
+                  : std::string();
+   }
+   std::string GetFusionInputConditionExpr(size_t inputIndex, const std::string &outputIndex,
+                                           const std::vector<Dim> &inputShape, const std::vector<Dim> &outputShape) const
+   {
+      return fGpu ? fGpu->GetFusionInputConditionExpr(inputIndex, outputIndex, inputShape, outputShape) : std::string();
+   }
+   bool IsFusionReduction() const { return fGpu && fGpu->IsFusionReduction(); }
+   std::string GetFusionReductionInitExpr() const { return fGpu ? fGpu->GetFusionReductionInitExpr() : std::string(); }
+   std::string GetFusionReductionAccumulateExpr(const std::string &accumulator, const std::string &value) const
+   {
+      return fGpu ? fGpu->GetFusionReductionAccumulateExpr(accumulator, value) : std::string();
+   }
+   std::string GetFusionReductionCombineExpr(const std::string &left, const std::string &right) const
+   {
+      return fGpu ? fGpu->GetFusionReductionCombineExpr(left, right) : std::string();
+   }
+   std::string GetFusionReductionFinalizeExpr(const std::string &accumulator, const std::string &reducedLength) const
+   {
+      return fGpu ? fGpu->GetFusionReductionFinalizeExpr(accumulator, reducedLength) : std::string();
+   }
+   std::string GetFusionReductionInputIndexExpr(const std::string &outputIndex, const std::string &reductionIndex,
+                                                const std::vector<Dim> &inputShape,
+                                                const std::vector<Dim> &outputShape) const
+   {
+      return fGpu ? fGpu->GetFusionReductionInputIndexExpr(outputIndex, reductionIndex, inputShape, outputShape)
+                  : std::string();
+   }
+};
+
 
 Dim MultiplyDims(const Dim &a, const Dim &b)
 {
@@ -209,7 +285,7 @@ private:
    std::vector<Candidate> candidates;
    std::set<std::pair<std::vector<size_t>, size_t>> seen;
 
-   const ROperator &Op(size_t opIdx) const { return *m.fOperators[opIdx]; }
+   FusionOp Op(size_t opIdx) const { return FusionOp(*m.fOperators[opIdx]); }
 
    bool IsOutput(const std::string &tensorName) const
    {
@@ -1715,7 +1791,7 @@ public:
       if (const auto reductionOp = ReductionOp(group)) {
          const auto outputs = m.fOperators[*reductionOp]->GetOpOutputTensors();
          const auto inputs = m.fOperators[*reductionOp]->GetOpInputTensors();
-         const auto dataInputs = m.fOperators[*reductionOp]->GetFusionDataInputIndices();
+         const auto dataInputs = FusionOp(*m.fOperators[*reductionOp]).GetFusionDataInputIndices();
 
          if (outputs.size() != 1)
             throw std::runtime_error("Fused reduction must have exactly one output");
@@ -1887,7 +1963,7 @@ public:
          }
 
          for (const size_t opIdx : branch.opIndices) {
-            const auto &op = *m.fOperators[opIdx];
+            const FusionOp op(*m.fOperators[opIdx]);
             const auto opInputs = op.GetOpInputTensors();
             const auto outputs = op.GetOpOutputTensors();
             std::vector<std::string> inputExpressions;
@@ -1952,7 +2028,7 @@ private:
    std::optional<size_t> ReductionOp(const Fusion::Group &group) const
    {
       for (const size_t opIdx : group.opIndices) {
-         if (m.fOperators[opIdx]->IsFusionReduction())
+         if (FusionOp(*m.fOperators[opIdx]).IsFusionReduction())
             return opIdx;
       }
 
@@ -2051,7 +2127,7 @@ private:
          throw std::runtime_error("Missing fused producer for tensor " + tensorName);
 
       const size_t opIdx = producerIt->second;
-      const auto &op = *m.fOperators[opIdx];
+      const FusionOp op(*m.fOperators[opIdx]);
       const auto outputs = op.GetOpOutputTensors();
 
       const auto outputIt = std::find_if(outputs.begin(), outputs.end(), [&](const auto &output) {
@@ -2152,7 +2228,7 @@ private:
 
    std::string ReductionKernel(const Fusion::Group &group, size_t reductionOpIdx) const
    {
-      const auto &op = *m.fOperators[reductionOpIdx];
+      const FusionOp op(*m.fOperators[reductionOpIdx]);
       const auto inputs = op.GetOpInputTensors();
       const auto outputs = op.GetOpOutputTensors();
       const auto dataInputs = op.GetFusionDataInputIndices();

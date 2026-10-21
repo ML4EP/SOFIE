@@ -85,7 +85,24 @@ set(sources_cxx
     src/SOFIE_common_helpers.cxx
 )
 
-target_sources(SOFIE_core PRIVATE ${sources_headers} ${sources_cxx})
+# helper code shared by the generator and the generated code: written once in inc/SOFIE/Shared/*.inc,
+# #included by SOFIE_common.hxx and embedded as a string for the generated code
+set(shared_code_names ConvertShapeToLength ConvertShapeToString Broadcast BroadcastConvBias MemoryPlanner)
+set(shared_code_dir "${CMAKE_CURRENT_SOURCE_DIR}/inc/SOFIE/Shared")
+set(shared_code_cxx "${CMAKE_CURRENT_BINARY_DIR}/SOFIE_shared_code.cxx")
+set(shared_code_files)
+foreach(name IN LISTS shared_code_names)
+  list(APPEND shared_code_files "${shared_code_dir}/${name}.inc")
+endforeach()
+add_custom_command(
+  OUTPUT "${shared_code_cxx}"
+  COMMAND ${CMAKE_COMMAND} -DOUT=${shared_code_cxx} -DDIR=${shared_code_dir} "-DNAMES=${shared_code_names}"
+          -P "${PROJECT_SOURCE_DIR}/cmake/EmbedSharedCode.cmake"
+  DEPENDS ${shared_code_files} "${PROJECT_SOURCE_DIR}/cmake/EmbedSharedCode.cmake"
+  COMMENT "Embedding shared helper code"
+  VERBATIM)
+
+target_sources(SOFIE_core PRIVATE ${sources_headers} ${sources_cxx} "${shared_code_cxx}")
 target_include_directories(SOFIE_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/inc>
   $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>

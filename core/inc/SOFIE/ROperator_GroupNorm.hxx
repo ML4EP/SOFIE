@@ -1,6 +1,7 @@
 #ifndef SOFIE_ROPERATOR_GROUPNORM
 #define SOFIE_ROPERATOR_GROUPNORM
 
+#include "SOFIE/ROperator_ALPAKA.hxx"
 #include "SOFIE/RModel.hxx"
 #include "SOFIE/SOFIE_common.hxx"
 #include <sstream>
@@ -9,7 +10,7 @@
 namespace SOFIE {
 
 template <typename T>
-class ROperator_GroupNorm : public ROperator {
+class ROperator_GroupNorm : public ROperator_ALPAKA {
 private:
    int fNumGroups;
    float fAttrEpsilon;

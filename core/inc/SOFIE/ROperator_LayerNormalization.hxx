@@ -2,7 +2,7 @@
 #define SOFIE_ROPERATOR_LAYERNORMALIZATION
 
 #include "SOFIE/RModel.hxx"
-#include "SOFIE/ROperator.hxx"
+#include "SOFIE/ROperator_ALPAKA.hxx"
 #include "SOFIE/SOFIE_common.hxx"
 #include <sstream>
 #include <string>
@@ -10,7 +10,7 @@
 namespace SOFIE {
 
 template <typename T>
-class ROperator_LayerNormalization : public ROperator {
+class ROperator_LayerNormalization : public ROperator_ALPAKA {
 private:
    bool fCastToFloat = false;  // flag to indicate if operation 1 are in floats (to be  impl)
    int fAttrAxis;

@@ -3,7 +3,7 @@
 #define SOFIE_ROperator_Comparison
 
 #include "SOFIE/SOFIE_common.hxx"
-#include "SOFIE/ROperator.hxx"
+#include "SOFIE/ROperator_ALPAKA.hxx"
 #include "SOFIE/RModel.hxx"
 
 #include <algorithm>
@@ -51,7 +51,7 @@ struct ComparisonTrait<T, GreaterEq> {
 };
 
 template<typename T, EComparisonOperator Op>
-class ROperator_Comparison final : public ROperator{
+class ROperator_Comparison final : public ROperator_ALPAKA{
 private:
 
    std::string fNX1;

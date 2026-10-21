@@ -1,13 +1,13 @@
 #ifndef SOFIE_ROPERATOR_NOT
 #define SOFIE_ROPERATOR_NOT
 
-#include <SOFIE/ROperator.hxx>
+#include "SOFIE/ROperator_ALPAKA.hxx"
 #include <SOFIE/RModel.hxx>
 #include <SOFIE/SOFIE_common.hxx>
 namespace SOFIE {
 
 
-class ROperator_Not final : public ROperator {
+class ROperator_Not final : public ROperator_ALPAKA {
 private:
    std::string fNX;
    std::string fNY;

@@ -2,39 +2,38 @@
 #include "SOFIE/SOFIE_common.hxx"
 namespace SOFIE {
 
+namespace shared_code {
+// helper code shared with the generator: single source in inc/SOFIE/Shared/*.inc, embedded at build time
+extern const char *const kShared_ConvertShapeToLength;
+extern const char *const kShared_ConvertShapeToString;
+extern const char *const kShared_Broadcast;
+extern const char *const kShared_BroadcastConvBias;
+extern const char *const kShared_MemoryPlanner;
+} // namespace shared_code
+
 namespace {
 
+
+constexpr const char *kGNNData = R"SOFIE(
+struct GNN_Data {
+      SOFIE::RTensor<float> node_data;      // the node feature data, tensor with shape (num_nodes, num_node_features)
+      SOFIE::RTensor<float> edge_data;      // the edge feature data, tensor with shape (num_edges, num_edge_features)
+      SOFIE::RTensor<float> global_data;    // the global features, tensor with shape (1, num_global_features)
+      SOFIE::RTensor<int> edge_index;       // the edge index (receivers and senders for each edge), tensor with shape (2, num_edges)
+                                     // edge_index[0,:] are the receivers and edge_index[1,:] are the senders
+
+
+      // need to have default constructor since RTensor has not one
+      GNN_Data(): node_data(SOFIE::RTensor<float>({})), edge_data(SOFIE::RTensor<float>({})), global_data(SOFIE::RTensor<float>({})), edge_index(SOFIE::RTensor<int>({})) {}
+
+};
+)SOFIE";
 
 constexpr const char *kBlasSgemm = R"SOFIE(
 namespace BLAS {
 extern "C" void sgemm_(const char *transa, const char *transb, const int *m, const int *n, const int *k,
                        const float *alpha, const float *A, const int *lda, const float *B, const int *ldb,
                        const float *beta, float *C, const int *ldc);
-}
-)SOFIE";
-
-constexpr const char *kConvertShapeToLength = R"SOFIE(
-inline std::size_t ConvertShapeToLength(const std::vector<std::size_t> &shape)
-{
-   std::size_t length = 1;
-   for (auto &dim : shape)
-      length *= dim;
-   return length;
-}
-)SOFIE";
-
-constexpr const char *kConvertShapeToString = R"SOFIE(
-inline std::string ConvertShapeToString(const std::vector<std::size_t> &shape)
-{
-   std::stringstream out;
-   out << "{ ";
-   for (std::size_t i = 0; i < shape.size(); i++) {
-      out << shape[i];
-      if (i < shape.size() - 1)
-         out << " , ";
-   }
-   out << " }";
-   return out.str();
 }
 )SOFIE";
 
@@ -276,81 +275,7 @@ void col2im(const Dtype *data_col, const int channels,
 }
 )SOFIE";
 
-constexpr const char *kBroadcastTensor = R"SOFIE(
-template <typename T>
-void BroadcastTensor(const T *data, std::size_t curLength, const std::vector<std::size_t> &shape,
-                     const std::vector<std::size_t> &targetShape, T *broadcastedData)
-{
-   std::size_t size = shape.size();
-   if (size > 1 && shape.front() == targetShape.front() && shape.back() == 1) {
-      std::size_t bsize = targetShape.back();
-      for (int k = int(size) - 2; k >= 0; k--) {
-         if (shape[k] != 1)
-            break;
-         bsize *= targetShape[k];
-      }
-      for (std::size_t i = 0; i < curLength; i++) {
-         std::fill(broadcastedData + i * bsize, broadcastedData + (i + 1) * bsize, data[i]);
-      }
-      return;
-   }
-
-   std::copy(data, data + curLength, broadcastedData);
-   std::size_t arrayNum = 1;
-   std::vector<T> newData(ConvertShapeToLength(targetShape));
-
-   for (std::size_t idx = 0; idx < size; idx++) {
-      std::size_t dim = shape[idx];
-      std::size_t targetDim = targetShape[idx];
-      if (dim == 1 && targetDim > 1) {
-         std::size_t newLength = curLength * targetDim;
-         std::size_t arrayLength = curLength / arrayNum;
-         if (arrayLength > 1) {
-            for (std::size_t arrayIdx = 0; arrayIdx < arrayNum; arrayIdx++) {
-               for (std::size_t targetIdx = 0; targetIdx < targetDim; targetIdx++) {
-                  std::size_t offset = arrayIdx * arrayLength * targetDim + targetIdx * arrayLength;
-                  std::copy(broadcastedData + arrayIdx * arrayLength,
-                            broadcastedData + (arrayIdx + 1) * arrayLength,
-                            newData.begin() + offset);
-               }
-            }
-         } else {
-            for (std::size_t arrayIdx = 0; arrayIdx < arrayNum; arrayIdx++) {
-               std::fill(newData.begin() + arrayIdx * targetDim,
-                         newData.begin() + (arrayIdx + 1) * targetDim, broadcastedData[arrayIdx]);
-            }
-         }
-         curLength = newLength;
-         std::copy(newData.begin(), newData.begin() + newLength, broadcastedData);
-      }
-      arrayNum *= targetDim;
-   }
-}
-
-template <typename T>
-T *CreateBroadcastTensor(const T *data, const std::vector<std::size_t> &shape,
-                         const std::vector<std::size_t> &targetShape, std::size_t targetLength)
-{
-   T *broadcastedData = new T[targetLength];
-   std::size_t curLength = ConvertShapeToLength(shape);
-   BroadcastTensor<T>(data, curLength, shape, targetShape, broadcastedData);
-   return broadcastedData;
-}
-
-template <typename T>
-T *UnidirectionalBroadcast(const T *data, const std::vector<std::size_t> &shape,
-                           const std::vector<std::size_t> &targetShape)
-{
-   if (shape.size() < targetShape.size()) {
-      std::size_t targetSize = targetShape.size();
-      std::vector<std::size_t> newShape(targetSize, 1);
-      std::size_t offset = targetSize - shape.size();
-      std::copy(shape.begin(), shape.end(), newShape.begin() + offset);
-      return CreateBroadcastTensor(data, newShape, targetShape, ConvertShapeToLength(targetShape));
-   }
-   return CreateBroadcastTensor(data, shape, targetShape, ConvertShapeToLength(targetShape));
-}
-
+constexpr const char *kUnidirectionalBroadcastInPlace = R"SOFIE(
 template <typename T>
 void UnidirectionalBroadcast(const T *data, const std::vector<std::size_t> &shape,
                              const std::vector<std::size_t> &targetShape, T *broadcastedData)
@@ -365,43 +290,6 @@ void UnidirectionalBroadcast(const T *data, const std::vector<std::size_t> &shap
       return;
    }
    BroadcastTensor(data, curLength, shape, targetShape, broadcastedData);
-}
-)SOFIE";
-
-constexpr const char *kBroadcastConvBias = R"SOFIE(
-template <typename T>
-T *BroadcastConvBias(const T *data, const std::size_t channel, const std::vector<std::size_t> &targetShape)
-{
-   std::size_t size = targetShape.size();
-   if (targetShape[1] != channel) {
-      std::stringstream ss;
-      ss << "SOFIE - Error broadcasting Conv Bias of shape {";
-      ss << std::to_string(channel);
-      ss << "} to ";
-      ss << ConvertShapeToString(targetShape);
-      throw std::runtime_error(ss.str());
-   }
-
-   std::size_t targetLength = ConvertShapeToLength(targetShape);
-   T *newData = new T[targetLength];
-
-   if (targetLength == channel) {
-      std::copy(data, data + channel, newData);
-      return newData;
-   }
-
-   std::size_t cStride = 1;
-   for (std::size_t i = 2; i < size; i++)
-      cStride *= targetShape[i];
-   for (std::size_t i = 0; i < channel; i++) {
-      std::fill(newData + i * cStride, newData + (i + 1) * cStride, data[i]);
-   }
-   std::size_t batch = targetShape[0];
-   std::size_t bStride = channel * cStride;
-   for (std::size_t i = 1; i < batch; i++) {
-      std::copy(newData, newData + bStride, newData + i * bStride);
-   }
-   return newData;
 }
 )SOFIE";
 
@@ -1014,128 +902,6 @@ constexpr TensorDims makeDims(Arr const &arr)
 }
 )SOFIE";
 
-constexpr const char *kDynamicMemory = R"SOFIE(
-struct TensorLifeInfo {
-   int begin;
-   int end;
-   std::size_t size;
-};
-
-struct MemoryResult {
-   std::size_t total_bytes = 0;
-   std::vector<std::size_t> offsets;
-};
-
-namespace memory_detail {
-struct FreeBlock {
-   std::size_t offset;
-   std::size_t size;
-   bool operator<(const FreeBlock &other) const { return offset < other.offset; }
-};
-struct MemoryEvent {
-   int t;
-   int type;
-   int idx;
-   bool operator<(const MemoryEvent &o) const
-   {
-      if (t != o.t)
-         return t < o.t;
-      return type < o.type;
-   }
-};
-}
-
-inline MemoryResult OrganizeMemory(const std::vector<TensorLifeInfo> &tensorsInfo)
-{
-   using memory_detail::FreeBlock;
-   using memory_detail::MemoryEvent;
-   for (const auto &t : tensorsInfo) {
-      if (!(t.end > t.begin)) {
-         throw std::runtime_error("Each tensor must have end > begin.");
-      }
-   }
-
-   std::vector<MemoryEvent> events;
-   events.reserve(tensorsInfo.size() * 2);
-   for (int i = 0; i < (int)tensorsInfo.size(); ++i) {
-      events.push_back({tensorsInfo[i].end, 0, i});
-      events.push_back({tensorsInfo[i].begin, 1, i});
-   }
-   std::sort(events.begin(), events.end());
-
-   std::vector<std::size_t> tensorsOffset(tensorsInfo.size());
-   std::set<FreeBlock> free_list;
-   std::unordered_map<int, std::size_t> live_size;
-   std::unordered_map<int, std::size_t> live_offset;
-   std::size_t total_bytes = 0;
-
-   auto allocate_best_fit = [&](std::size_t need) -> std::size_t {
-      auto best = free_list.end();
-      for (auto it = free_list.begin(); it != free_list.end(); ++it) {
-         if (it->size >= need) {
-            if (best == free_list.end() || it->size < best->size)
-               best = it;
-         }
-      }
-      if (best != free_list.end()) {
-         std::size_t off = best->offset;
-         if (best->size == need) {
-            free_list.erase(best);
-         } else {
-            FreeBlock updated{best->offset + need, best->size - need};
-            free_list.erase(best);
-            free_list.insert(updated);
-         }
-         return off;
-      }
-      std::size_t off = total_bytes;
-      total_bytes += need;
-      return off;
-   };
-
-   auto try_coalesce = [&](std::set<FreeBlock>::iterator it) {
-      if (it != free_list.begin()) {
-         auto prev = std::prev(it);
-         if (prev->offset + prev->size == it->offset) {
-            FreeBlock merged{prev->offset, prev->size + it->size};
-            free_list.erase(prev);
-            it = free_list.erase(it);
-            it = free_list.insert(merged).first;
-         }
-      }
-      auto next = std::next(it);
-      if (next != free_list.end() && it->offset + it->size == next->offset) {
-         FreeBlock merged{it->offset, it->size + next->size};
-         free_list.erase(next);
-         it = free_list.erase(it);
-         free_list.insert(merged);
-      }
-   };
-
-   for (const auto &e : events) {
-      if (e.type == 0) {
-         auto it_sz = live_size.find(e.idx);
-         auto it_off = live_offset.find(e.idx);
-         if (it_sz != live_size.end() && it_off != live_offset.end()) {
-            FreeBlock fb{it_off->second, it_sz->second};
-            auto it = free_list.insert(fb).first;
-            try_coalesce(it);
-            live_size.erase(it_sz);
-            live_offset.erase(it_off);
-         }
-      } else {
-         auto &t = tensorsInfo[e.idx];
-         std::size_t off = allocate_best_fit(t.size);
-         tensorsOffset[e.idx] = off;
-         live_size[e.idx] = t.size;
-         live_offset[e.idx] = off;
-      }
-   }
-
-   return MemoryResult{total_bytes, std::move(tensorsOffset)};
-}
-)SOFIE";
-
 }
 
 HelperFunctionsCode GenerateHelperFunctionsCode(const std::set<std::string> &neededHelpers,
@@ -1159,6 +925,7 @@ HelperFunctionsCode GenerateHelperFunctionsCode(const std::set<std::string> &nee
    const bool readSafetensors = need("SafetensorsReader");
    const bool inputDims = need("InputTensorDims");
    const bool dynMemory = need("DynamicMemory");
+   const bool gnnData = need("GNN_Data");
 
    const bool im2colFamily = im2col || im2col3d || col2im || im2colStrided || im2col3dStrided;
    const bool needConvertLength = uniBroadcast || convBias;
@@ -1198,9 +965,9 @@ HelperFunctionsCode GenerateHelperFunctionsCode(const std::set<std::string> &nee
       defs += kBlasSgemm;
 
    if (needConvertLength)
-      defs += kConvertShapeToLength;
+      defs += shared_code::kShared_ConvertShapeToLength;
    if (needConvertString)
-      defs += kConvertShapeToString;
+      defs += shared_code::kShared_ConvertShapeToString;
 
    if (im2colFamily || uniBroadcast || convBias) {
       defs += "\nnamespace UTILITY {\n";
@@ -1216,10 +983,12 @@ HelperFunctionsCode GenerateHelperFunctionsCode(const std::set<std::string> &nee
          defs += kIm2col3dStrided;
       if (col2im)
          defs += kCol2im;
-      if (uniBroadcast)
-         defs += kBroadcastTensor;
+      if (uniBroadcast) {
+         defs += shared_code::kShared_Broadcast;
+         defs += kUnidirectionalBroadcastInPlace;
+      }
       if (convBias)
-         defs += kBroadcastConvBias;
+         defs += shared_code::kShared_BroadcastConvBias;
       defs += "} // namespace UTILITY\n";
    }
 
@@ -1240,7 +1009,9 @@ HelperFunctionsCode GenerateHelperFunctionsCode(const std::set<std::string> &nee
    if (inputDims)
       defs += kInputTensorDims;
    if (dynMemory)
-      defs += kDynamicMemory;
+      defs += shared_code::kShared_MemoryPlanner;
+   if (gnnData)
+      defs += kGNNData;
 
    defs += "// --- End of SOFIE inference helper functions ---\n\n";
 

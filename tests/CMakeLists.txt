@@ -101,6 +101,8 @@ set(CAPTURE_STR
         std::cerr << \"[SKIP] Multiple outputs are not supported for @1\" << std::endl;\n\
     } else if (msg.find(\"is of a data type which is not yet supported\") != std::string::npos) {\n\
         std::cerr << \"[SKIP] Operator with unsupported data type in @1: \" << msg << std::endl;\n\
+    } else if (msg.find(\"has no Alpaka implementation\") != std::string::npos) {\n\
+        std::cerr << \"[SKIP] Operator without GPU implementation in @1: \" << msg << std::endl;\n\
     } else {\n\
         std::cerr << \"[ERROR] Failed processing @1: \" << msg << std::endl;\n\
         failures++;\n\
@@ -452,6 +454,14 @@ if (ONNX_MODEL_NAMES)
                    FIXTURES_REQUIRED sofie-compile-models-onnx;sofie-test-custom-models-onnx-build)
   endif()
 endif()
+
+SOFIE_GENERATE_EXECUTABLE(TestAlpakaOperatorSupport cpu/TestAlpakaOperatorSupport.cxx
+  LIBRARIES SOFIE_core GTest::gtest GTest::gtest_main
+  FIXTURES_SETUP sofie-test-alpaka-operator-support-build
+)
+SOFIE_ADD_TEST(TestAlpakaOperatorSupport
+                  EXEC ./TestAlpakaOperatorSupport
+                  FIXTURES_REQUIRED sofie-test-alpaka-operator-support-build)
 
 SOFIE_GENERATE_EXECUTABLE(TestSofieParser cpu/TestSofieParser.cxx
   LIBRARIES SOFIE_core SOFIE_parsers GTest::gtest GTest::gtest_main

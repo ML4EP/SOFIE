@@ -2,7 +2,7 @@
 #define SOFIE_ROPERATOR_LOGIC
 
 #include "SOFIE/SOFIE_common.hxx"
-#include "SOFIE/ROperator.hxx"
+#include "SOFIE/ROperator_ALPAKA.hxx"
 #include "SOFIE/RModel.hxx"
 
 #include <sstream>
@@ -93,7 +93,7 @@ struct LogicBinaryTrait<T, ELogicBinaryOp::BitwiseXor> {
 };
 
 template <typename T, ELogicBinaryOp Op>
-class ROperator_LogicBinary final : public ROperator {
+class ROperator_LogicBinary final : public ROperator_ALPAKA {
 private:
    std::string fNA;
    std::string fNB;
@@ -277,7 +277,7 @@ public:
 };
 
 template <typename T>
-class ROperator_BitwiseNot final : public ROperator {
+class ROperator_BitwiseNot final : public ROperator_ALPAKA {
 private:
    std::string fNX;
    std::string fNY;

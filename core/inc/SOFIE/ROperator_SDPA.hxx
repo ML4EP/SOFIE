@@ -1,6 +1,7 @@
 #ifndef SOFIE_ROPERATOR_SDPA
 #define SOFIE_ROPERATOR_SDPA
 
+#include "SOFIE/ROperator_ALPAKA.hxx"
 #include "SOFIE/RModel.hxx"
 #include "SOFIE/SOFIE_common.hxx"
 #include <sstream>
@@ -10,7 +11,7 @@
 namespace SOFIE {
 
 template <typename T>
-class ROperator_SDPA : public ROperator {
+class ROperator_SDPA : public ROperator_ALPAKA {
 private:
    std::string fNQ, fNK, fNV, fNMask, fNY;
    float fScale = 0.0f;  // 0 → use 1/sqrt(D)

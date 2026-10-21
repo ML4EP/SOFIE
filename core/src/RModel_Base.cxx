@@ -97,19 +97,23 @@ void RModel_Base::GenerateHeaderInfo_GPU_ALPAKA(std::string& hgname) {
     hgname = "SOFIE_" + hgname + "_HXX";
     fGC += "\n#ifndef " + hgname + "\n";
     fGC += "#define " + hgname + "\n\n";
+    // the generated code does not include SOFIE_common.hxx: it is self-contained, like the CPU one. The standard
+    // headers it relies on are listed here and the helper functions it needs are emitted inline in the model namespace
+    for (const char *h : {"cstdint", "cstring", "string", "vector", "memory", "sstream", "iostream", "limits",
+                          "stdexcept", "algorithm", "cmath", "cassert", "cstddef", "type_traits"}) {
+        fNeededStdLib.insert(h);
+    }
     for (auto& i: fNeededStdLib) {
         fGC += "#include <" + i + ">\n";
     }
     for (auto& i: fCustomOpHeaders) {
         fGC += "#include \"" + i + "\"\n";
     }
+    fGC += kHelperIncludesMarker;
     fGC += "#include <alpaka/alpaka.hpp>\n";
     fGC += "#include <sofieBLAS/sofieBLAS.hpp>\n";
     fGC += "#include <span>\n";
 
-    // for the session we need to include SOFIE_Common functions
-    //needed for convolution operator (need to add a flag)
-    fGC += "#include \"SOFIE/SOFIE_common.hxx\"\n";
     if (fUseWeightFile)
         fGC += "#include <fstream>\n";
 
@@ -181,6 +185,7 @@ void RModel_Base::GenerateHeaderInfo_GPU_ALPAKA(std::string& hgname) {
     fGC += "#endif // SOFIE_ALPAKA_DEVICE_MATH_DEFINED\n";
 
     fGC += "\nnamespace SOFIE_" + fName + "{\n";
+    fGC += kHelperFunctionsMarker;
 }
 
 void RModel_Base::OutputGenerated(std::string filename, bool append) {

@@ -1,6 +1,7 @@
 #ifndef SOFIE_ROPERATOR_RWKV_WKV6
 #define SOFIE_ROPERATOR_RWKV_WKV6
 
+#include "SOFIE/ROperator_ALPAKA.hxx"
 #include "SOFIE/RModel.hxx"
 #include "SOFIE/SOFIE_common.hxx"
 #include <sstream>
@@ -9,7 +10,7 @@
 namespace SOFIE {
 
 template <typename T>
-class ROperator_RWKV_WKV6 : public ROperator {
+class ROperator_RWKV_WKV6 : public ROperator_ALPAKA {
 private:
    std::string fNR, fNK, fNV, fNW, fNU, fNY, fNState;
 

@@ -2,7 +2,7 @@
 #define SOFIE_ROPERATOR_GatherND
 
 #include "SOFIE/SOFIE_common.hxx"
-#include "SOFIE/ROperator.hxx"
+#include "SOFIE/ROperator_ALPAKA.hxx"
 #include "SOFIE/RModel.hxx"
 
 #include <sstream>
@@ -10,7 +10,7 @@
 #include <string>
 namespace SOFIE{
 
-class ROperator_GatherND final : public ROperator
+class ROperator_GatherND final : public ROperator_ALPAKA
 {
 private:
 

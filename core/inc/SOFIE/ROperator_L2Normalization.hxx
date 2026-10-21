@@ -2,7 +2,7 @@
 #define SOFIE_ROPERATOR_L2NORMALIZATION
 
 #include "SOFIE/RModel.hxx"
-#include "SOFIE/ROperator.hxx"
+#include "SOFIE/ROperator_ALPAKA.hxx"
 #include "SOFIE/SOFIE_common.hxx"
 
 #include <cmath>
@@ -16,7 +16,7 @@
 namespace SOFIE {
 
 template <typename T>
-class ROperator_L2Normalization final : public ROperator {
+class ROperator_L2Normalization final : public ROperator_ALPAKA {
 private:
    std::string fNX;
    std::string fNY;

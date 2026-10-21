@@ -3,7 +3,7 @@
 
 
 #include "SOFIE/SOFIE_common.hxx"
-#include "SOFIE/ROperator.hxx"
+#include "SOFIE/ROperator_ALPAKA.hxx"
 #include "SOFIE/RModel.hxx"
 #include "SOFIE/SOFIEHelpers.hxx"
 
@@ -19,7 +19,7 @@ namespace SOFIE{
 
 
    template <typename T>
-   class ROperator_Gemm final : public ROperator
+   class ROperator_Gemm final : public ROperator_ALPAKA
    {
 
    private:
@@ -1197,7 +1197,7 @@ namespace SOFIE{
 
       std::vector<std::string> GetBlasConfigs() override {
          if (!fLowRank)
-            return ROperator::GetBlasConfigs();
+            return ROperator_ALPAKA::GetBlasConfigs();
 
          int64_t dimA = fShapeA.size();
          auto m = (fAttrTransA ? fShapeA[dimA-1].GetVal() : fShapeA[dimA-2].GetVal());

@@ -2,7 +2,7 @@
 #define SOFIE_ROPERATOR_BatchNormalization
 
 #include "SOFIE/SOFIE_common.hxx"
-#include "SOFIE/ROperator.hxx"
+#include "SOFIE/ROperator_ALPAKA.hxx"
 #include "SOFIE/RModel.hxx"
 
 
@@ -12,7 +12,7 @@
 namespace SOFIE{
 
 template <typename T>
-class ROperator_BatchNormalization final : public ROperator
+class ROperator_BatchNormalization final : public ROperator_ALPAKA
 {
 
 private:

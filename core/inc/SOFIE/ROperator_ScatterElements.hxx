@@ -2,7 +2,7 @@
 #define SOFIE_ROperator_ScatterElements
 
 #include "SOFIE/SOFIE_common.hxx"
-#include "SOFIE/ROperator.hxx"
+#include "SOFIE/ROperator_ALPAKA.hxx"
 #include "SOFIE/RModel.hxx"
 
 #include <sstream>
@@ -11,7 +11,7 @@
 namespace SOFIE{
 
 
-class ROperator_ScatterElements final : public ROperator{
+class ROperator_ScatterElements final : public ROperator_ALPAKA{
 private:
 
    int64_t fAxis;

@@ -2,7 +2,7 @@
 #define SOFIE_ROPERATOR_Reduce
 
 #include "SOFIE/SOFIE_common.hxx"
-#include "SOFIE/ROperator.hxx"
+#include "SOFIE/ROperator_ALPAKA.hxx"
 #include "SOFIE/RModel.hxx"
 
 #include <memory>
@@ -18,7 +18,7 @@ namespace SOFIE{
 enum EReduceOpMode { ReduceMean, ReduceSum, ReduceSumSquare, ReduceProd, ReduceL2, ReduceMax, ReduceMin, InvalidReduceOp };
 
 template <EReduceOpMode Op>
-class ROperator_Reduce final : public ROperator
+class ROperator_Reduce final : public ROperator_ALPAKA
 {
 private:
     /* Attributes*/

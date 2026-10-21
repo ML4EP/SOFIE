@@ -1,5 +1,8 @@
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
+#include <cxxabi.h>
+#include <typeinfo>
 #include <climits>
 #include <limits>
 #include <memory>
@@ -12,6 +15,7 @@
 #include "../inc/SOFIE/SOFIE_common.hxx"
 
 #include "SOFIE/RModel.hxx"
+#include "SOFIE/ROperator_ALPAKA.hxx"
 #include "SOFIE/RModelFusion_ALPAKA.hxx"
 #include "SOFIE/RModelProfilerGPU.hxx"
 #include "SOFIE/SOFIE_common.hxx"
@@ -106,7 +110,7 @@ void RModel::GeneratePersistentTensorInfo_GPU_ALPAKA()
    for (size_t id = 0; id < fOperators.size(); ++id) {
       if (fFusion.skip.count(id)) continue;
 
-      for (const auto &name : fOperators[id]->GetPersistentTensorNames_GPU_ALPAKA())
+      for (const auto &name : AlpakaOp(*fOperators[id]).GetPersistentTensorNames_GPU_ALPAKA())
          persistentTensors.insert(name);
    }
 
@@ -330,11 +334,13 @@ void RModel::GenerateDynamicTensorInfo_GPU_ALPAKA() {
          // the same coalescing planner used for the compile-time-constant
          // tensors above, appended after the constant region in the pool.
          if (!runtimeIdx.empty()) {
+            // TensorLifeInfo and OrganizeMemory are emitted in the generated header
+            AddNeededHelperFunction("DynamicMemory");
             out << SP << SP << "constexpr std::size_t kPoolAlign = 256;\n";
             out << SP << SP << "auto alignUp = [](std::size_t v, std::size_t a) -> std::size_t {\n";
             out << SP << SP << SP << "return (v + a - 1) & ~(a - 1);\n";
             out << SP << SP << "};\n";
-            out << SP << SP << "std::vector<SOFIE::TensorLifeInfo> runtimePoolInfos;\n";
+            out << SP << SP << "std::vector<TensorLifeInfo> runtimePoolInfos;\n";
             out << SP << SP << "runtimePoolInfos.reserve(" << runtimeIdx.size() << ");\n";
             for (size_t idx : runtimeIdx) {
                auto &e = entries[idx];
@@ -617,7 +623,7 @@ void RModel::GenerateOutput_GPU_ALPAKA() {
          if (fProfile) {
             fGC += RModelProfilerGPU::GenerateOperatorCode(*fOperators[op_idx], op_idx, opDynParamNames);
          } else {
-            fGC += fOperators[op_idx]->Generate_GPU_ALPAKA(std::to_string(op_idx), opDynParamNames);
+            fGC += AlpakaOp(*fOperators[op_idx]).Generate_GPU_ALPAKA(std::to_string(op_idx), opDynParamNames);
          }
       }
    }
@@ -756,7 +762,26 @@ std::string TensorMember(std::string const &name) {
    return "tensor_" + name;
 }
 
+void RModel::CheckAlpakaOperators() const
+{
+   for (size_t id = 0; id < fOperators.size(); id++) {
+      const ROperator &op = *fOperators[id];
+      if (GetAlpaka(op))
+         continue;
+      int status = 0;
+      char *demangled = abi::__cxa_demangle(typeid(op).name(), nullptr, nullptr, &status);
+      const std::string type = status == 0 && demangled ? demangled : typeid(op).name();
+      std::free(demangled);
+      throw std::runtime_error("sofie: GPU (Alpaka) generation of model " + fName + ": operator " + std::to_string(id) +
+                               " (" + type + ") has no Alpaka implementation");
+   }
+   for (const auto &graph : fSubGraphs)
+      graph->CheckAlpakaOperators();
+}
+
 void RModel::GenerateSessionCode_GPU_ALPAKA() {
+   CheckAlpakaOperators();
+
    // the model's dynamic shape parameters in infer-argument order
    std::vector<std::string> dynParamNames;
    ForEachInferArg_GPU_ALPAKA([&](const std::string &p) { dynParamNames.push_back(p); },
@@ -829,13 +854,13 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
                if (registered_operators.find(kernelKey(id)) == registered_operators.end()) {
                   if (fVerbose)
                      std::cout << "Generating ALPAKA kernel for operator " << toString(fOperators[id]->GetKind()) << std::endl;
-                  fGC += fOperators[id]->Generate_GPU_Kernel_ALPAKA(std::to_string(id), idDynParamNames);
+                  fGC += AlpakaOp(*fOperators[id]).Generate_GPU_Kernel_ALPAKA(std::to_string(id), idDynParamNames);
                   registered_operators.insert(kernelKey(id));
                }
             } else {
                if (fVerbose)
                   std::cout << "Generating ALPAKA kernel for operator " << toString(fOperators[id]->GetKind()) << std::endl;
-               fGC += fOperators[id]->Generate_GPU_Kernel_ALPAKA(std::to_string(id), idDynParamNames);
+               fGC += AlpakaOp(*fOperators[id]).Generate_GPU_Kernel_ALPAKA(std::to_string(id), idDynParamNames);
             }
          }
       }
@@ -906,7 +931,7 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
       for (const auto &op : fOperators) {
          for (const auto &name : op->GetOpOutputTensors())
             opOutputTensors.insert(std::string(name));
-         for (const auto &name : op->GetPersistentTensorNames_GPU_ALPAKA())
+         for (const auto &name : AlpakaOp(*op).GetPersistentTensorNames_GPU_ALPAKA())
             persistentTensors.insert(name);
       }
 
@@ -1015,7 +1040,6 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
          GenerateTemporaryInitializedTensorContainers_GPU_ALPAKA();
          if (fUseWeightFile) {
             fGC += "\n//--- reading weights from file\n";
-            fGC += "using SOFIE::ReadTensorFromStream;\n";
             ReadInitializedTensorsFromFile();
             fGC += "\n";
          }
@@ -1024,14 +1048,14 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
          for (auto &op : fOperators) {
             for (const auto &outName : op->GetOpOutputTensors()) {
                if (std::find(fUnifiedPoolTensorNames.begin(), fUnifiedPoolTensorNames.end(), outName) != fUnifiedPoolTensorNames.end())
-                  op->MarkOutputAsPooled(outName);
+                  AlpakaOp(*op).MarkOutputAsPooled(outName);
             }
          }
          for (size_t id = 0; id < fOperators.size(); id++) {
             if (fFusion.skip.count(id)) continue;
-            fGC += fOperators[id]->GenerateInitCode_GPU_ALPAKA();
+            fGC += AlpakaOp(*fOperators[id]).GenerateInitCode_GPU_ALPAKA();
             if (fOperators[id]->GetKind() == OperatorKind::GEMM || fOperators[id]->GetKind() == OperatorKind::CONV) {
-               for (auto &blasCfg : fOperators[id]->GetBlasConfigs()) {
+               for (auto &blasCfg : AlpakaOp(*fOperators[id]).GetBlasConfigs()) {
                   if (!blasCfg.empty())
                      fGC += "\nblas.addOperationConfig(" + blasCfg + ");\n";
                }
@@ -1159,13 +1183,13 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
                if (registered_operators.find(kernelKey(id)) == registered_operators.end()) {
                   if (fVerbose)
                      std::cout << "Declaring ALPAKA kernel for operator " << toString(fOperators[id]->GetKind()) << std::endl;
-                  fGC += fOperators[id]->Generate_GPU_Kernel_Definitions_ALPAKA(std::to_string(id));
+                  fGC += AlpakaOp(*fOperators[id]).Generate_GPU_Kernel_Definitions_ALPAKA(std::to_string(id));
                   registered_operators.insert(kernelKey(id));
                }
             } else {
                if (fVerbose)
                   std::cout << "Declaring ALPAKA kernel for operator " << toString(fOperators[id]->GetKind()) << std::endl;
-               fGC += fOperators[id]->Generate_GPU_Kernel_Definitions_ALPAKA(std::to_string(id));
+               fGC += AlpakaOp(*fOperators[id]).Generate_GPU_Kernel_Definitions_ALPAKA(std::to_string(id));
             }
          }
       }
@@ -1182,7 +1206,7 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
       for (size_t id = 0; id < fOperators.size(); ++id) {
          if (fFusion.skip.count(id))
             continue;
-         fGC += fOperators[id]->GenerateResetStateCode_GPU_ALPAKA();
+         fGC += AlpakaOp(*fOperators[id]).GenerateResetStateCode_GPU_ALPAKA();
       }
       for (auto &i : fIntermediateTensorInfos) {
          // Alias tensors (e.g. Reshape/Squeeze outputs) are zero-copy views declared as
@@ -1255,6 +1279,8 @@ void RModel::GenerateGPU_ALPAKA(std::underlying_type_t<Options> options, int bat
 
    Initialize(batchSize, verbose);
 
+   CheckAlpakaOperators();
+
    fFusion = Fusion::Compute(*this);
 
    std::string hgname;
@@ -1271,6 +1297,7 @@ void RModel::GenerateGPU_ALPAKA(std::underlying_type_t<Options> options, int bat
    if (!fIsSubGraph) {
       fGC += ("} //SOFIE_" + fName + "\n");
       fGC += "\n#endif  // " + hgname + "\n";
+      EmitHelperFunctionsCode();
    }
 }
 

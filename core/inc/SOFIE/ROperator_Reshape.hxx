@@ -2,7 +2,7 @@
 #define SOFIE_ROPERATOR_RESHAPE
 
 #include "SOFIE/SOFIE_common.hxx"
-#include "SOFIE/ROperator.hxx"
+#include "SOFIE/ROperator_ALPAKA.hxx"
 #include "SOFIE/RModel.hxx"
 
 #include <cassert>
@@ -14,7 +14,7 @@ namespace SOFIE{
 enum ReshapeOpMode { Reshape, Flatten, Squeeze, Unsqueeze };
 
 
-class ROperator_Reshape final : public ROperator
+class ROperator_Reshape final : public ROperator_ALPAKA
 {
 
 private:

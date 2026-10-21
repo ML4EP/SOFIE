@@ -56,7 +56,8 @@ RModel_GraphIndependent::RModel_GraphIndependent(GraphIndependent_Init& graph_in
 
 void RModel_GraphIndependent::Generate() {
     std::string hgname;
-    AddNeededCustomHeader("SOFIE/SOFIE_common.hxx");
+    AddNeededCustomHeader("SOFIE/RTensor.hxx");
+    AddNeededHelperFunction("GNN_Data");
     GenerateHeaderInfo(hgname);
 
     std::ofstream f;
@@ -151,7 +152,7 @@ void RModel_GraphIndependent::Generate() {
       //fGC += "std::vector<float> fGlobalUpdates {" + std::to_string(num_global_features) + "};";
     }
 
-    fGC += "\nvoid infer(SOFIE::GNN_Data& input_graph){\n";
+    fGC += "\nvoid infer(GNN_Data& input_graph){\n";
 
     // computing updated edge attributes
     // could use std::span

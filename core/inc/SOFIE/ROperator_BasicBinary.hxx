@@ -2,7 +2,7 @@
 #define SOFIE_ROperator_BasicBinary
 
 #include "SOFIE/SOFIE_common.hxx"
-#include "SOFIE/ROperator.hxx"
+#include "SOFIE/ROperator_ALPAKA.hxx"
 #include "SOFIE/RModel.hxx"
 
 #include <algorithm>
@@ -66,7 +66,7 @@ struct BinaryOperatorTrait<T, FMod> {
 };
 
 template <typename T, EBasicBinaryOperator Op>
-class ROperator_BasicBinary final : public ROperator {
+class ROperator_BasicBinary final : public ROperator_ALPAKA {
 private:
    int fBroadcastFlag = 0;
    bool fStridedA = false;

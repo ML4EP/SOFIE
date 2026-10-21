@@ -2,7 +2,7 @@
 #define SOFIE_ROPERATOR_NONZERO
 
 #include "SOFIE/SOFIE_common.hxx"
-#include "SOFIE/ROperator.hxx"
+#include "SOFIE/ROperator_ALPAKA.hxx"
 #include "SOFIE/RModel.hxx"
 
 #include <algorithm>
@@ -10,7 +10,7 @@
 namespace SOFIE{
 
 template<class T>
-class ROperator_NonZero final : public ROperator
+class ROperator_NonZero final : public ROperator_ALPAKA
 {
 
 private:

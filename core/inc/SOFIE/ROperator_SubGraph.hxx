@@ -2,7 +2,7 @@
 #define SOFIE_ROPERATOR_SubGraph
 
 #include "SOFIE/SOFIE_common.hxx"
-#include "SOFIE/ROperator.hxx"
+#include "SOFIE/ROperator_ALPAKA.hxx"
 #include "SOFIE/RModel.hxx"
 
 #include <sstream>
@@ -12,7 +12,7 @@ namespace SOFIE{
 
    // operator dealing with subgraphs (such as If , Loop, etc..)
 
-class ROperator_If final : public ROperator
+class ROperator_If final : public ROperator_ALPAKA
 {
 
 private:

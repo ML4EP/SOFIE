@@ -2,14 +2,14 @@
 #define SOFIE_ROPERATOR_Elu
 
 #include "SOFIE/SOFIE_common.hxx"
-#include "SOFIE/ROperator.hxx"
+#include "SOFIE/ROperator_ALPAKA.hxx"
 #include "SOFIE/RModel.hxx"
 
 #include <sstream>
 namespace SOFIE {
 
 template <typename T>
-class ROperator_Elu final : public ROperator {
+class ROperator_Elu final : public ROperator_ALPAKA {
 
 private:
    /* Attributes*/

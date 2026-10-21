@@ -2,7 +2,7 @@
 #define SOFIE_ROPERATOR_Cast
 
 #include "SOFIE/SOFIE_common.hxx"
-#include "SOFIE/ROperator.hxx"
+#include "SOFIE/ROperator_ALPAKA.hxx"
 #include "SOFIE/RModel.hxx"
 
 #include <sstream>
@@ -19,7 +19,7 @@ std::vector<int64_t> convertToInt64(const In* src, size_t n) {
 }
 
 
-class ROperator_Cast final : public ROperator
+class ROperator_Cast final : public ROperator_ALPAKA
 {
 
 private:

@@ -1,7 +1,7 @@
 #ifndef SOFIE_ROPERATOR_BASIC_IS
 #define SOFIE_ROPERATOR_BASIC_IS
 
-#include <SOFIE/ROperator.hxx>
+#include "SOFIE/ROperator_ALPAKA.hxx"
 #include <SOFIE/RModel.hxx>
 #include <SOFIE/SOFIE_common.hxx>
 #include <cmath>
@@ -40,7 +40,7 @@ struct IsOpTraits<EBasicIsOperator::kIsNaN> {
 
 
 template <EBasicIsOperator Op>
-class ROperator_BasicIs final : public ROperator {
+class ROperator_BasicIs final : public ROperator_ALPAKA {
 private:
    std::string fNX;
    std::string fNY;

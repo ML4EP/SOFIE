@@ -2,14 +2,14 @@
 #define SOFIE_ROPERATOR_Softmax
 
 #include "SOFIE/SOFIE_common.hxx"
-#include "SOFIE/ROperator.hxx"
+#include "SOFIE/ROperator_ALPAKA.hxx"
 #include "SOFIE/RModel.hxx"
 
 #include <sstream>
 
 namespace SOFIE {
 
-class ROperator_Softmax final : public ROperator {
+class ROperator_Softmax final : public ROperator_ALPAKA {
 
 private:
    bool fLogSoftmax;  // for the logsoftmax case

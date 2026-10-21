@@ -2,7 +2,7 @@
 #define SOFIE_ROPERATOR_POOL
 
 #include "SOFIE/SOFIE_common.hxx"
-#include "SOFIE/ROperator.hxx"
+#include "SOFIE/ROperator_ALPAKA.hxx"
 #include "SOFIE/RModel.hxx"
 
 #include <memory>
@@ -29,7 +29,7 @@ struct RAttributes_Pool {
 enum PoolOpMode { InvalidPool, MaxPool, AveragePool, GlobalAveragePool };
 
 template<typename T>
-class ROperator_Pool final : public ROperator
+class ROperator_Pool final : public ROperator_ALPAKA
 {
 
 private:

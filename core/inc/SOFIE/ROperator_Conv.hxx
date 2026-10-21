@@ -2,7 +2,7 @@
 #define SOFIE_ROPERATOR_CONV
 
 #include "SOFIE/SOFIE_common.hxx"
-#include "SOFIE/ROperator.hxx"
+#include "SOFIE/ROperator_ALPAKA.hxx"
 #include "SOFIE/RModel.hxx"
 
 #include <memory>
@@ -14,7 +14,7 @@
 namespace SOFIE {
 
 template<typename T>
-class ROperator_Conv final : public ROperator
+class ROperator_Conv final : public ROperator_ALPAKA
 {
 private:
    bool fBroadcastBias = false;
