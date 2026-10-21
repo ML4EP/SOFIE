@@ -8,7 +8,7 @@
 namespace SOFIE {
 
 /// \class RModelProfilerGPU
-/// \brief Generates profiled inference code for the GPU/Alpaka path.
+/// \brief Generates profiled inference code for the GPU/alpaka path.
 ///
 /// Instruments the generated C++ code to measure per-operator GPU execution time
 /// using std::chrono + alpaka::wait for synchronization, and reports CPU/GPU memory usage.

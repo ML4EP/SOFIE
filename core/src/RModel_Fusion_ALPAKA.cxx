@@ -3,6 +3,7 @@
 #include <functional>
 #include <iostream>
 #include <iterator>
+#include <numeric>
 #include <optional>
 #include <set>
 #include <span>
@@ -14,13 +15,88 @@
 
 #include "SOFIE/RModel.hxx"
 #include "SOFIE/RModelFusion_ALPAKA.hxx"
-#include "SOFIE/ROperator_Gemm.hxx"
-#include "SOFIE/ROperator_LeakyRelu.hxx"
-#include "SOFIE/ROperator_Relu.hxx"
+#include "SOFIE/operators/ROperator_ALPAKA.hxx"
+#include "SOFIE/operators/ROperator_Gemm.hxx"
+#include "SOFIE/operators/ROperator_LeakyRelu.hxx"
+#include "SOFIE/operators/ROperator_Relu.hxx"
 
 namespace SOFIE {
 
 namespace {
+
+/// The fusion description of an operator (how it maps its inputs to its outputs, its expressions...) is given by its
+/// alpaka interface. An operator which has none is not fused: it has an unsupported fusion mapping.
+class FusionOp {
+   const ROperator &fOp;
+   const ROperator_ALPAKA *fGpu;
+
+public:
+   explicit FusionOp(const ROperator &op) : fOp(op), fGpu(GetAlpaka(op)) {}
+
+   std::span<const std::string_view> GetOpInputTensors() const { return fOp.GetOpInputTensors(); }
+   std::span<const std::string_view> GetOpOutputTensors() const { return fOp.GetOpOutputTensors(); }
+
+   EFusionMappingType GetFusionMappingType() const
+   {
+      return fGpu ? fGpu->GetFusionMappingType() : EFusionMappingType::Unsupported;
+   }
+   std::vector<size_t> GetFusionDataInputIndices() const
+   {
+      if (fGpu)
+         return fGpu->GetFusionDataInputIndices();
+      std::vector<size_t> indices(fOp.GetOpInputTensors().size());
+      std::iota(indices.begin(), indices.end(), size_t{0});
+      return indices;
+   }
+   bool SupportsFusionTypes(const std::vector<ETensorType> &inputTypes, ETensorType outputType) const
+   {
+      return fGpu && fGpu->SupportsFusionTypes(inputTypes, outputType);
+   }
+   std::string GetFusionExpr(const std::vector<std::string> &inputs) const
+   {
+      return fGpu ? fGpu->GetFusionExpr(inputs) : std::string();
+   }
+   std::string GetFusionInputIndexExpr(size_t inputIndex, const std::string &outputIndex,
+                                       const std::vector<Dim> &inputShape, const std::vector<Dim> &outputShape) const
+   {
+      return fGpu ? fGpu->GetFusionInputIndexExpr(inputIndex, outputIndex, inputShape, outputShape) : std::string();
+   }
+   std::string GetFusionInputIndexExprForOutput(size_t inputIndex, size_t outputTensorIndex,
+                                                const std::string &outputIndex, const std::vector<Dim> &inputShape,
+                                                const std::vector<Dim> &outputShape) const
+   {
+      return fGpu ? fGpu->GetFusionInputIndexExprForOutput(inputIndex, outputTensorIndex, outputIndex, inputShape,
+                                                           outputShape)
+                  : std::string();
+   }
+   std::string GetFusionInputConditionExpr(size_t inputIndex, const std::string &outputIndex,
+                                           const std::vector<Dim> &inputShape, const std::vector<Dim> &outputShape) const
+   {
+      return fGpu ? fGpu->GetFusionInputConditionExpr(inputIndex, outputIndex, inputShape, outputShape) : std::string();
+   }
+   bool IsFusionReduction() const { return fGpu && fGpu->IsFusionReduction(); }
+   std::string GetFusionReductionInitExpr() const { return fGpu ? fGpu->GetFusionReductionInitExpr() : std::string(); }
+   std::string GetFusionReductionAccumulateExpr(const std::string &accumulator, const std::string &value) const
+   {
+      return fGpu ? fGpu->GetFusionReductionAccumulateExpr(accumulator, value) : std::string();
+   }
+   std::string GetFusionReductionCombineExpr(const std::string &left, const std::string &right) const
+   {
+      return fGpu ? fGpu->GetFusionReductionCombineExpr(left, right) : std::string();
+   }
+   std::string GetFusionReductionFinalizeExpr(const std::string &accumulator, const std::string &reducedLength) const
+   {
+      return fGpu ? fGpu->GetFusionReductionFinalizeExpr(accumulator, reducedLength) : std::string();
+   }
+   std::string GetFusionReductionInputIndexExpr(const std::string &outputIndex, const std::string &reductionIndex,
+                                                const std::vector<Dim> &inputShape,
+                                                const std::vector<Dim> &outputShape) const
+   {
+      return fGpu ? fGpu->GetFusionReductionInputIndexExpr(outputIndex, reductionIndex, inputShape, outputShape)
+                  : std::string();
+   }
+};
+
 
 Dim MultiplyDims(const Dim &a, const Dim &b)
 {
@@ -209,7 +285,7 @@ private:
    std::vector<Candidate> candidates;
    std::set<std::pair<std::vector<size_t>, size_t>> seen;
 
-   const ROperator &Op(size_t opIdx) const { return *m.fOperators[opIdx]; }
+   FusionOp Op(size_t opIdx) const { return FusionOp(*m.fOperators[opIdx]); }
 
    bool IsOutput(const std::string &tensorName) const
    {
@@ -1604,7 +1680,6 @@ Fusion::Plan Fusion::Compute(RModel &model)
 
 namespace {
 
-const std::string SP = "   ";
 
 std::string DimLiteral(const Dim &d)
 {
@@ -1633,13 +1708,13 @@ void CollectKnownShapeExprParams(const std::string &expr, const std::unordered_m
 std::string Profiled(const std::string &launchCode, const std::string &title, const std::string &name)
 {
    std::string code;
-   code += "   // -- GPU Profiling " + title + ": " + name + " --\n";
-   code += "   tp_start = std::chrono::steady_clock::now();\n";
+   code += "// -- GPU Profiling " + title + ": " + name + " --\n";
+   code += "tp_start = std::chrono::steady_clock::now();\n";
    code += launchCode;
-   code += "   alpaka::wait(queue);\n";
-   code += "   fProfilingResults[\"" + name + "\"].push_back(\n";
-   code += "      std::chrono::duration_cast<std::chrono::duration<double, std::micro>>(\n";
-   code += "         std::chrono::steady_clock::now() - tp_start).count());\n\n";
+   code += "alpaka::wait(queue);\n";
+   code += "fProfilingResults[\"" + name + "\"].push_back(\n";
+   code += "std::chrono::duration_cast<std::chrono::duration<double, std::micro>>(\n";
+   code += "std::chrono::steady_clock::now() - tp_start).count());\n\n";
    return code;
 }
 
@@ -1682,7 +1757,7 @@ std::string BroadcastIndex(const std::vector<Dim> &alignedStrides, const std::ve
 
 std::string KernelSignature(const Fusion::Group &group, const std::string &tail)
 {
-   std::string code = SP + "template<typename TAcc";
+   std::string code = "template<typename TAcc";
 
    for (size_t i = 0; i < group.externalInputs.size(); ++i)
       code += ", typename TInput" + std::to_string(i);
@@ -1690,7 +1765,7 @@ std::string KernelSignature(const Fusion::Group &group, const std::string &tail)
       code += ", typename TOutput" + std::to_string(i);
 
    code += ">\n";
-   code += SP + "ALPAKA_FN_ACC void operator()(TAcc const& acc";
+   code += "ALPAKA_FN_ACC void operator()(TAcc const& acc";
 
    for (size_t i = 0; i < group.externalInputs.size(); ++i)
       code += ", TInput" + std::to_string(i) + " const* __restrict__ input" + std::to_string(i);
@@ -1715,7 +1790,7 @@ public:
       if (const auto reductionOp = ReductionOp(group)) {
          const auto outputs = m.fOperators[*reductionOp]->GetOpOutputTensors();
          const auto inputs = m.fOperators[*reductionOp]->GetOpInputTensors();
-         const auto dataInputs = m.fOperators[*reductionOp]->GetFusionDataInputIndices();
+         const auto dataInputs = FusionOp(*m.fOperators[*reductionOp]).GetFusionDataInputIndices();
 
          if (outputs.size() != 1)
             throw std::runtime_error("Fused reduction must have exactly one output");
@@ -1729,33 +1804,33 @@ public:
             throw std::runtime_error("Invalid fused reduction shape");
 
          code += "\n//------ FUSED_REDUCTION_GPU_ALPAKA" + suffix + "\n";
-         code += SP + "{\n";
-         code += SP + SP + "alpaka::WorkDivMembers<Dim, Idx> workDiv_fused" + suffix + "(\n";
-         code += SP + SP + SP + "Vec::all(Idx{" + std::to_string(outputLength) + "u}),\n";
-         code += SP + SP + SP + "Vec::all(Idx{" + std::to_string(BlockSize(inputLength / outputLength)) + "u}),\n";
-         code += SP + SP + SP + "Vec::all(Idx{1u}));\n";
-         code += SP + SP + "auto task_fused" + suffix + " = alpaka::createTaskKernel<Acc>(workDiv_fused" + suffix + ", " + kernelName;
+         code += "{\n";
+         code += "alpaka::WorkDivMembers<Dim, Idx> workDiv_fused" + suffix + "(\n";
+         code += "Vec::all(Idx{" + std::to_string(outputLength) + "u}),\n";
+         code += "Vec::all(Idx{" + std::to_string(BlockSize(inputLength / outputLength)) + "u}),\n";
+         code += "Vec::all(Idx{1u}));\n";
+         code += "auto task_fused" + suffix + " = alpaka::createTaskKernel<Acc>(workDiv_fused" + suffix + ", " + kernelName;
          code += Pointers(group) + ");\n";
-         code += SP + SP + "alpaka::enqueue(queue, task_fused" + suffix + ");\n";
-         code += SP + "}\n";
+         code += "alpaka::enqueue(queue, task_fused" + suffix + ");\n";
+         code += "}\n";
 
          return m.fProfile ? Profiled(code, "fused reduction group", "FusedReduction" + suffix) : code;
       }
 
       code += "\n//------ FUSED_ELTWISE_GPU_ALPAKA" + suffix + "\n";
-      code += SP + "{\n";
-      code += SP + SP + "auto const elementsPerThread_fused" + suffix + " = Vec::all(static_cast<Idx>(1));\n";
-      code += SP + SP + "auto const elementsPerGrid_fused" + suffix + " = Vec::all(Idx{" + group.numElements + "});\n";
-      code += SP + SP + "auto const workDiv_fused" + suffix + " = sofie_workdiv(elementsPerGrid_fused" + suffix + ");\n";
-      code += SP + SP + "auto task_fused" + suffix + " = alpaka::createTaskKernel<Acc>(workDiv_fused" + suffix + ", " + kernelName;
+      code += "{\n";
+      code += "auto const elementsPerThread_fused" + suffix + " = Vec::all(static_cast<Idx>(1));\n";
+      code += "auto const elementsPerGrid_fused" + suffix + " = Vec::all(Idx{" + group.numElements + "});\n";
+      code += "auto const workDiv_fused" + suffix + " = sofie_workdiv(elementsPerGrid_fused" + suffix + ");\n";
+      code += "auto task_fused" + suffix + " = alpaka::createTaskKernel<Acc>(workDiv_fused" + suffix + ", " + kernelName;
       code += Pointers(group);
 
       for (const auto &param : DynParams({&group, 1}))
          code += ", static_cast<std::size_t>(" + param + ")";
 
       code += ", static_cast<Idx>(" + group.numElements + "));\n";
-      code += SP + SP + "alpaka::enqueue(queue, task_fused" + suffix + ");\n";
-      code += SP + "}\n";
+      code += "alpaka::enqueue(queue, task_fused" + suffix + ");\n";
+      code += "}\n";
 
       return m.fProfile ? Profiled(code, "fused group", "FusedKernel" + suffix) : code;
    }
@@ -1766,10 +1841,10 @@ public:
       std::string code;
 
       code += "\n//------ KERNEL_FUSION_GPU_ALPAKA" + suffix + "\n";
-      code += SP + "{\n";
-      code += SP + SP + "auto const elementsPerGrid_kernelFusion" + suffix + " = Vec::all(Idx{" + group.numElements + "});\n";
-      code += SP + SP + "auto const workDiv_kernelFusion" + suffix + " = sofie_workdiv(elementsPerGrid_kernelFusion" + suffix + ");\n";
-      code += SP + SP + "auto task_kernelFusion" + suffix + " = alpaka::createTaskKernel<Acc>(workDiv_kernelFusion" + suffix + ", kernelFusionKernel" + suffix;
+      code += "{\n";
+      code += "auto const elementsPerGrid_kernelFusion" + suffix + " = Vec::all(Idx{" + group.numElements + "});\n";
+      code += "auto const workDiv_kernelFusion" + suffix + " = sofie_workdiv(elementsPerGrid_kernelFusion" + suffix + ");\n";
+      code += "auto task_kernelFusion" + suffix + " = alpaka::createTaskKernel<Acc>(workDiv_kernelFusion" + suffix + ", kernelFusionKernel" + suffix;
 
       for (const auto &branch : group.branches)
          code += Pointers(branch);
@@ -1778,8 +1853,8 @@ public:
          code += ", static_cast<std::size_t>(" + param + ")";
 
       code += ");\n";
-      code += SP + SP + "alpaka::enqueue(queue, task_kernelFusion" + suffix + ");\n";
-      code += SP + "}\n";
+      code += "alpaka::enqueue(queue, task_kernelFusion" + suffix + ");\n";
+      code += "}\n";
 
       return m.fProfile ? Profiled(code, "horizontal fusion group", "KernelFusion" + suffix) : code;
    }
@@ -1801,20 +1876,20 @@ public:
       code += "\n//------ FUSED_ELTWISE_KERNEL" + suffix + "\n";
       code += "struct FusedEltwiseKernel" + suffix + " {\n";
       code += KernelSignature(group, tail);
-      code += SP + SP + "using T = TOutput0;\n";
-      code += SP + SP + "const auto idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
-      code += SP + SP + "if (idx < n) {\n";
+      code += "using T = TOutput0;\n";
+      code += "const auto idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
+      code += "if (idx < n) {\n";
 
       Context ctx = MakeContext(group, false);
       std::unordered_map<std::string, std::string> cache;
 
       for (size_t outputIdx = 0; outputIdx < group.outputTensors.size(); ++outputIdx) {
          const std::string value = Value(ctx, group.outputTensors[outputIdx], "idx", cache, code);
-         code += SP + SP + SP + "out" + std::to_string(outputIdx) + "[idx] = " + value + ";\n";
+         code += "out" + std::to_string(outputIdx) + "[idx] = " + value + ";\n";
       }
 
-      code += SP + SP + "}\n";
-      code += SP + "}\n";
+      code += "}\n";
+      code += "}\n";
       code += "};\n";
       return code;
    }
@@ -1826,7 +1901,7 @@ public:
 
       code += "\n//------ KERNEL_FUSION_KERNEL" + suffix + "\n";
       code += "struct KernelFusionKernel" + suffix + " {\n";
-      code += SP + "template<typename TAcc";
+      code += "template<typename TAcc";
 
       for (size_t branchIdx = 0; branchIdx < group.branches.size(); ++branchIdx) {
          const auto &branch = group.branches[branchIdx];
@@ -1839,7 +1914,7 @@ public:
       }
 
       code += ">\n";
-      code += SP + "ALPAKA_FN_ACC void operator()(TAcc const& acc";
+      code += "ALPAKA_FN_ACC void operator()(TAcc const& acc";
 
       for (size_t branchIdx = 0; branchIdx < group.branches.size(); ++branchIdx) {
          const auto &branch = group.branches[branchIdx];
@@ -1855,7 +1930,7 @@ public:
          code += ", std::size_t const " + param;
 
       code += ") const {\n";
-      code += SP + SP + "const auto idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
+      code += "const auto idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
 
       for (size_t branchIdx = 0; branchIdx < group.branches.size(); ++branchIdx) {
          const auto &branch = group.branches[branchIdx];
@@ -1863,8 +1938,8 @@ public:
          const auto outputShape = m.GetDimTensorShape(branch.outputTensors.front());
 
          code += "\n";
-         code += SP + SP + "if (idx < " + branch.numElements + ") {\n";
-         code += SP + SP + SP + "using T = TOutput" + prefix + "0;\n";
+         code += "if (idx < " + branch.numElements + ") {\n";
+         code += "using T = TOutput" + prefix + "0;\n";
 
          std::unordered_map<std::string, std::string> values;
 
@@ -1882,12 +1957,12 @@ public:
             else
                index = BroadcastIndex(input.alignedStrides, outputShape, "idx");
 
-            code += SP + SP + SP + "auto " + localName + " = input" + prefix + std::to_string(inputIdx) + "[" + index + "];\n";
+            code += "auto " + localName + " = input" + prefix + std::to_string(inputIdx) + "[" + index + "];\n";
             values[input.tensorName] = localName;
          }
 
          for (const size_t opIdx : branch.opIndices) {
-            const auto &op = *m.fOperators[opIdx];
+            const FusionOp op(*m.fOperators[opIdx]);
             const auto opInputs = op.GetOpInputTensors();
             const auto outputs = op.GetOpOutputTensors();
             std::vector<std::string> inputExpressions;
@@ -1910,7 +1985,7 @@ public:
                throw std::runtime_error("Horizontally fused operator " + std::to_string(opIdx) + " must have exactly one output");
 
             const std::string localName = "v_op_" + std::to_string(opIdx);
-            code += SP + SP + SP + "auto " + localName + " = " + expression + ";\n";
+            code += "auto " + localName + " = " + expression + ";\n";
             values[std::string(outputs[0])] = localName;
          }
 
@@ -1920,13 +1995,13 @@ public:
             if (valueIt == values.end())
                throw std::runtime_error("Missing horizontal fused output value for tensor " + branch.outputTensors[outputIdx]);
 
-            code += SP + SP + SP + "out" + prefix + std::to_string(outputIdx) + "[idx] = " + valueIt->second + ";\n";
+            code += "out" + prefix + std::to_string(outputIdx) + "[idx] = " + valueIt->second + ";\n";
          }
 
-         code += SP + SP + "}\n";
+         code += "}\n";
       }
 
-      code += SP + "}\n";
+      code += "}\n";
       code += "};\n";
       return code;
    }
@@ -1952,7 +2027,7 @@ private:
    std::optional<size_t> ReductionOp(const Fusion::Group &group) const
    {
       for (const size_t opIdx : group.opIndices) {
-         if (m.fOperators[opIdx]->IsFusionReduction())
+         if (FusionOp(*m.fOperators[opIdx]).IsFusionReduction())
             return opIdx;
       }
 
@@ -2040,7 +2115,7 @@ private:
 
       if (externalIt != ctx.externalIndices.end()) {
          const std::string localName = "v_input_" + std::to_string(ctx.counter++);
-         code += SP + SP + SP + "auto " + localName + " = input" + std::to_string(externalIt->second) + "[" + index + "];\n";
+         code += "auto " + localName + " = input" + std::to_string(externalIt->second) + "[" + index + "];\n";
          cache[cacheKey] = localName;
          return localName;
       }
@@ -2051,7 +2126,7 @@ private:
          throw std::runtime_error("Missing fused producer for tensor " + tensorName);
 
       const size_t opIdx = producerIt->second;
-      const auto &op = *m.fOperators[opIdx];
+      const FusionOp op(*m.fOperators[opIdx]);
       const auto outputs = op.GetOpOutputTensors();
 
       const auto outputIt = std::find_if(outputs.begin(), outputs.end(), [&](const auto &output) {
@@ -2069,7 +2144,7 @@ private:
 
       if (mapping == EFusionMappingType::ManyToMany) {
          const std::string localName = "v_op_" + std::to_string(opIdx) + "_" + std::to_string(ctx.counter++);
-         code += SP + SP + SP + ConvertTypeToString(m.GetTensorType(tensorName)) + " " + localName + "{};\n";
+         code += ConvertTypeToString(m.GetTensorType(tensorName)) + " " + localName + "{};\n";
 
          for (size_t dataIdx = 0; dataIdx < dataInputs.size(); ++dataIdx) {
             const size_t inputIdx = dataInputs[dataIdx];
@@ -2094,15 +2169,15 @@ private:
             const std::string branchValue = Value(ctx, inputName, inputIndex, branchCache, branchCode);
 
             if (dataIdx == 0)
-               code += SP + SP + SP + "if (" + condition + ") {\n";
+               code += "if (" + condition + ") {\n";
             else if (dataIdx + 1 < dataInputs.size())
-               code += SP + SP + SP + "else if (" + condition + ") {\n";
+               code += "else if (" + condition + ") {\n";
             else
-               code += SP + SP + SP + "else {\n";
+               code += "else {\n";
 
             code += branchCode;
-            code += SP + SP + SP + SP + localName + " = " + op.GetFusionExpr({branchValue}) + ";\n";
-            code += SP + SP + SP + "}\n";
+            code += localName + " = " + op.GetFusionExpr({branchValue}) + ";\n";
+            code += "}\n";
          }
 
          cache[cacheKey] = localName;
@@ -2144,7 +2219,7 @@ private:
          throw std::runtime_error("Operator " + std::to_string(opIdx) + " does not provide a fused expression");
 
       const std::string localName = "v_op_" + std::to_string(opIdx) + "_" + std::to_string(ctx.counter++);
-      code += SP + SP + SP + "auto " + localName + " = " + expression + ";\n";
+      code += "auto " + localName + " = " + expression + ";\n";
       cache[cacheKey] = localName;
 
       return localName;
@@ -2152,7 +2227,7 @@ private:
 
    std::string ReductionKernel(const Fusion::Group &group, size_t reductionOpIdx) const
    {
-      const auto &op = *m.fOperators[reductionOpIdx];
+      const FusionOp op(*m.fOperators[reductionOpIdx]);
       const auto inputs = op.GetOpInputTensors();
       const auto outputs = op.GetOpOutputTensors();
       const auto dataInputs = op.GetFusionDataInputIndices();
@@ -2186,33 +2261,33 @@ private:
       code += "\n//------ FUSED_REDUCTION_KERNEL" + suffix + "\n";
       code += "struct FusedEltwiseKernel" + suffix + " {\n";
       code += KernelSignature(group, "");
-      code += SP + SP + "using T = TOutput0;\n";
-      code += SP + SP + "auto& shmem = alpaka::declareSharedVar<T[" + std::to_string(blockSize) + "], __COUNTER__>(acc);\n";
-      code += SP + SP + "const auto out_idx = alpaka::getIdx<alpaka::Grid, alpaka::Blocks>(acc)[0];\n";
-      code += SP + SP + "const auto thread_id = alpaka::getIdx<alpaka::Block, alpaka::Threads>(acc)[0];\n";
-      code += SP + SP + "if (out_idx >= " + std::to_string(outputLength) + "u) return;\n";
-      code += SP + SP + "T partial = " + op.GetFusionReductionInitExpr() + ";\n";
-      code += SP + SP + "for (std::size_t r = thread_id; r < " + reducedLengthStr + "; r += " + blockSizeStr + ") {\n";
-      code += SP + SP + SP + "const std::size_t in_idx = " + inputIndexExpression + ";\n";
+      code += "using T = TOutput0;\n";
+      code += "auto& shmem = alpaka::declareSharedVar<T[" + std::to_string(blockSize) + "], __COUNTER__>(acc);\n";
+      code += "const auto out_idx = alpaka::getIdx<alpaka::Grid, alpaka::Blocks>(acc)[0];\n";
+      code += "const auto thread_id = alpaka::getIdx<alpaka::Block, alpaka::Threads>(acc)[0];\n";
+      code += "if (out_idx >= " + std::to_string(outputLength) + "u) return;\n";
+      code += "T partial = " + op.GetFusionReductionInitExpr() + ";\n";
+      code += "for (std::size_t r = thread_id; r < " + reducedLengthStr + "; r += " + blockSizeStr + ") {\n";
+      code += "const std::size_t in_idx = " + inputIndexExpression + ";\n";
 
       std::unordered_map<std::string, std::string> inputCache;
       std::string inputCode;
       const std::string inputValue = Value(ctx, inputName, "in_idx", inputCache, inputCode);
 
       code += inputCode;
-      code += SP + SP + SP + "partial = " + op.GetFusionReductionAccumulateExpr("partial", inputValue) + ";\n";
-      code += SP + SP + "}\n";
-      code += SP + SP + "shmem[thread_id] = partial;\n";
-      code += SP + SP + "alpaka::syncBlockThreads(acc);\n";
-      code += SP + SP + "for (std::size_t s = " + std::to_string(blockSize / 2) + "u; s > 0u; s >>= 1u) {\n";
-      code += SP + SP + SP + "if (thread_id < s) shmem[thread_id] = " +
+      code += "partial = " + op.GetFusionReductionAccumulateExpr("partial", inputValue) + ";\n";
+      code += "}\n";
+      code += "shmem[thread_id] = partial;\n";
+      code += "alpaka::syncBlockThreads(acc);\n";
+      code += "for (std::size_t s = " + std::to_string(blockSize / 2) + "u; s > 0u; s >>= 1u) {\n";
+      code += "if (thread_id < s) shmem[thread_id] = " +
               op.GetFusionReductionCombineExpr("shmem[thread_id]", "shmem[thread_id + s]") + ";\n";
-      code += SP + SP + SP + "alpaka::syncBlockThreads(acc);\n";
-      code += SP + SP + "}\n";
-      code += SP + SP + "if (thread_id == 0u) shmem[0] = " +
+      code += "alpaka::syncBlockThreads(acc);\n";
+      code += "}\n";
+      code += "if (thread_id == 0u) shmem[0] = " +
               op.GetFusionReductionFinalizeExpr("shmem[0]", std::to_string(reducedLength)) + ";\n";
-      code += SP + SP + "alpaka::syncBlockThreads(acc);\n";
-      code += SP + SP + "const T reduction_value = shmem[0];\n";
+      code += "alpaka::syncBlockThreads(acc);\n";
+      code += "const T reduction_value = shmem[0];\n";
 
       const std::unordered_map<std::string, std::string> overrides{{outputName, "reduction_value"}};
       ctx.overrides = &overrides;
@@ -2230,21 +2305,21 @@ private:
          const std::string value = Value(ctx, name, reduced ? "out_idx" : "element_idx", cache, valueCode);
 
          if (reduced) {
-            code += SP + SP + "if (thread_id == 0u) {\n";
+            code += "if (thread_id == 0u) {\n";
             code += valueCode;
-            code += SP + SP + SP + "out" + std::to_string(outputIdx) + "[out_idx] = " + value + ";\n";
-            code += SP + SP + "}\n";
+            code += "out" + std::to_string(outputIdx) + "[out_idx] = " + value + ";\n";
+            code += "}\n";
             continue;
          }
 
-         code += SP + SP + "for (std::size_t r = thread_id; r < " + reducedLengthStr + "; r += " + blockSizeStr + ") {\n";
-         code += SP + SP + SP + "const std::size_t element_idx = " + inputIndexExpression + ";\n";
+         code += "for (std::size_t r = thread_id; r < " + reducedLengthStr + "; r += " + blockSizeStr + ") {\n";
+         code += "const std::size_t element_idx = " + inputIndexExpression + ";\n";
          code += valueCode;
-         code += SP + SP + SP + "out" + std::to_string(outputIdx) + "[element_idx] = " + value + ";\n";
-         code += SP + SP + "}\n";
+         code += "out" + std::to_string(outputIdx) + "[element_idx] = " + value + ";\n";
+         code += "}\n";
       }
 
-      code += SP + "}\n";
+      code += "}\n";
       code += "};\n";
       return code;
    }

@@ -1,5 +1,5 @@
 #include "SOFIE/RModelParser_ONNX.hxx"
-#include "SOFIE/ROperator_Shape.hxx"
+#include "SOFIE/operators/ROperator_Shape.hxx"
 #include "onnx.hxx"
 
 #include <climits>

@@ -2,17 +2,17 @@
 // programmatically via the C++ API instead of parsing an ONNX file.
 //
 // - Builds the same Gemm+bias model, once with low rank factorization disabled
-//   and once enabled, and emits both the CPU and GPU (Alpaka) Session headers +
+//   and once enabled, and emits both the CPU and GPU (alpaka) Session headers +
 //   weight files for TestLowRankFactorization.cxx (CPU) and
 //   alpaka/TestAlpakaLowRank.cxx (GPU) to #include.
-// - Emits a LeakyRelu model in Options::kKernelOnly mode (Alpaka kernel
+// - Emits a LeakyRelu model in Options::kKernelOnly mode (alpaka kernel
 //   struct only, no Session/infer) for alpaka/TestAlpakaKernelOnly.cxx.
 
 #include "common/lowrank_test_utils.h"
 
 #include "SOFIE/RModel.hxx"
-#include "SOFIE/ROperator_Gemm.hxx"
-#include "SOFIE/ROperator_LeakyRelu.hxx"
+#include "SOFIE/operators/ROperator_Gemm.hxx"
+#include "SOFIE/operators/ROperator_LeakyRelu.hxx"
 
 #include <random>
 #include <iostream>

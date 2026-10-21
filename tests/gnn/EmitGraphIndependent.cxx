@@ -3,8 +3,8 @@
 //    This program generates a RModel_GraphIndependent for testing
 
 #include "SOFIE/RModel_GraphIndependent.hxx"
-#include "SOFIE/FunctionList.hxx"
-#include "SOFIE/SOFIE_common.hxx"
+#include "SOFIE/functions/FunctionList.hxx"
+#include "SOFIE/utils/SOFIE_common.hxx"
 
 
 int main()

@@ -1,6 +1,6 @@
 # SOFIE Benchmark for Inference on Heterogeneous Architectures
 
-The benchmark toolkit measures **inference latency, throughput, transfer time, GPU memory usage, and GPU utilisation** for ONNX models compiled by SOFIE and executed through Alpaka.
+The benchmark toolkit measures **inference latency, throughput, transfer time, GPU memory usage, and GPU utilisation** for ONNX models compiled by SOFIE and executed through alpaka.
 
 The same models can optionally be benchmarked with **ONNX Runtime GPU**, **TensorRT**, and **PyTorch AOTInductor** for comparison.
 
@@ -87,7 +87,7 @@ The `.onnx` and `.pt2` files must use the same model basename.
 
 ## Dynamic-shape SOFIE benchmarking
 
-SOFIE's GPU/Alpaka code generator supports dynamic shapes end-to-end — the generated `Session` constructor and `infer()` take the shape parameters as plain runtime arguments; and ONNX Runtime/TensorRT bind the *same* concrete shape values directly against each family's dynamic `.onnx` file. An explicit `SHAPE_SWEEP` table in `benchmark/CMakeLists.txt` now drives all three backends directly, generating SOFIE's inference code once per family, directly from the original parametric `.onnx` file, and reusing it at every swept shape:
+SOFIE's GPU/alpaka code generator supports dynamic shapes end-to-end — the generated `Session` constructor and `infer()` take the shape parameters as plain runtime arguments; and ONNX Runtime/TensorRT bind the *same* concrete shape values directly against each family's dynamic `.onnx` file. An explicit `SHAPE_SWEEP` table in `benchmark/CMakeLists.txt` now drives all three backends directly, generating SOFIE's inference code once per family, directly from the original parametric `.onnx` file, and reusing it at every swept shape:
 
 - `gnn_h32_k2`, `gnn_h64_k4`
 - `gnn_large`

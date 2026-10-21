@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.18)
 include(FetchContent)
 
 ################################################################################
-# SOFIE Alpaka Benchmark Toolkit
+# SOFIE alpaka Benchmark Toolkit
 #
 # Usage:
 #   cmake -Bbuild -DSOFIE_BENCHMARK=ON .
@@ -119,7 +119,7 @@ file(GLOB BENCHMARK_ONNX_MODELS "${BENCHMARK_MODEL_DIR}/*.onnx")
 # Dynamic-shape ("parametric") SOFIE model families
 #
 # These base models keep symbolic ONNX input dimensions
-# which SOFIE's GPU/Alpaka code generator supports end-to-end: the
+# which SOFIE's GPU/alpaka code generator supports end-to-end: the
 # generated Session constructor and infer() take the shape parameters as
 # runtime size_t arguments, so ONE generated/compiled model serves
 # every input size instead of a separately-generated-and-compiled model per
