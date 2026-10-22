@@ -50,7 +50,7 @@ protected:
     }
 };
 
-// Helper: copy a host C-array into an Alpaka host buffer then to device.
+// Helper: copy a host C-array into an alpaka host buffer then to device.
 template <typename T>
 static alpaka::Buf<TestDev, T, Dim, Idx>
 makeDeviceBuf(alpaka::DevCpu const& host,

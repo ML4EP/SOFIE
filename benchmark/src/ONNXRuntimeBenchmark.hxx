@@ -45,7 +45,7 @@ inline const char* ortTypeName(ONNXTensorElementDataType t) {
 } // namespace sofie_ort_bench_detail
 
 /// Run @p model_path through ONNX Runtime's CUDAExecutionProvider.
-/// Results are printed in the same table format as the SOFIE Alpaka benchmark.
+/// Results are printed in the same table format as the SOFIE alpaka benchmark.
 ///
 /// @param model_path   Full path to the .onnx file. May carry symbolic
 ///                      (dynamic) input dimensions — see @p shape_overrides.

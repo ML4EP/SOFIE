@@ -5,7 +5,7 @@
 
 #include "SOFIE/RModel_Base.hxx"
 #include "SOFIE/RModel.hxx"
-#include "SOFIE/RFunction.hxx"
+#include "SOFIE/functions/RFunction.hxx"
 
 
 namespace SOFIE {

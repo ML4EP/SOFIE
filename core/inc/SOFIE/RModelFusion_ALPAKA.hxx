@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-#include "SOFIE/SOFIE_common.hxx"
+#include "SOFIE/utils/SOFIE_common.hxx"
 
 namespace SOFIE {
 

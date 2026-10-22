@@ -33,7 +33,7 @@
     },
     {
       "name": "cuda-tests",
-      "displayName": "CPU + Alpaka/CUDA unit tests",
+      "displayName": "CPU + alpaka/CUDA unit tests",
       "inherits": "base",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",

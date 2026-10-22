@@ -9,12 +9,11 @@
 
 #include "SOFIE/RModel.hxx"
 #include "SOFIE/RModelProfiler.hxx"
-#include "SOFIE/SOFIE_common.hxx"
+#include "SOFIE/utils/SOFIE_common.hxx"
 
 namespace SOFIE {
 
 namespace {
-const std::string SP = "   ";
 
 void ReplaceAll(std::string &str, const std::string &from, const std::string &to)
 {
@@ -31,8 +30,8 @@ bool IsIdentifierChar(char c)
 }
 
 // Returns true if s is a valid C++ identifier (can be used as a variable name).
-// Dim::param can be either a plain name (e.g. "W") or a computed expression
-// (e.g. "((W+-3)/2+1)"); only the former can be used as a C++ variable name.
+// Dim::param can be either a plain name  or a computed expression
+// only the former can be used as a C++ variable name.
 bool IsIdentifier(const std::string &s)
 {
    if (s.empty() || std::isdigit(static_cast<unsigned char>(s[0])))
@@ -127,7 +126,7 @@ std::vector<Dim> RModel::GetDimTensorShape(const std::string & name) const {
    if (auto f = fInputTensorInfos.find(name); f != fInputTensorInfos.end()) {
       return f->second.shape;
    }
-   // A subgraph (e.g. an If/Loop branch) can reference a tensor defined in
+   // A subgraph can reference a tensor defined in
    // an enclosing scope by name without declaring it as one of its own
    // inputs; delegate to the parent graph's dynamic-aware lookup before
    // falling back to GetTensorShape() below, which throws for any tensor
@@ -362,7 +361,7 @@ bool RModel::IsDynamicTensor(const std::string& tensorName) const {
    bool ret = fDynamicTensorInfos.find(name) != fDynamicTensorInfos.end();
    if (ret || IsDimInputTensor(tensorName))
       return true;
-   // A subgraph (e.g. an If/Loop branch) can reference a tensor defined in
+   // A subgraph can reference a tensor defined in
    // an enclosing scope by name without declaring it as one of its own
    // inputs; such a tensor is invisible to the checks above (they only see
    // this subgraph's own maps), so check the parent graph too.
@@ -703,7 +702,7 @@ void RModel::Initialize(const std::map<std::string, size_t> & inputParams, bool 
    auto originalInputTensorInfos = fInputTensorInfos; // need to copy because we may delete elements
    for (auto &input : originalInputTensorInfos) {
       if (verbose) std::cout << "looking at the tensor " << input.first << std::endl;
-      // if a parameter (e.g. batch_size) is specified use for converting parametric shape in defined one
+      // if a parameter is specified use for converting parametric shape in defined one
       if (!inputParams.empty()) {
          for (auto &d : input.second.shape) {
             if (d.isParam) {
@@ -870,7 +869,6 @@ void RModel::InitializeSubGraph(std::shared_ptr<RModel>  graph) {
    // clean graph name
    graph->fName = UTILITY::Clean_name(graph->fName);
    // the names of the sub-graphs of a model must be unique, since they name their Session members
-   // (e.g. the branches of two If operators are often both called then_branch / else_branch)
    const std::string baseName = graph->fName;
    auto nameExists = [&](const std::string &name) {
       return std::any_of(fSubGraphs.begin(), fSubGraphs.end(),
@@ -926,7 +924,7 @@ void RModel::GenerateInitializedTensorInfo()
    if (!fInitializedTensors.empty())
       fGC += "// initialized (weights and constant) tensors\n";
 
-   // here are constant tensor or initialized ones which are not weights (e.g. int64_t tensors )
+   // here are constant tensor or initialized ones which are not weights
    for (auto &i : fInitializedTensors) {
       if (i.second.IsNotWritable())  continue;
       size_t length = ConvertShapeToLength(i.second.shape());
@@ -1066,8 +1064,8 @@ void RModel::GenerateDynamicTensorInfo()
 
    std::stringstream out;
    out << "//  dynamic tensor memory management\n";
-   out << SP << "std::vector<TensorLifeInfo> dynamicTensorInfos;\n";
-   out << SP << "dynamicTensorInfos.reserve(" << fDynamicTensorInfos.size() << ");\n";
+   out << "std::vector<TensorLifeInfo> dynamicTensorInfos;\n";
+   out << "dynamicTensorInfos.reserve(" << fDynamicTensorInfos.size() << ");\n";
 
    // loop on all the operators to find begin/end life of the tensors
    int op_index = 0;
@@ -1102,19 +1100,19 @@ void RModel::GenerateDynamicTensorInfo()
             }
 
             // write in code
-            out << SP << "dynamicTensorInfos.push_back( {" << begin << ", " << end << ", " << type_size << "* (" << tensor_size << ") });"
+            out << "dynamicTensorInfos.push_back( {" << begin << ", " << end << ", " << type_size << "* (" << tensor_size << ") });"
                 << " // tensor_" << name << std::endl;
             tensors.push_back({name,type});
          }
       }
       op_index++; // increment operator index
    }
-   out << "\n" << SP << "auto memory_result = OrganizeMemory(dynamicTensorInfos);\n\n";
+   out << "\n" << "auto memory_result = OrganizeMemory(dynamicTensorInfos);\n\n";
    out << "//  allocating now the memory\n";
-   out << SP << "fDynamicMemoryPool = std::vector<char>(memory_result.total_bytes);\n";
-   out << SP << "int idx = 0;\n";
+   out << "fDynamicMemoryPool = std::vector<char>(memory_result.total_bytes);\n";
+   out << "int idx = 0;\n";
    for (auto & it : tensors) {
-      out << SP << "tensor_" << it.first << " = reinterpret_cast<" << ConvertTypeToString(it.second) << " *>(fDynamicMemoryPool.data() + memory_result.offsets[idx++]);\n";
+      out << "tensor_" << it.first << " = reinterpret_cast<" << ConvertTypeToString(it.second) << " *>(fDynamicMemoryPool.data() + memory_result.offsets[idx++]);\n";
    }
    // check that all dynamic tensors are covered
    bool missingTensor = false;
@@ -1270,7 +1268,7 @@ std::string GetMemberNameForDimShape(std::string name)
 // given in the `inputStrides` argument (one array per input tensor, in the order of the inputs)
 std::string RModel::GenerateInputStrideInitCode() const
 {
-   // the strides are given for the input tensors of the main model. A sub-graph (e.g. the branch of an If) reads
+   // the strides are given for the input tensors of the main model. A sub-graph reads
    // some of them: it takes the strides of the inputs it has in common with the main model
    const RModel *mainModel = this;
    while (mainModel->fIsSubGraph && mainModel->fParentGraph)
@@ -1306,7 +1304,7 @@ void RModel::GenerateOutput()
    bool sameOutputTypes = true;
    std::string inferReturnType; // type return by infer function
    ETensorType eFirstOutputType = GetTensorType(*fOutputTensorNames.begin());
-   fGC += "\n\n";
+   fGC += "\n\n// run the model on the inputs and return the outputs\n";
    if (outputSize == 1) {
       fGC += "std::vector<" + typeForOutput(eFirstOutputType) + ">";
    } else {
@@ -1343,9 +1341,9 @@ void RModel::GenerateOutput()
       } else {
          std::string dimLen = ConvertDimShapeToLength(GetDynamicTensorShape(name));
          // Use the session member (fXxx) when any dim is a runtime-computed identifier
-         // (e.g. NonZero count). For expression-type dims derived from input shapes
-         // (e.g. "((W+-3)/2+1)"), use the expression directly.
-         // for input shape parameters we don't need to use the session member since it is passed as argument to the infer function and it is not a runtime computed value
+         // For expression-type dims derived from input shapes use the expression directly.
+         // for input shape parameters we don't need to use the session member since it is
+         //  passed as argument to the infer function and it is not a runtime computed value
          bool hasRuntimeParam = false;
          for (auto const &dim : GetDynamicTensorShape(name)) {
             if (dim.isParam && IsIdentifier(dim.param) && !IsInputTensorShapeParam(dim.param))
@@ -1354,13 +1352,13 @@ void RModel::GenerateOutput()
          n = hasRuntimeParam ? GetMemberNameForDimShape(dimLen) : dimLen;
       }
       std::string outputName = "output_tensor_" + name;
-      fGC += SP + "std::vector<" + typeForOutput(GetTensorType(name)) + " > " + outputName + "(" + n + ");\n";
+      fGC += "std::vector<" + typeForOutput(GetTensorType(name)) + " > " + outputName + "(" + n + ");\n";
       doInferArgs += " " + outputName + ".data(),";
       if(isDynamic) {
          for (auto const &dim : GetDynamicTensorShape(name)) {
             if (dim.isParam && !IsInputTensorShapeParam(dim.param) && IsIdentifier(dim.param) &&
                 emittedShapeParams.insert(dim.param).second) {
-               fGC += SP + "size_t " + dim.param + " = 0;\n";
+               fGC += "size_t " + dim.param + " = 0;\n";
                doInferArgs += " " + dim.param + ",";
             }
          }
@@ -1381,19 +1379,19 @@ void RModel::GenerateOutput()
                std::string memberName = GetMemberNameForDimShape(d.param);
                dynamic_parameters_check += d.param + " > " + memberName + " || ";
                input_params_checked.insert(pName);
-               fGC += SP + "if (" + d.param + " > " + memberName + ") {\n";
-               fGC += SP + SP + "throw std::runtime_error(\"sofie: dynamic input tensor shape parameter " +
+               fGC += "if (" + d.param + " > " + memberName + ") {\n";
+               fGC += "throw std::runtime_error(\"sofie: dynamic input tensor shape parameter " +
                       d.param + " exceeds the initialized maximum allowed shape.\");\n";
-               fGC += SP + "}\n";
+               fGC += "}\n";
             }
          }
       }
    }
 
    if (fUseSession) {
-      fGC += SP + "doInfer(*this, " + doInferArgs + ");\n";
+      fGC += "doInfer(*this, " + doInferArgs + ");\n";
    } else {
-      fGC += SP + "doInfer(" + doInferArgs + ");\n";
+      fGC += "doInfer(" + doInferArgs + ");\n";
    }
 
    // If the output tensors have dynamic sizes, now is the time to set them
@@ -1402,11 +1400,11 @@ void RModel::GenerateOutput()
       if (isDynamic) {
          std::string outputName = "output_tensor_" + name;
          auto tensor_size = ConvertDimShapeToLength(GetDimTensorShape(name));
-         fGC += SP + outputName + ".resize(" + tensor_size + ");\n";
+         fGC += outputName + ".resize(" + tensor_size + ");\n";
       }
    }
 
-   fGC += SP + "return {";
+   fGC += "return {";
    for (size_t i = 0; i < fOutputTensorNames.size(); i++) {
       fGC += "output_tensor_" + fOutputTensorNames[i];
       if (i < fOutputTensorNames.size() - 1)
@@ -1422,6 +1420,7 @@ void RModel::GenerateSessionCode()
 
    if (fUseSession && !fIsGNNComponent) {
       //  forward declare session struct
+      fGC += "// forward declaration of the session used by the inference implementation\n";
       fGC += "struct " + sessionName + ";\n";
    }
 
@@ -1451,11 +1450,13 @@ void RModel::GenerateSessionCode()
 
    if (!fIsGNNComponent) {
       // forward declare inference implementation
+      fGC += "\n// inference implementation writing the results into the given output buffers\n";
       fGC += doInferSignature + ";\n";
    }
 
    // define the Session struct (for GNN this is generated in RModel_GNN)
    if (fUseSession && !fIsGNNComponent) {
+      fGC += "\n// --- Session: owns the weights and the intermediate tensors and provides the inference methods ---\n";
       fGC += "struct " + sessionName + " {\n";
    }
 
@@ -1499,7 +1500,7 @@ void RModel::GenerateSessionCode()
 
    // storing the parameters for future checking to avoid mismatches
    if (!fDimShapeNames.empty()) {
-      fGC += "\n//   dynamic shape parameters\n";
+      fGC += "\n//   maximum values of the dynamic shape parameters, set at construction\n";
       auto dimShapeNames = fDimShapeNames;
       std::sort(dimShapeNames.begin(), dimShapeNames.end());
       for (const auto &p : dimShapeNames) {
@@ -1533,37 +1534,42 @@ void RModel::GenerateSessionCode()
       std::string dynParamArgs;
       if (!fDimShapeNames.empty()) {
          for (auto &p : fDimShapeNames) {
-            dynParamDecls += ",\n        size_t " + p + " = " + fShapeParams[p];
+            dynParamDecls += ",\nsize_t " + p + " = " + fShapeParams[p];
             dynParamArgs += ", " + p;
          }
       }
       if (fStridedInput) {
-         dynParamDecls += ",\n        std::vector<std::vector<size_t>> inputStrides = {}";
+         dynParamDecls += ",\nstd::vector<std::vector<size_t>> inputStrides = {}";
          dynParamArgs += ", inputStrides";
       }
       // here add initialization and reading of weight tensors
       if (fUseWeightFile && fWeightFile == WeightFileType::Safetensors) {
          AddNeededHelperFunction("SafetensorsBlob");
-         fGC += "   static std::string LoadWeightsFromFile(const std::string &filename) {\n";
-         fGC += "      std::ifstream f(filename, std::ios::binary);\n";
-         fGC += "      if (!f.is_open()) {\n";
+         fGC += "// read the whole safetensors weights file into memory\n";
+         fGC += "static std::string LoadWeightsFromFile(const std::string &filename) {\n";
+         fGC += "std::ifstream f(filename, std::ios::binary);\n";
+         fGC += "if (!f.is_open()) {\n";
          fGC += "         throw std::runtime_error(\"sofie failed to open file \" + filename + \" for input "
                 "weights\");\n";
-         fGC += "      }\n";
-         fGC += "      return std::string(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());\n";
-         fGC += "   }\n\n";
+         fGC += "}\n";
+         fGC += "return std::string(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());\n";
+         fGC += "}\n\n";
+         fGC += "// constructor loading the weights from a safetensors file\n";
          fGC += sessionName + "(std::string filename =\"" + fName + ".safetensors\"" + dynParamDecls + ")\n";
-         fGC += "      : " + sessionName + "(SafetensorsBlob{LoadWeightsFromFile(filename)}" + dynParamArgs + ") {}\n\n";
+         fGC += ": " + sessionName + "(SafetensorsBlob{LoadWeightsFromFile(filename)}" + dynParamArgs + ") {}\n\n";
+         fGC += "// constructor using weights already loaded in memory\n";
          fGC += sessionName + "(SafetensorsBlob weights_blob" + dynParamDecls + ") {\n";
       } else if (fUseWeightFile) {
          std::string fileName = fName;
          if (fWeightFile == WeightFileType::Text) {
             fileName += ".dat";
          }
+         fGC += "// constructor loading the weights from file and allocating the tensors\n";
          fGC += sessionName + "(std::string filename =\"" + fileName + "\"" + dynParamDecls + ") {\n";
       } else {
          // no need to pass weight file since it is not used
          // keep passing a string for compatibility
+         fGC += "// constructor allocating the tensors\n";
          fGC += sessionName + "(std::string = \"\"" + dynParamDecls + ") {\n";
       }
 
@@ -1582,7 +1588,7 @@ void RModel::GenerateSessionCode()
       if (fStridedInput) {
          fGC += GenerateInputStrideInitCode();
          for (auto &graph : fSubGraphs)
-            fGC += "   fSession_" + graph->fName + ".SetInputStrides(inputStrides);\n";
+            fGC += "fSession_" + graph->fName + ".SetInputStrides(inputStrides);\n";
       }
 
       if (fUseWeightFile) {
@@ -1604,28 +1610,31 @@ void RModel::GenerateSessionCode()
 
       if (fWeightFile == WeightFileType::Safetensors && !fUseWeightFile) {
          AddNeededHelperFunction("SafetensorsBlob");
+         fGC += "// constructor for weights that are provided later\n";
          fGC += sessionName + "(SafetensorsBlob" + dynParamDecls + ")\n";
-         fGC += "      : " + sessionName + "(std::string{}" + dynParamArgs + ") {}\n\n";
+         fGC += ": " + sessionName + "(std::string{}" + dynParamArgs + ") {}\n\n";
       }
 
       // the session of a sub-graph is created by the session of the main model, which gives it the strides
       if (fStridedInput && fIsSubGraph) {
+         fGC += "// set the strides of the input tensors (empty = contiguous)\n";
          fGC += "void SetInputStrides(std::vector<std::vector<size_t>> const &inputStrides) {\n";
          fGC += GenerateInputStrideInitCode();
          for (auto &graph : fSubGraphs)
-            fGC += "   fSession_" + graph->fName + ".SetInputStrides(inputStrides);\n";
+            fGC += "fSession_" + graph->fName + ".SetInputStrides(inputStrides);\n";
          fGC += "}\n\n";
       }
 
+      fGC += "// set all the weights to zero\n";
       fGC += "void SetWeightsToZero() {\n";
       for (auto &i : fInitializedTensors) {
          if (i.second.IsNotWritable() ||
              (i.second.type() != ETensorType::FLOAT && i.second.type() != ETensorType::DOUBLE))
             continue;
-         fGC += "   for (auto &v : fTensor_" + i.first + ") v = 0;\n";
+         fGC += "for (auto &v : fTensor_" + i.first + ") v = 0;\n";
       }
       for (auto &graph : fSubGraphs) {
-         fGC += "   fSession_" + graph->fName + ".SetWeightsToZero();\n";
+         fGC += "fSession_" + graph->fName + ".SetWeightsToZero();\n";
       }
       fGC += "}\n\n";
    }
@@ -1647,6 +1656,7 @@ void RModel::GenerateSessionCode()
          GenerateRequiredInputTensorInfo();
    }
 
+   fGC += "\n// inference implementation: runs the operators in order\n";
    fGC += doInferSignature + " {\n";
    fGC += "\n";
 
@@ -1666,6 +1676,8 @@ void RModel::GenerateSessionCode()
    for (size_t op_idx = 0; op_idx < fOperators.size(); ++op_idx) {
       if (fVerbose)
          std::cout << "Generating code for operator .... " << op_idx << std::endl;
+      for (auto &helper : fOperators[op_idx]->GetHelperFunctions())
+         AddNeededHelperFunction(helper);
       if (fProfile) {
          allOperatorCode += RModelProfiler::GenerateOperatorCode(*fOperators[op_idx], op_idx);
       } else {
@@ -1684,7 +1696,7 @@ void RModel::GenerateSessionCode()
       for (auto const& name: tensorMemberNames) {
          if (IsAliasTensor(name.substr(prefix.size())))
             continue;
-         fGC += "    auto &" + name + " = session." + name + ";\n";
+         fGC += "auto &" + name + " = session." + name + ";\n";
       }
       fGC += "\n";
    }
@@ -1693,7 +1705,7 @@ void RModel::GenerateSessionCode()
       if (fUseSession && IsInitializedTensor(name)) {
          std::string t = "session.tensor_" + name;
          size_t length = ConvertShapeToLength(fInitializedTensors[name].shape());
-         fGC += "    std::copy(" + t + ", " + t + " + " + std::to_string(length) + ", tensor_" + name + ");\n";
+         fGC += "std::copy(" + t + ", " + t + " + " + std::to_string(length) + ", tensor_" + name + ");\n";
       }
    }
 
@@ -1804,7 +1816,7 @@ void RModel::Generate(std::underlying_type_t<Options> options, int batchSize, bo
    if (!fIsGNNComponent && !fIsSubGraph) {
       fGC += ("} //SOFIE_" + fName + "\n");
       fGC += "\n#endif  // " + hgname + "\n";
-      EmitHelperFunctionsCode();
+      FinalizeGeneratedCode();
    }
 }
 
@@ -1815,14 +1827,14 @@ void RModel::ReadInitializedTensorsFromFile() {
 
         if (!fUseWeightFile) return;
 
-        fGC += "   std::ifstream f;\n";
-        fGC += "   f.open(filename);\n";
-        fGC += "   if (!f.is_open()) {\n";
+        fGC += "std::ifstream f;\n";
+        fGC += "f.open(filename);\n";
+        fGC += "if (!f.is_open()) {\n";
         fGC += "      throw std::runtime_error(\"sofie failed to open file \" + filename + \" for input weights\");\n";
-        fGC += "   }\n";
+        fGC += "}\n";
 
         if(fIsGNNComponent) {
-            fGC += "   f.seekg(" + std::to_string(fReadPos) + ");\n";
+            fGC += "f.seekg(" + std::to_string(fReadPos) + ");\n";
         }
 
         AddNeededHelperFunction("ReadTensorFromStream");
@@ -1834,18 +1846,18 @@ void RModel::ReadInitializedTensorsFromFile() {
             std::string tensor_name = "tensor_" + i.first;
             if (i.second.type() == ETensorType::FLOAT) {
                std::string length = std::to_string(ConvertShapeToLength(i.second.shape()));
-               fGC += "   ReadTensorFromStream(f, " + tensor_name + ", \"" + tensor_name + "\", " + length + ");\n";
+               fGC += "ReadTensorFromStream(f, " + tensor_name + ", \"" + tensor_name + "\", " + length + ");\n";
             } else {
                throw std::runtime_error("sofie tensor " + tensor_name + " with type " + ConvertTypeToString(i.second.type()) + " cannot be read from a file");
             }
         }
-        fGC += "   f.close();\n";
+        fGC += "f.close();\n";
     }
 
     if (fWeightFile == WeightFileType::Safetensors) {
        AddNeededHelperFunction("SafetensorsReader");
 
-       fGC += "   SafetensorsReader sofie_weights_reader(weights_blob);\n";
+       fGC += "SafetensorsReader sofie_weights_reader(weights_blob);\n";
 
        for (auto &i : fInitializedTensors) {
           if (!i.second.IsWeightTensor())
@@ -1860,7 +1872,7 @@ void RModel::ReadInitializedTensorsFromFile() {
                                       " cannot be read from a safetensors payload");
           }
           std::string length = std::to_string(ConvertShapeToLength(i.second.shape()));
-          fGC += "   sofie_weights_reader.Read(\"" + tensor_name + "\", fTensor_" + i.first + ", " + length + ", \"" +
+          fGC += "sofie_weights_reader.Read(\"" + tensor_name + "\", fTensor_" + i.first + ", " + length + ", \"" +
                  dtype + "\");\n";
        }
     }
@@ -2043,7 +2055,7 @@ void RModel::GenerateRequiredInputTensorInfo()
    fGC += "\nconstexpr std::array<TensorDims, " + std::to_string(fInputTensorNames.size()) + "> inputTensorDims{\n";
    for (std::size_t iInput = 0; iInput < fInputTensorNames.size(); ++iInput) {
       auto const &name = fInputTensorNames[iInput];
-      fGC += SP + "makeDims(dim_" + name + ")";
+      fGC += "makeDims(dim_" + name + ")";
       if (iInput == fInputTensorNames.size() - 1) {
          fGC += "\n";
       } else {
@@ -2080,7 +2092,7 @@ void RModel::GenerateRequiredInputTensorInfo()
    fGC += "\nconstexpr std::array<TensorDims, " + std::to_string(fOutputTensorNames.size()) + "> outputTensorDims{\n";
    for (std::size_t iOutput = 0; iOutput < fOutputTensorNames.size(); ++iOutput) {
       auto const &name = fOutputTensorNames[iOutput];
-      fGC += SP + "makeDims(dim_" + name + ")";
+      fGC += "makeDims(dim_" + name + ")";
       if (iOutput == fOutputTensorNames.size() - 1) {
          fGC += "\n";
       } else {

@@ -5,7 +5,7 @@ within [ROOT](https://root.cern), the scientific data analysis framework.
 
 This standalone is especially developed for implementing and evaluating inference on
 **heterogeneous architectures** (CUDA GPUs, AMD GPUs via HIP/ROCm, CPUs) using the
-[Alpaka](https://github.com/alpaka-group/alpaka) portability layer.
+[alpaka](https://github.com/alpaka-group/alpaka) portability layer.
 
 ---
 
@@ -54,9 +54,9 @@ cmake --build . -j$(nproc)
 ctest --output-on-failure
 ```
 
-### GPU tests (Alpaka, CUDA or HIP)
+### GPU tests (alpaka, CUDA or HIP)
 
-Alpaka-based GPU tests compile SOFIE-generated inference code for an NVIDIA (CUDA)
+alpaka-based GPU tests compile SOFIE-generated inference code for an NVIDIA (CUDA)
 or AMD (HIP) GPU and verify correctness against reference outputs.  They require
 the CUDA Toolkit or ROCm, and a matching GPU.
 
@@ -73,8 +73,8 @@ ctest --output-on-failure
 |---|---|---|
 | `-DSOFIE_BUILD_TESTS=ON` | `OFF` | Enable the test suite |
 | `-DSOFIE_USE_CCACHE=ON` | `OFF` | Use ccache as compiler launcher |
-| `-DENABLE_ALPAKA_TESTS=ON` | `OFF` | Enable Alpaka GPU tests |
-| `-DALPAKA_BACKEND=<val>` | `cuda` | Alpaka backend: `cuda`, `hip`, `cpu`, `sycl` |
+| `-DENABLE_ALPAKA_TESTS=ON` | `OFF` | Enable alpaka GPU tests |
+| `-DALPAKA_BACKEND=<val>` | `cuda` | alpaka backend: `cuda`, `hip`, `cpu`, `sycl` |
 | `-DROCM_BASE=<path>` | `/opt/rocm` | ROCm installation prefix (`hip` backend only) |
 
 The test executable is `TestCustomModelsFromONNXForAlpakaCuda` with
@@ -88,7 +88,7 @@ used as test inputs are located in `tests/models/onnx/`.  Models with symbolic
 ## Benchmarking
 
 The benchmark toolkit (`benchmark/`) measures **inference latency and throughput** for
-ONNX models compiled by SOFIE and executed via Alpaka.  It supports an optional
+ONNX models compiled by SOFIE and executed via alpaka.  It supports an optional
 side-by-side comparison with **ONNX Runtime GPU**.
 
 ### Supported backends
@@ -140,17 +140,17 @@ passing `Options::kProfile` at code-generation time (see
 
 ## GPU Architecture Support
 
-SOFIE generates Alpaka-based inference code that is portable across GPU
+SOFIE generates alpaka-based inference code that is portable across GPU
 architectures:
 
 - **NVIDIA CUDA** — select the SM architecture with
   `-DSOFIE_BENCHMARK_CUDA_ARCH=<sm>` (e.g. `75` for Turing, `86` for Ampere,
   `90` for Hopper).
-- **AMD HIP/ROCm** — the Alpaka backend tag (`alpaka::TagGpuHipRt`) and the
+- **AMD HIP/ROCm** — the alpaka backend tag (`alpaka::TagGpuHipRt`) and the
   `SOFIE_BACKEND_HIP` compile-time define are already wired in
   `benchmark/src/BenchmarkBackend.hxx`; full build-system integration is in
   progress.
-- **CPU** — a serial CPU Alpaka backend (`alpaka::TagCpuSerial`) is available as a
+- **CPU** — a serial CPU alpaka backend (`alpaka::TagCpuSerial`) is available as a
   fallback for debugging and portability testing.
 
 ---
@@ -163,7 +163,7 @@ SOFIE/
 ├── parsers/        # ONNX → RModel parser
 ├── tests/
 │   ├── cpu/        # CPU unit/integration tests (GoogleTest)
-│   ├── alpaka/     # Alpaka/CUDA GPU tests
+│   ├── alpaka/     # alpaka/CUDA GPU tests
 │   ├── common/     # Shared test helpers
 │   ├── models/     # Test models: generators/, onnx/ (+ references/)
 │   ├── templates/  # Emitter sources configured by CMake
@@ -218,7 +218,7 @@ for (int i = 0; i < 100; ++i) session.infer(input);
 session.PrintProfilingResults();
 ```
 
-### GPU inference (Alpaka/CUDA)
+### GPU inference (alpaka/CUDA)
 
 ```cpp
 model.GenerateGPU_ALPAKA(SOFIE::Options::kProfile);

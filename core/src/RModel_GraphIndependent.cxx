@@ -56,7 +56,8 @@ RModel_GraphIndependent::RModel_GraphIndependent(GraphIndependent_Init& graph_in
 
 void RModel_GraphIndependent::Generate() {
     std::string hgname;
-    AddNeededCustomHeader("SOFIE/SOFIE_common.hxx");
+    AddNeededCustomHeader("SOFIE/utils/RTensor.hxx");
+    AddNeededHelperFunction("GNN_Data");
     GenerateHeaderInfo(hgname);
 
     std::ofstream f;
@@ -151,7 +152,7 @@ void RModel_GraphIndependent::Generate() {
       //fGC += "std::vector<float> fGlobalUpdates {" + std::to_string(num_global_features) + "};";
     }
 
-    fGC += "\nvoid infer(SOFIE::GNN_Data& input_graph){\n";
+    fGC += "\nvoid infer(GNN_Data& input_graph){\n";
 
     // computing updated edge attributes
     // could use std::span
@@ -161,7 +162,7 @@ void RModel_GraphIndependent::Generate() {
        std::string e_size_input = std::to_string(num_edge_features_input);
        fGC += "size_t n_edges = input_graph.edge_data.GetShape()[0];\n";
        fGC += "for (size_t k = 0; k < n_edges; k++) { \n";
-       fGC += "   std::copy(input_graph.edge_data.GetData() + k * " + e_size_input +
+       fGC += "std::copy(input_graph.edge_data.GetData() + k * " + e_size_input +
               ", input_graph.edge_data.GetData() + (k + 1) * " + e_size_input + ", fEdgeInputs.begin() + k * " +
               e_size_input + ");\n";
        fGC += "}\n";
@@ -175,7 +176,7 @@ void RModel_GraphIndependent::Generate() {
        }
        // copy output
        fGC += "\nfor (size_t k = 0; k < n_edges; k++) { \n";
-       fGC += "   std::copy(edgeUpdates.begin()+ k * " + std::to_string(num_edge_features) +
+       fGC += "std::copy(edgeUpdates.begin()+ k * " + std::to_string(num_edge_features) +
               ", edgeUpdates.begin()+ (k+1) * " + std::to_string(num_edge_features) +
               ",input_graph.edge_data.GetData() + k * " + std::to_string(num_edge_features) + ");\n";
        fGC += "}\n";
@@ -188,7 +189,7 @@ void RModel_GraphIndependent::Generate() {
        fGC += "\n// --- Node Update ---\n";
        fGC += "size_t n_nodes = input_graph.node_data.GetShape()[0];\n";
        fGC += "for (size_t k = 0; k < n_nodes; k++) { \n";
-       fGC += "   std::copy(input_graph.node_data.GetData() + k * " + n_size_input +
+       fGC += "std::copy(input_graph.node_data.GetData() + k * " + n_size_input +
               ", input_graph.node_data.GetData() + (k + 1) * " + n_size_input + ", fNodeInputs.begin() + k * " +
               n_size_input + ");\n";
        fGC += "}\n";
@@ -204,7 +205,7 @@ void RModel_GraphIndependent::Generate() {
        }
        // copy output
        fGC += "\nfor (size_t k = 0; k < n_nodes; k++) { \n";
-       fGC += "   std::copy(nodeUpdates.begin()+ k * " + std::to_string(num_node_features) +
+       fGC += "std::copy(nodeUpdates.begin()+ k * " + std::to_string(num_node_features) +
               ", nodeUpdates.begin() + (k+1) * " + std::to_string(num_node_features) +
               ",input_graph.node_data.GetData() + k * " + std::to_string(num_node_features) + ");\n";
        fGC += "}\n";
@@ -235,7 +236,7 @@ void RModel_GraphIndependent::Generate() {
         if (block)
             AddNeededHelperFunctions(block->GetFunctionBlock()->GetNeededHelperFunctions());
     }
-    EmitHelperFunctionsCode();
+    FinalizeGeneratedCode();
 
 }
 

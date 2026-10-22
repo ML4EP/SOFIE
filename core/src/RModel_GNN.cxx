@@ -4,7 +4,7 @@
 #include <limits>
 
 #include "SOFIE/RModel_GNN.hxx"
-#include "SOFIE/RFunction.hxx"
+#include "SOFIE/functions/RFunction.hxx"
 
 
 namespace SOFIE {
@@ -70,7 +70,8 @@ RModel_GNN::RModel_GNN(GNN_Init& graph_input_struct) {
 
 void RModel_GNN::Generate() {
     std::string hgname;
-    AddNeededCustomHeader("SOFIE/SOFIE_common.hxx");
+    AddNeededCustomHeader("SOFIE/utils/RTensor.hxx");
+    AddNeededHelperFunction("GNN_Data");
     GenerateHeaderInfo(hgname);
 
     std::ofstream f;
@@ -179,7 +180,7 @@ void RModel_GNN::Generate() {
     fGC += "std::vector<float> fNodeEdgeAggregate = std::vector<float>(" + n_num + "*" + n_size_input + ", 0);\n";
     fGC += "std::vector<float> fNodeAggregateTemp;\n";
 
-    fGC += "\nvoid infer(SOFIE::GNN_Data& input_graph){\n";
+    fGC += "\nvoid infer(GNN_Data& input_graph){\n";
 
     // computing updated edge attributes
     fGC += "\n// --- Edge Update ---\n";
@@ -190,16 +191,16 @@ void RModel_GNN::Generate() {
     fGC += "auto senders = input_graph.edge_index.GetData() + n_edges;\n";
 
     fGC += "for (size_t k = 0; k < n_edges; k++) { \n";
-    fGC += "   std::copy(input_graph.edge_data.GetData() + k * " + e_size_input +
+    fGC += "std::copy(input_graph.edge_data.GetData() + k * " + e_size_input +
            ", input_graph.edge_data.GetData() + (k + 1) * " + e_size_input +
            ", fEdgeInputs.begin() + k * " + e_size_input + ");\n";
-    fGC += "   std::copy(input_graph.node_data.GetData() + receivers[k] * " + n_size_input +
+    fGC += "std::copy(input_graph.node_data.GetData() + receivers[k] * " + n_size_input +
            ", input_graph.node_data.GetData() + (receivers[k] + 1) * " + n_size_input +
            ", fRecNodeInputs.begin() + k * " + n_size_input + ");\n";
-    fGC += "   std::copy(input_graph.node_data.GetData() + senders[k] * " + n_size_input +
+    fGC += "std::copy(input_graph.node_data.GetData() + senders[k] * " + n_size_input +
            ", input_graph.node_data.GetData() + (senders[k] + 1) * " + n_size_input +
            ", fSndNodeInputs.begin() + k * " + n_size_input + ");\n";
-    fGC += "   std::copy(input_graph.global_data.GetData()";
+    fGC += "std::copy(input_graph.global_data.GetData()";
     fGC += ", input_graph.global_data.GetData() + " + g_size_input +
            ", fGlobInputs.begin() + k * " + g_size_input + ");\n";
     fGC += "}\n";
@@ -212,7 +213,7 @@ void RModel_GNN::Generate() {
     }
     // copy output
     fGC += "\nfor (size_t k = 0; k < n_edges; k++) { \n";
-    fGC += "   std::copy(fEdgeUpdates.begin()+ k * " + e_size + ", fEdgeUpdates.begin()+ (k+1) * " + e_size +
+    fGC += "std::copy(fEdgeUpdates.begin()+ k * " + e_size + ", fEdgeUpdates.begin()+ (k+1) * " + e_size +
            ",input_graph.edge_data.GetData() + k * " + e_size + ");\n";
     fGC += "}\n";
     fGC += "\n";
@@ -221,7 +222,7 @@ void RModel_GNN::Generate() {
     fGC += "size_t n_nodes = input_graph.node_data.GetShape()[0];\n";
     // computing updated node attributes
     fGC += "for (size_t k = 0; k < n_nodes; k++) { \n";
-    fGC += "   std::copy(input_graph.node_data.GetData() + k * " + n_size_input +
+    fGC += "std::copy(input_graph.node_data.GetData() + k * " + n_size_input +
            ", input_graph.node_data.GetData() + (k + 1) * " + n_size_input +
            ", fNodeInputs.begin() + k * " + n_size_input + ");\n";
     fGC += "}\n";
@@ -232,9 +233,9 @@ void RModel_GNN::Generate() {
 
     fGC += "\n// resize global vector feature to number of nodes if needed\n";
     fGC += "if (n_nodes > n_edges) {\n";
-    fGC += "   fGlobInputs.resize( n_nodes * " + std::to_string(num_global_features_input) + ");\n";
-    fGC += "   for (size_t k = n_edges; k < n_nodes; k++)\n";
-    fGC += "      std::copy(fGlobInputs.begin(), fGlobInputs.begin() + " + g_size_input +
+    fGC += "fGlobInputs.resize( n_nodes * " + std::to_string(num_global_features_input) + ");\n";
+    fGC += "for (size_t k = n_edges; k < n_nodes; k++)\n";
+    fGC += "std::copy(fGlobInputs.begin(), fGlobInputs.begin() + " + g_size_input +
                    " , fGlobInputs.begin() + k * " + g_size_input + ");\n";
     fGC += "}\n";
 
@@ -242,14 +243,14 @@ void RModel_GNN::Generate() {
     fGC += "\n// aggregate edges going to a node\n";
     fGC += "for (size_t j = 0; j < n_nodes; j++) {\n";
     // approximate number of receivers/node to allocate vector
-    fGC += "   std::vector<float *> edgesData; edgesData.reserve( int(n_edges/n_nodes) +1);\n";
+    fGC += "std::vector<float *> edgesData; edgesData.reserve( int(n_edges/n_nodes) +1);\n";
     // loop on edges
-    fGC += "   for (size_t k = 0; k < n_edges; k++) {\n";
-    fGC += "      if (receivers[k] == j) \n";
-    fGC += "         edgesData.emplace_back(input_graph.edge_data.GetData() + k * " + e_size + ");\n";
-    fGC += "   }\n";
-    fGC += "   fNodeAggregateTemp = " + edge_node_agg_block->Generate(num_edge_features, "edgesData") + ";\n";
-    fGC += "   std::copy(fNodeAggregateTemp.begin(), fNodeAggregateTemp.end(), fNodeEdgeAggregate.begin() + " +
+    fGC += "for (size_t k = 0; k < n_edges; k++) {\n";
+    fGC += "if (receivers[k] == j) \n";
+    fGC += "edgesData.emplace_back(input_graph.edge_data.GetData() + k * " + e_size + ");\n";
+    fGC += "}\n";
+    fGC += "fNodeAggregateTemp = " + edge_node_agg_block->Generate(num_edge_features, "edgesData") + ";\n";
+    fGC += "std::copy(fNodeAggregateTemp.begin(), fNodeAggregateTemp.end(), fNodeEdgeAggregate.begin() + " +
                    e_size + " * j);\n";
     fGC += "}\n";   // end node loop
 
@@ -265,7 +266,7 @@ void RModel_GNN::Generate() {
     }
     // copy output
     fGC += "\nfor (size_t k = 0; k < n_nodes; k++) { \n";
-    fGC += "   std::copy(fNodeUpdates.begin()+ k * " + n_size + ", fNodeUpdates.begin() + (k+1) * " + n_size +
+    fGC += "std::copy(fNodeUpdates.begin()+ k * " + n_size + ", fNodeUpdates.begin() + (k+1) * " + n_size +
            ",input_graph.node_data.GetData() + k * " + n_size+ ");\n";
     fGC += "}\n";
     fGC += "\n";
@@ -273,11 +274,11 @@ void RModel_GNN::Generate() {
     // aggregating edges & nodes for global update
     fGC += "std::vector<float *> allEdgesData; allEdgesData.reserve(n_edges);\n";
     fGC += "for (size_t k = 0; k < n_edges; k++) {\n";
-    fGC += "   allEdgesData.emplace_back(input_graph.edge_data.GetData() + k * " + e_size + ");\n";
+    fGC += "allEdgesData.emplace_back(input_graph.edge_data.GetData() + k * " + e_size + ");\n";
     fGC += "}\n";
     fGC += "std::vector<float *> allNodesData; allNodesData.reserve(n_nodes);\n";
     fGC += "for (size_t k = 0; k < n_nodes; k++) {\n";
-    fGC += "   allNodesData.emplace_back(input_graph.node_data.GetData() + k * " + n_size + ");\n";
+    fGC += "allNodesData.emplace_back(input_graph.node_data.GetData() + k * " + n_size + ");\n";
     fGC += "}\n";
 
 
@@ -308,7 +309,7 @@ void RModel_GNN::Generate() {
         if (block)
             AddNeededHelperFunctions(block->GetFunctionBlock()->GetNeededHelperFunctions());
     }
-    EmitHelperFunctionsCode();
+    FinalizeGeneratedCode();
 }
 
 }//SOFIE

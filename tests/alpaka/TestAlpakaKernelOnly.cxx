@@ -1,8 +1,8 @@
 // Exercises Options::kKernelOnly: the generated header contains just the
 // kernel struct and the sofie_workdiv helper without any session impl,
 // so the kernel is launched directly.
-// With Options::kStridedInput the header also defines sofie_strided_layout and sofie_strided_offset, and the
-// kernels reading a graph input take its layout (logical shape and strides) as an argument.
+// With Options::kStridedInput the header also defines sofie_strided_layout and sofie_strided_offset in the model namespace, and the
+// kernels reading a graph input take its layout as an argument.
 
 #include "TestAlpakaCommon.h"
 #include "common/strided_input_test_utils.h"
@@ -20,7 +20,7 @@ TEST_F(SofieAlpakaTest, KernelOnlyLeakyRelu)
     auto input_d = makeDeviceBuf<float>(host, device, queue, input.data(), n);
     auto output_d = alpaka::allocBuf<float, Idx>(device, Ext1D::all(Idx{n}));
 
-    auto workDiv = sofie_workdiv<Dim, Idx>(Ext1D::all(Idx{n}));
+    auto workDiv = SOFIE_LeakyReluKernelOnly::sofie_workdiv<Dim, Idx>(Ext1D::all(Idx{n}));
     auto task = alpaka::createTaskKernel<TestAcc>(workDiv, SOFIE_LeakyReluKernelOnly::LeakyReluKernel{},
                                                alpaka::getPtrNative(input_d), alpaka::getPtrNative(output_d),
                                                n, alpha);
@@ -50,8 +50,8 @@ TEST_F(SofieAlpakaTest, KernelOnlyStridedChain)
         auto neg_d = alpaka::allocBuf<float, Idx>(device, Ext1D::all(Idx{n}));
         auto out_d = alpaka::allocBuf<float, Idx>(device, Ext1D::all(Idx{n}));
 
-        sofie_strided_layout<2> layout{{3, 5}, {strides[0], strides[1]}};
-        auto workDiv = sofie_workdiv<Dim, Idx>(Ext1D::all(Idx{n}));
+        SOFIE_KernelOnlyStridedChain::sofie_strided_layout<2> layout{{3, 5}, {strides[0], strides[1]}};
+        auto workDiv = SOFIE_KernelOnlyStridedChain::sofie_workdiv<Dim, Idx>(Ext1D::all(Idx{n}));
         alpaka::enqueue(queue, alpaka::createTaskKernel<TestAcc>(workDiv, SOFIE_KernelOnlyStridedChain::UnaryNegStridedKernel{},
                                                               alpaka::getPtrNative(in_d), alpaka::getPtrNative(neg_d),
                                                               n, layout));
@@ -75,9 +75,9 @@ TEST_F(SofieAlpakaTest, KernelOnlyStridedBinary)
     auto b_d = makeDeviceBuf<float>(host, device, queue, b.storage.data(), b.storage.size());
     auto out_d = alpaka::allocBuf<float, Idx>(device, Ext1D::all(Idx{n}));
 
-    sofie_strided_layout<3> layoutA{{2, 3, 4}, {1, 8, 2}};
-    sofie_strided_layout<3> layoutB{{2, 3, 4}, {0, 2, 0}};
-    auto workDiv = sofie_workdiv<Dim, Idx>(Ext1D::all(Idx{n}));
+    SOFIE_KernelOnlyStridedBinary::sofie_strided_layout<3> layoutA{{2, 3, 4}, {1, 8, 2}};
+    SOFIE_KernelOnlyStridedBinary::sofie_strided_layout<3> layoutB{{2, 3, 4}, {0, 2, 0}};
+    auto workDiv = SOFIE_KernelOnlyStridedBinary::sofie_workdiv<Dim, Idx>(Ext1D::all(Idx{n}));
     alpaka::enqueue(queue, alpaka::createTaskKernel<TestAcc>(workDiv, SOFIE_KernelOnlyStridedBinary::Binary0SubKernel{},
                                                           alpaka::getPtrNative(a_d), alpaka::getPtrNative(b_d),
                                                           alpaka::getPtrNative(out_d), layoutA, layoutB, n));
@@ -90,9 +90,9 @@ TEST_F(SofieAlpakaTest, KernelOnlyStridedBinary)
 // the offset function of the generated header: element idx (row-major logical index) of a view with these strides
 TEST(KernelOnlyStridedOffset, MatchesLayout)
 {
-    sofie_strided_layout<3> layout{{2, 3, 4}, {1, 8, 2}};
+    SOFIE_KernelOnlyStridedBinary::sofie_strided_layout<3> layout{{2, 3, 4}, {1, 8, 2}};
     for (size_t idx = 0; idx < 24; ++idx) {
         size_t i = idx / 12, j = (idx / 4) % 3, l = idx % 4;
-        EXPECT_EQ(sofie_strided_offset(layout, idx), i * 1 + j * 8 + l * 2) << "idx=" << idx;
+        EXPECT_EQ(SOFIE_KernelOnlyStridedBinary::sofie_strided_offset(layout, idx), i * 1 + j * 8 + l * 2) << "idx=" << idx;
     }
 }

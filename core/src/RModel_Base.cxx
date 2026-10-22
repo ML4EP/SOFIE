@@ -1,7 +1,11 @@
 #include <limits>
 #include <algorithm>
 #include <cctype>
+#include <set>
+#include <sstream>
+#include <vector>
 #include "SOFIE/RModel_Base.hxx"
+#include "SOFIE/utils/SOFIE_formatter.hxx"
 
 
 namespace SOFIE {
@@ -25,18 +29,15 @@ void RModel_Base::GenerateHeaderInfo(std::string& hgname) {
                           "limits", "stdexcept", "algorithm", "cmath", "cassert"}) {
         fNeededStdLib.insert(h);
     }
-    for (auto& i: fNeededStdLib) {
-        fGC += "#include <" + i + ">\n";
-    }
-    for (auto& i: fCustomOpHeaders) {
-        fGC += "#include \"" + i + "\"\n";
-    }
-    fGC += kHelperIncludesMarker;
     if (fUseWeightFile)
-        fGC += "#include <fstream>\n";
+        fNeededStdLib.insert("fstream");
     if (fWeightFile == WeightFileType::Safetensors)
-        fGC += "#include <iterator>\n";
-
+        fNeededStdLib.insert("iterator");
+    // the standard headers (the model's and the ones of the helper functions) are merged, sorted and written when the
+    // code is finalized, followed by the other includes
+    for (auto &i : fCustomOpHeaders)
+        fHeaderIncludesTail += "#include \"" + i + "\"\n";
+    fGC += kHelperIncludesMarker;
 
     fGC += "\nnamespace SOFIE_" + fName + "{\n";
     if (!fNeededBlasRoutines.empty()) {
@@ -74,17 +75,22 @@ void RModel_Base::EmitHelperFunctionsCode()
         }
     };
 
-    replaceMarker(kHelperIncludesMarker, code.includes);
+    // one block of standard headers without repetitions, sorted, then the other includes after a blank line
+    std::set<std::string> stdHeaders(fNeededStdLib.begin(), fNeededStdLib.end());
+    stdHeaders.insert(code.stdHeaders.begin(), code.stdHeaders.end());
+    std::string includes;
+    for (const auto &h : stdHeaders)
+        includes += "#include <" + h + ">\n";
+    if (!fHeaderIncludesTail.empty())
+        includes += "\n" + fHeaderIncludesTail;
+    replaceMarker(kHelperIncludesMarker, includes);
     replaceMarker(kHelperFunctionsMarker, code.definitions);
+}
 
-    if (!code.cladDefinitions.empty()) {
-        auto pos = fGC.rfind("#endif");
-        if (pos != std::string::npos) {
-            fGC.insert(pos, code.cladDefinitions + "\n");
-        } else {
-            fGC += code.cladDefinitions;
-        }
-    }
+void RModel_Base::FinalizeGeneratedCode()
+{
+    EmitHelperFunctionsCode();
+    fGC = FormatGeneratedCode(fGC);
 }
 
 void RModel_Base::GenerateHeaderInfo_GPU_ALPAKA(std::string& hgname) {
@@ -97,90 +103,60 @@ void RModel_Base::GenerateHeaderInfo_GPU_ALPAKA(std::string& hgname) {
     hgname = "SOFIE_" + hgname + "_HXX";
     fGC += "\n#ifndef " + hgname + "\n";
     fGC += "#define " + hgname + "\n\n";
-    for (auto& i: fNeededStdLib) {
-        fGC += "#include <" + i + ">\n";
+    // the generated code does not include SOFIE_common.hxx: it is self-contained, like the CPU one. The standard
+    // headers it relies on are listed here and the helper functions it needs are emitted inline in the model namespace
+    for (const char *h : {"cstdint", "cstring", "string", "vector", "memory", "sstream", "iostream", "limits",
+                          "stdexcept", "algorithm", "cmath", "cassert", "cstddef", "type_traits"}) {
+        fNeededStdLib.insert(h);
     }
-    for (auto& i: fCustomOpHeaders) {
-        fGC += "#include \"" + i + "\"\n";
-    }
-    fGC += "#include <alpaka/alpaka.hpp>\n";
-    fGC += "#include <sofieBLAS/sofieBLAS.hpp>\n";
-    fGC += "#include <span>\n";
-
-    // for the session we need to include SOFIE_Common functions
-    //needed for convolution operator (need to add a flag)
-    fGC += "#include \"SOFIE/SOFIE_common.hxx\"\n";
+    fNeededStdLib.insert("span");
     if (fUseWeightFile)
-        fGC += "#include <fstream>\n";
+        fNeededStdLib.insert("fstream");
+    // standard headers first (merged and sorted when the code is finalized), then alpaka and sofieBLAS, then the
+    // custom operator headers
+    fHeaderIncludesTail += "#include <alpaka/alpaka.hpp>\n";
+    fHeaderIncludesTail += "#include <sofieBLAS/sofieBLAS.hpp>\n";
+    for (auto &i : fCustomOpHeaders)
+        fHeaderIncludesTail += "#include \"" + i + "\"\n";
+    fGC += kHelperIncludesMarker;
 
+    fGC += "\nnamespace SOFIE_" + fName + "{\n";
+    fGC += kHelperFunctionsMarker;
 
-    fGC += "\n#ifndef SOFIE_ALPAKA_DIM1D_DEFINED\n";
-    fGC += "#define SOFIE_ALPAKA_DIM1D_DEFINED\n";
+    fGC += "\n// one-dimensional alpaka dimension\n";
     fGC += "using Dim1D = alpaka::DimInt<1>;\n";
-    fGC += "#endif // SOFIE_ALPAKA_DIM1D_DEFINED\n";
-    fGC += "\n#ifndef SOFIE_ALPAKA_WORKDIV_DEFINED\n";
-    fGC += "#define SOFIE_ALPAKA_WORKDIV_DEFINED\n";
+    fGC += "// work division covering numElems elements with blocks of blockSz threads\n";
     fGC += "template<typename TDim, typename TIdx>\n";
     fGC += "inline alpaka::WorkDivMembers<TDim, TIdx> sofie_workdiv(\n";
-    fGC += "    alpaka::Vec<TDim, TIdx> const& numElems, TIdx blockSz = TIdx{256})\n{\n";
+    fGC += "alpaka::Vec<TDim, TIdx> const& numElems, TIdx blockSz = TIdx{256})\n{\n";
 
-    fGC += "    auto const numBlocks = alpaka::Vec<TDim, TIdx>::all(\n";
-    fGC += "        std::max(TIdx{1}, (numElems[0] + blockSz - TIdx{1}) / blockSz));\n";
-    fGC += "    return alpaka::WorkDivMembers<TDim, TIdx>(\n";
-    fGC += "        numBlocks,\n";
-    fGC += "        alpaka::Vec<TDim, TIdx>::all(blockSz),\n";
-    fGC += "        alpaka::Vec<TDim, TIdx>::all(TIdx{1}));\n";
+    fGC += "auto const numBlocks = alpaka::Vec<TDim, TIdx>::all(\n";
+    fGC += "std::max(TIdx{1}, (numElems[0] + blockSz - TIdx{1}) / blockSz));\n";
+    fGC += "return alpaka::WorkDivMembers<TDim, TIdx>(\n";
+    fGC += "numBlocks,\n";
+    fGC += "alpaka::Vec<TDim, TIdx>::all(blockSz),\n";
+    fGC += "alpaka::Vec<TDim, TIdx>::all(TIdx{1}));\n";
     fGC += "}\n";
-    fGC += "#endif // SOFIE_ALPAKA_WORKDIV_DEFINED\n";
 
     if (fStridedInput) {
         // layout of an input tensor read through its strides: logical shape and strides (in elements)
-        fGC += "\n#ifndef SOFIE_ALPAKA_STRIDED_DEFINED\n";
-        fGC += "#define SOFIE_ALPAKA_STRIDED_DEFINED\n";
+        fGC += "// logical shape and strides (in elements) of an input tensor read through its strides\n";
         fGC += "template<std::size_t R>\n";
         fGC += "struct sofie_strided_layout {\n";
-        fGC += "    std::size_t shape[R];\n";
-        fGC += "    std::size_t stride[R];\n";
+        fGC += "std::size_t shape[R];\n";
+        fGC += "std::size_t stride[R];\n";
         fGC += "};\n";
         fGC += "// offset in the input buffer of the element with row-major (contiguous) logical index idx\n";
         fGC += "template<std::size_t R>\n";
         fGC += "ALPAKA_FN_HOST_ACC inline std::size_t sofie_strided_offset(sofie_strided_layout<R> const& layout, std::size_t idx)\n{\n";
-        fGC += "    std::size_t offset = 0;\n";
-        fGC += "    for (std::size_t d = R; d-- > 0;) {\n";
-        fGC += "        offset += (idx % layout.shape[d]) * layout.stride[d];\n";
-        fGC += "        idx /= layout.shape[d];\n";
-        fGC += "    }\n";
-        fGC += "    return offset;\n";
+        fGC += "std::size_t offset = 0;\n";
+        fGC += "for (std::size_t d = R; d-- > 0;) {\n";
+        fGC += "offset += (idx % layout.shape[d]) * layout.stride[d];\n";
+        fGC += "idx /= layout.shape[d];\n";
         fGC += "}\n";
-        fGC += "#endif // SOFIE_ALPAKA_STRIDED_DEFINED\n";
+        fGC += "return offset;\n";
+        fGC += "}\n";
     }
-
-    // Macros that redirect alpaka two-argument device-math calls to direct C/C++ calls
-    // when compiled by NVCC's device pass (__CUDA_ARCH__ defined).  The normal alpaka
-    // form is used in host compilation and on non-CUDA backends.
-    // This prevents the deep template instantiation of alpaka's device-math dispatch
-    // from corrupting NVCC's namespace tracking (which would misattribute Session to
-    // <unnamed> when multiple model headers are included in the same translation unit).
-    fGC += "\n#ifndef SOFIE_ALPAKA_DEVICE_MATH_DEFINED\n";
-    fGC += "#define SOFIE_ALPAKA_DEVICE_MATH_DEFINED\n";
-    fGC += "#if defined(__CUDA_ARCH__)\n";
-    for (const char* fn : {"exp","sqrt","log","sin","cos","abs","pow","atan2","atan",
-                           "floor","ceil","round","cbrt","tanh","sinh","cosh"}) {
-        std::string sfn = fn;
-        // pow and atan2 take two numeric args plus acc; handle with variadic macro.
-        // All others: SOFIE_DEVICE_fn(acc, x) -> ::fn(x)
-        fGC += "#define SOFIE_DEVICE_" + sfn + "(acc, ...) ::" + sfn + "(__VA_ARGS__)\n";
-    }
-    fGC += "#else\n";
-    for (const char* fn : {"exp","sqrt","log","sin","cos","abs","pow","atan2","atan",
-                           "floor","ceil","round","cbrt","tanh","sinh","cosh"}) {
-        std::string sfn = fn;
-        fGC += "#define SOFIE_DEVICE_" + sfn + "(acc, ...) " + sfn + "(acc, __VA_ARGS__)\n";
-    }
-    fGC += "#endif // __CUDA_ARCH__\n";
-    fGC += "#endif // SOFIE_ALPAKA_DEVICE_MATH_DEFINED\n";
-
-    fGC += "\nnamespace SOFIE_" + fName + "{\n";
 }
 
 void RModel_Base::OutputGenerated(std::string filename, bool append) {

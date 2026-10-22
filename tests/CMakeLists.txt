@@ -83,10 +83,10 @@ else()
   set(CHECKED_IN_MODELS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/models/onnx)
 endif()
 
-option(ENABLE_ALPAKA_TESTS "Enable Alpaka-based SOFIE tests" OFF)
+option(ENABLE_ALPAKA_TESTS "Enable alpaka-based SOFIE tests" OFF)
 
 set(ALPAKA_BACKEND "cuda"
-    CACHE STRING "Alpaka backend to test (cuda, cpu, hip, sycl)")
+    CACHE STRING "alpaka backend to test (cuda, cpu, hip, sycl)")
 set_property(CACHE ALPAKA_BACKEND PROPERTY STRINGS cuda cpu hip sycl)
 
 ############################################################################
@@ -101,6 +101,8 @@ set(CAPTURE_STR
         std::cerr << \"[SKIP] Multiple outputs are not supported for @1\" << std::endl;\n\
     } else if (msg.find(\"is of a data type which is not yet supported\") != std::string::npos) {\n\
         std::cerr << \"[SKIP] Operator with unsupported data type in @1: \" << msg << std::endl;\n\
+    } else if (msg.find(\"has no alpaka implementation\") != std::string::npos) {\n\
+        std::cerr << \"[SKIP] Operator without GPU implementation in @1: \" << msg << std::endl;\n\
     } else {\n\
         std::cerr << \"[ERROR] Failed processing @1: \" << msg << std::endl;\n\
         failures++;\n\
@@ -121,7 +123,6 @@ foreach(onnx_file ${ONNX_FILES})
     string(APPEND ALL_CAPTURES "${cap}")
 endforeach()
 
-# Alpaka tests use the same set of models as the CPU tests.
 set(ALPAKA_CAPTURES "${ALL_CAPTURES}")
 
 set(EMIT_CAPTURES "${ALPAKA_CAPTURES}")
@@ -194,7 +195,7 @@ SOFIE_ADD_TEST(
 )
 
 ############################################################################
-# Alpaka tests
+# alpaka tests
 ############################################################################
 if (ENABLE_ALPAKA_TESTS)
 
@@ -219,7 +220,7 @@ if (ENABLE_ALPAKA_TESTS)
   FetchContent_MakeAvailable(alpaka)
 
   ##########################################################################
-  # Alpaka emitter
+  # alpaka emitter
   ##########################################################################
 SOFIE_GENERATE_EXECUTABLE(
       emitFromONNXAlpaka
@@ -266,7 +267,7 @@ SOFIE_GENERATE_EXECUTABLE(
   ##########################################################################
   if (_alpaka_backend STREQUAL "cuda")
 
-    message(STATUS "Enabling Alpaka CUDA tests")
+    message(STATUS "Enabling alpaka CUDA tests")
 
     enable_language(CUDA)
     find_package(CUDAToolkit REQUIRED)
@@ -523,6 +524,22 @@ if (ONNX_MODEL_NAMES)
   endif()
 endif()
 
+SOFIE_GENERATE_EXECUTABLE(TestAlpakaOperatorSupport cpu/TestAlpakaOperatorSupport.cxx
+  LIBRARIES SOFIE_core GTest::gtest GTest::gtest_main
+  FIXTURES_SETUP sofie-test-alpaka-operator-support-build
+)
+SOFIE_ADD_TEST(TestAlpakaOperatorSupport
+                  EXEC ./TestAlpakaOperatorSupport
+                  FIXTURES_REQUIRED sofie-test-alpaka-operator-support-build)
+
+SOFIE_GENERATE_EXECUTABLE(TestFormatGeneratedCode cpu/TestFormatGeneratedCode.cxx
+  LIBRARIES SOFIE_core GTest::gtest GTest::gtest_main
+  FIXTURES_SETUP sofie-test-format-generated-code-build
+)
+SOFIE_ADD_TEST(TestFormatGeneratedCode
+                  EXEC ./TestFormatGeneratedCode
+                  FIXTURES_REQUIRED sofie-test-format-generated-code-build)
+
 SOFIE_GENERATE_EXECUTABLE(TestSofieParser cpu/TestSofieParser.cxx
   LIBRARIES SOFIE_core SOFIE_parsers GTest::gtest GTest::gtest_main
   FIXTURES_SETUP sofie-test-parser-build
@@ -532,19 +549,9 @@ SOFIE_ADD_TEST(TestSofieParser
                   EXEC ./TestSofieParser
                   FIXTURES_REQUIRED sofie-test-parser-build)
 
-find_package(nlohmann_json QUIET)
-if (NOT nlohmann_json_FOUND)
-  find_path(SOFIE_NLOHMANN_JSON_INCLUDE_DIR nlohmann/json.hpp)
-  if (SOFIE_NLOHMANN_JSON_INCLUDE_DIR)
-    add_library(nlohmann_json INTERFACE)
-    target_include_directories(nlohmann_json INTERFACE ${SOFIE_NLOHMANN_JSON_INCLUDE_DIR})
-    add_library(nlohmann_json::nlohmann_json ALIAS nlohmann_json)
-    set(nlohmann_json_FOUND TRUE)
-  endif()
-endif()
-if (nlohmann_json_FOUND AND BLAS_FOUND)
+if (BLAS_FOUND)
   SOFIE_GENERATE_EXECUTABLE(TestSafetensorsWeights cpu/TestSafetensorsWeights.cxx
-    LIBRARIES SOFIE_core SOFIE_parsers GTest::gtest GTest::gtest_main BLAS::BLAS nlohmann_json::nlohmann_json
+    LIBRARIES SOFIE_core SOFIE_parsers GTest::gtest GTest::gtest_main BLAS::BLAS
     FIXTURES_SETUP sofie-test-safetensors-build
   )
   target_include_directories(TestSafetensorsWeights PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -553,7 +560,7 @@ if (nlohmann_json_FOUND AND BLAS_FOUND)
                  EXEC ./TestSafetensorsWeights
                  FIXTURES_REQUIRED sofie-test-safetensors-build)
 else()
-  message(STATUS "nlohmann_json or BLAS not found: TestSafetensorsWeights is disabled")
+  message(STATUS "BLAS not found: TestSafetensorsWeights is disabled")
 endif()
 
 if (SOFIE_TORCH_FOUND AND SOFIE_ONNX_USABLE AND BLAS_FOUND)

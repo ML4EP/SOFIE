@@ -11,7 +11,7 @@
 #include <iomanip>
 #include <fstream>
 #include <sstream>
-#include "SOFIE/SOFIE_common.hxx"
+#include "SOFIE/utils/SOFIE_common.hxx"
 
 
 namespace SOFIE {
@@ -66,6 +66,7 @@ protected:
    std::unordered_set<std::string> fCustomOpHeaders;
 
    std::set<std::string> fNeededHelperFunctions;
+   std::string fHeaderIncludesTail; ///<! include lines emitted after the standard library ones
 
    std::string fName = "UnnamedModel";
    std::string fGC; // generated code
@@ -154,6 +155,9 @@ public:
 
    void GenerateHeaderInfo(std::string &hgname);
    void EmitHelperFunctionsCode();
+   /// complete the generated code once all the model code has been written: emit the helper functions and the
+   /// includes they need, then format the code
+   void FinalizeGeneratedCode();
    void GenerateHeaderInfo_GPU_ALPAKA(std::string& hgname);
    void PrintGenerated(std::ostream &os = std::cout) { os << fGC; }
 

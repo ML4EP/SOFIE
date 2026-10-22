@@ -3,8 +3,8 @@
 
 #include "SOFIE/RModel_Base.hxx"
 #include "SOFIE/RModelFusion_ALPAKA.hxx"
-#include "SOFIE/SOFIE_common.hxx"
-#include "SOFIE/ROperator.hxx"
+#include "SOFIE/utils/SOFIE_common.hxx"
+#include "SOFIE/operators/ROperator.hxx"
 
 
 namespace SOFIE {
@@ -60,13 +60,12 @@ private:
    std::vector<std::shared_ptr<RModel>> fSubGraphs;    ///<!  sub-graph models (transient)
    RModel * fParentGraph = nullptr;
 
-   const std::string SP = "   ";
 
    // memory pool information for intermediate tensors
    MemoryPoolInfo fIntermediateMemoryInfo;    ///<!  intermediate memory info (transient)
    std::unordered_map<std::string_view, size_t> fIntermediateTensorFrequencyLookup;    ///<!  lookup table for intermediate tensor frequency (transient)
 
-   std::string fExtraCodeForDimShapes; // extra code needed for initialization of dynamic parameters (e.g. number of non zero elements in NonZero operator)
+   std::string fExtraCodeForDimShapes; // extra code needed for initialization of dynamic parameters
    Fusion::Plan fFusion; ///<!
 
 public:
@@ -146,7 +145,6 @@ public:
    void InitializeSubGraph(std::shared_ptr<RModel>  graph);
 
    // set a flag to indicate tensor does not need to be written in a weight file
-   // (e.g. shape tensors used as input to define a shape (in Reshape))
    void SetNotWritableInitializedTensor(const std::string & tensor_name);
 
    // Check if a tensor is initialized
@@ -217,6 +215,8 @@ public:
    /// signatures, the _infer_impl call sites and the Session constructor
    void ForEachInferArg_GPU_ALPAKA(const std::function<void(const std::string &)> &onParam,
                                    const std::function<void(const std::string &)> &onInput) const;
+
+   void CheckAlpakaOperators() const;
 
    // generate the _infer_impl signature using ViewPlainPtr types instead of Buf types
    std::string GenerateImplSignature_GPU_ALPAKA(bool isdecl = true);

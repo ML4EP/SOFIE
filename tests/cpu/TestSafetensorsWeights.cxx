@@ -7,8 +7,6 @@
 #include "common/onnx_proto_helpers.h"
 #include "common/test_helpers.h"
 
-#include <nlohmann/json.hpp>
-
 #include <bit>
 #include <cstdint>
 #include <cstdio>
@@ -280,14 +278,10 @@ TEST(SOFIESafetensors, FileLayoutAndPayload)
    std::string headerStr(headerSize, '\0');
    f.read(headerStr.data(), headerStr.size());
    ASSERT_TRUE(f.good());
-   const auto header = nlohmann::json::parse(headerStr);
-
-   ASSERT_EQ(header.size(), 1u);
-   ASSERT_TRUE(header.contains("tensor_W"));
-   const auto &entry = header["tensor_W"];
-   EXPECT_EQ(entry["dtype"], "F32");
-   EXPECT_EQ(entry["shape"], (nlohmann::json::array_t{2, 3}));
-   EXPECT_EQ(entry["data_offsets"], (nlohmann::json::array_t{0, kWeights.size() * sizeof(float)}));
+   const std::string expectedHeader =
+      "{\"tensor_W\":{\"dtype\":\"F32\",\"shape\":[2,3],\"data_offsets\":[0," +
+      std::to_string(kWeights.size() * sizeof(float)) + "]}}";
+   EXPECT_EQ(headerStr, expectedHeader);
 
    std::vector<char> payload(kWeights.size() * sizeof(float));
    f.read(payload.data(), payload.size());
