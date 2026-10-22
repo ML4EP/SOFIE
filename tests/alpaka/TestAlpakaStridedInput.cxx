@@ -11,6 +11,8 @@
 #include "StridedLeakyRelu_GPU_ALPAKA.hxx"
 #include "StridedElu_GPU_ALPAKA.hxx"
 #include "StridedSelu_GPU_ALPAKA.hxx"
+#include "StridedGelu_GPU_ALPAKA.hxx"
+#include "StridedGeluTanh_GPU_ALPAKA.hxx"
 #include "StridedClip_GPU_ALPAKA.hxx"
 #include "StridedIdentity_GPU_ALPAKA.hxx"
 #include "StridedNot_GPU_ALPAKA.hxx"
@@ -219,6 +221,8 @@ TEST_F(SofieAlpakaStridedTest, GemmWithoutUnitStrideThrows)
 STRIDED_UNARY_TEST(LeakyRelu, float, nullptr, x >= 0 ? x : 0.1f * x)
 STRIDED_UNARY_TEST(Elu, float, nullptr, x >= 0 ? x : 1.5f * (std::exp(x) - 1))
 STRIDED_UNARY_TEST(Selu, float, nullptr, 1.05f * (std::max(0.f, x) + std::min(0.f, 1.6f * (std::exp(x) - 1))))
+STRIDED_UNARY_TEST(Gelu, float, nullptr, 0.5f * x * (1.f + std::erf(x * 0.7071067811865475f)))
+STRIDED_UNARY_TEST(GeluTanh, float, nullptr, 0.5f * x * (1.f + std::tanh(0.7978845608028654f * (x + 0.044715f * x * x * x))))
 STRIDED_UNARY_TEST(Clip, float, nullptr, std::min(1.f, std::max(-0.5f, x)))
 STRIDED_UNARY_TEST(Identity, float, nullptr, x)
 STRIDED_UNARY_TEST(Not, int32_t, [](size_t k) { return int32_t(k % 5) - 2; }, !x)

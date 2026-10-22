@@ -479,6 +479,26 @@ int main()
         "StridedSelu");
    Emit(
       [] {
+         RModel model("StridedGelu", "now");
+         model.AddInputTensorInfo("X", ETensorType::FLOAT, kShape3D);
+         model.AddInputTensorName("X");
+         model.AddOperator(std::make_unique<ROperator_Gelu>("X", "Y"));
+         model.AddOutputTensorNameList({"Y"});
+         return model;
+      },
+      "StridedGelu");
+   Emit(
+      [] {
+         RModel model("StridedGeluTanh", "now");
+         model.AddInputTensorInfo("X", ETensorType::FLOAT, kShape3D);
+         model.AddInputTensorName("X");
+         model.AddOperator(std::make_unique<ROperator_Gelu>("X", "Y", "tanh"));
+         model.AddOutputTensorNameList({"Y"});
+         return model;
+      },
+      "StridedGeluTanh");
+   Emit(
+      [] {
          RModel model("StridedClip", "now");
          model.AddInputTensorInfo("X", ETensorType::FLOAT, kShape3D);
          model.AddInputTensorName("X");
