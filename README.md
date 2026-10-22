@@ -96,7 +96,7 @@ side-by-side comparison with **ONNX Runtime GPU**.
 | Backend | CMake value | Status |
 |---------|-------------|--------|
 | NVIDIA CUDA | `CUDA` (default) | Supported |
-| AMD HIP/ROCm | `HIP` | Planned |
+| AMD HIP/ROCm | `HIP` | Supported |
 
 ### Quick start
 
