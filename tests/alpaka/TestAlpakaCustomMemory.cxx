@@ -27,14 +27,14 @@ MemoryProvider MakeProvider(Provider &state, bool withAssign)
    MemoryProvider provider;
    provider.alloc = [&state](std::size_t bytes) -> void * {
       void *ptr = nullptr;
-      EXPECT_EQ(cudaMalloc(&ptr, bytes), cudaSuccess);
+      EXPECT_EQ(TestRtMalloc(&ptr, bytes), TestRtSuccess);
       ++state.allocations;
       state.blockBytes = bytes;
       state.block = ptr;
       return ptr;
    };
    provider.dealloc = [&state](void *ptr) {
-      EXPECT_EQ(cudaFree(ptr), cudaSuccess);
+      EXPECT_EQ(TestRtFree(ptr), TestRtSuccess);
       ++state.deallocations;
    };
    if (withAssign) {
@@ -76,7 +76,7 @@ bool AllocatesWithAlpaka(const std::string &code)
 
 class SofieAlpakaCustomMemoryTest : public SofieAlpakaTest {
 protected:
-   alpaka::Buf<alpaka::DevCudaRt, float, Dim, Idx> UploadOnes(std::size_t n)
+   alpaka::Buf<TestDev, float, Dim, Idx> UploadOnes(std::size_t n)
    {
       auto h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{n}));
       float *p = reinterpret_cast<float *>(alpaka::getPtrNative(h));
@@ -112,7 +112,7 @@ TEST_F(SofieAlpakaCustomMemoryTest, GeneratedCodeHasNoAlpakaDeviceAllocation)
 
 TEST_F(SofieAlpakaCustomMemoryTest, SingleBlockAllocatedAndAssigned)
 {
-   using Session = SOFIE_CustomMemoryChain::Session<alpaka::TagGpuCudaRt>;
+   using Session = SOFIE_CustomMemoryChain::Session<TestTag>;
    Provider state;
    auto x_d = UploadOnes(15);
    {
@@ -138,7 +138,7 @@ TEST_F(SofieAlpakaCustomMemoryTest, SingleBlockAllocatedAndAssigned)
 
 TEST_F(SofieAlpakaCustomMemoryTest, AssignIsOptional)
 {
-   using Session = SOFIE_CustomMemoryChain::Session<alpaka::TagGpuCudaRt>;
+   using Session = SOFIE_CustomMemoryChain::Session<TestTag>;
    Provider state;
    auto x_d = UploadOnes(15);
    {
@@ -153,10 +153,10 @@ TEST_F(SofieAlpakaCustomMemoryTest, AssignIsOptional)
 
 TEST_F(SofieAlpakaCustomMemoryTest, AssignedPointerIsUsed)
 {
-   using Session = SOFIE_CustomMemoryChain::Session<alpaka::TagGpuCudaRt>;
+   using Session = SOFIE_CustomMemoryChain::Session<TestTag>;
    auto x_d = UploadOnes(15);
    char *arena = nullptr;
-   ASSERT_EQ(cudaMalloc(&arena, 1 << 20), cudaSuccess);
+   ASSERT_EQ(TestRtMalloc(&arena, 1 << 20), TestRtSuccess);
    SOFIE_CustomMemoryChain::MemoryProvider provider;
    std::size_t blockBytes = 0;
    int assignCalls = 0;
@@ -177,38 +177,38 @@ TEST_F(SofieAlpakaCustomMemoryTest, AssignedPointerIsUsed)
    }
    provider.assign = [](std::size_t) -> void * { return nullptr; };
    EXPECT_THROW(Session(provider, "CustomMemoryChain_GPU_ALPAKA.dat"), std::runtime_error);
-   ASSERT_EQ(cudaFree(arena), cudaSuccess);
+   ASSERT_EQ(TestRtFree(arena), TestRtSuccess);
 }
 
 TEST_F(SofieAlpakaCustomMemoryTest, MissingAllocIsRejected)
 {
-   using Session = SOFIE_CustomMemoryChain::Session<alpaka::TagGpuCudaRt>;
+   using Session = SOFIE_CustomMemoryChain::Session<TestTag>;
    SOFIE_CustomMemoryChain::MemoryProvider provider;
    EXPECT_THROW(Session(provider, "CustomMemoryChain_GPU_ALPAKA.dat"), std::runtime_error);
 }
 
 TEST_F(SofieAlpakaCustomMemoryTest, ExternalStreamAndCustomMemory)
 {
-   using Session = SOFIE_CustomMemoryStreamChain::Session<alpaka::TagGpuCudaRt>;
-   cudaStream_t stream;
-   ASSERT_EQ(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), cudaSuccess);
+   using Session = SOFIE_CustomMemoryStreamChain::Session<TestTag>;
+   TestStream stream;
+   ASSERT_EQ(TestRtStreamCreateNonBlocking(&stream), TestRtSuccess);
    Provider state;
    auto x_d = UploadOnes(15);
    {
       auto provider = MakeProvider<SOFIE_CustomMemoryStreamChain::MemoryProvider>(state, true);
       Session session(stream, provider, "CustomMemoryStreamChain_GPU_ALPAKA.dat");
       auto result = session.infer(x_d);
-      ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
+      ASSERT_EQ(TestRtStreamSynchronize(stream), TestRtSuccess);
       CheckChain(result);
    }
    EXPECT_EQ(state.allocations, 1);
    EXPECT_EQ(state.deallocations, 1);
-   ASSERT_EQ(cudaStreamDestroy(stream), cudaSuccess);
+   ASSERT_EQ(TestRtStreamDestroy(stream), TestRtSuccess);
 }
 
 TEST_F(SofieAlpakaCustomMemoryTest, SubGraphSessionsUseTheProvider)
 {
-   using Session = SOFIE_CustomMemoryIf::Session<alpaka::TagGpuCudaRt>;
+   using Session = SOFIE_CustomMemoryIf::Session<TestTag>;
    Provider state;
    auto x_d = UploadOnes(15);
    auto xh = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{15}));
@@ -243,7 +243,7 @@ TEST_F(SofieAlpakaCustomMemoryTest, SubGraphSessionsUseTheProvider)
 
 TEST_F(SofieAlpakaCustomMemoryTest, DebugModeReportsTheRegions)
 {
-   using Session = SOFIE_CustomMemoryDebugChain::Session<alpaka::TagGpuCudaRt>;
+   using Session = SOFIE_CustomMemoryDebugChain::Session<TestTag>;
    Provider state;
    auto x_d = UploadOnes(15);
    auto provider = MakeProvider<SOFIE_CustomMemoryDebugChain::MemoryProvider>(state, true);
@@ -271,7 +271,7 @@ TEST_F(SofieAlpakaCustomMemoryTest, DebugModeReportsTheRegions)
 
 TEST_F(SofieAlpakaCustomMemoryTest, DebugModeRejectsBadAssignments)
 {
-   using Session = SOFIE_CustomMemoryDebugChain::Session<alpaka::TagGpuCudaRt>;
+   using Session = SOFIE_CustomMemoryDebugChain::Session<TestTag>;
    Provider state;
    auto provider = MakeProvider<SOFIE_CustomMemoryDebugChain::MemoryProvider>(state, false);
 
@@ -284,7 +284,7 @@ TEST_F(SofieAlpakaCustomMemoryTest, DebugModeRejectsBadAssignments)
 
 TEST_F(SofieAlpakaCustomMemoryTest, DebugModeTracesTheSession)
 {
-   using Session = SOFIE_CustomMemoryDebugChain::Session<alpaka::TagGpuCudaRt>;
+   using Session = SOFIE_CustomMemoryDebugChain::Session<TestTag>;
    Provider state;
    auto x_d = UploadOnes(15);
    auto provider = MakeProvider<SOFIE_CustomMemoryDebugChain::MemoryProvider>(state, true);
@@ -314,7 +314,7 @@ TEST_F(SofieAlpakaCustomMemoryTest, DebugModeTracesTheSession)
 
 TEST_F(SofieAlpakaCustomMemoryTest, DebugModeWithoutCustomMemoryTracesTheAlpakaAllocations)
 {
-   using Session = SOFIE_DebugDefaultChain::Session<alpaka::TagGpuCudaRt>;
+   using Session = SOFIE_DebugDefaultChain::Session<TestTag>;
    auto x_d = UploadOnes(15);
    testing::internal::CaptureStdout();
    {
@@ -330,7 +330,7 @@ TEST_F(SofieAlpakaCustomMemoryTest, DebugModeWithoutCustomMemoryTracesTheAlpakaA
 
 TEST_F(SofieAlpakaCustomMemoryTest, DebugModeReportsTheMemoryWithoutCustomMemory)
 {
-   using Session = SOFIE_DebugDefaultChain::Session<alpaka::TagGpuCudaRt>;
+   using Session = SOFIE_DebugDefaultChain::Session<TestTag>;
    auto x_d = UploadOnes(15);
    Session session("DebugDefaultChain_GPU_ALPAKA.dat");
 
@@ -354,19 +354,19 @@ TEST_F(SofieAlpakaCustomMemoryTest, DebugModeReportsTheMemoryWithoutCustomMemory
 
 TEST_F(SofieAlpakaCustomMemoryTest, DebugModeWithAnExternalStream)
 {
-   using Session = SOFIE_DebugStreamChain::Session<alpaka::TagGpuCudaRt>;
-   cudaStream_t stream;
-   ASSERT_EQ(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), cudaSuccess);
+   using Session = SOFIE_DebugStreamChain::Session<TestTag>;
+   TestStream stream;
+   ASSERT_EQ(TestRtStreamCreateNonBlocking(&stream), TestRtSuccess);
    auto x_d = UploadOnes(15);
    testing::internal::CaptureStdout();
    {
       Session session(stream, "DebugStreamChain_GPU_ALPAKA.dat");
       EXPECT_NO_THROW(session.ValidateMemory());
       auto result = session.infer(x_d);
-      ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
+      ASSERT_EQ(TestRtStreamSynchronize(stream), TestRtSuccess);
       CheckChain(result);
    }
    const std::string log = testing::internal::GetCapturedStdout();
    EXPECT_NE(log.find("launching operator"), std::string::npos) << log;
-   ASSERT_EQ(cudaStreamDestroy(stream), cudaSuccess);
+   ASSERT_EQ(TestRtStreamDestroy(stream), TestRtSuccess);
 }

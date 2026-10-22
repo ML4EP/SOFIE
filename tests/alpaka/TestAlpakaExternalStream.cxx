@@ -2,10 +2,10 @@
 
 #include "ExternalStreamGemmRelu_GPU_ALPAKA.hxx"
 
-TEST_F(SofieAlpakaTest, ExternalCudaStream)
+TEST_F(SofieAlpakaTest, ExternalStream)
 {
-   cudaStream_t stream;
-   ASSERT_EQ(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), cudaSuccess);
+   TestStream stream;
+   ASSERT_EQ(TestRtStreamCreateNonBlocking(&stream), TestRtSuccess);
 
    auto A = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{15}));
    float *A_ptr = reinterpret_cast<float*>(alpaka::getPtrNative(A));
@@ -20,16 +20,16 @@ TEST_F(SofieAlpakaTest, ExternalCudaStream)
    auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{12}));
 
    {
-      SOFIE_ExternalStreamGemmRelu::Session<alpaka::TagGpuCudaRt> session(stream, "ExternalStreamGemmRelu_GPU_ALPAKA.dat");
-      static_assert(std::is_same_v<decltype(session)::NativeStream, cudaStream_t>);
+      SOFIE_ExternalStreamGemmRelu::Session<TestTag> session(stream, "ExternalStreamGemmRelu_GPU_ALPAKA.dat");
+      static_assert(std::is_same_v<decltype(session)::NativeStream, TestStream>);
       auto result = session.infer(A_d);
-      ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
+      ASSERT_EQ(TestRtStreamSynchronize(stream), TestRtSuccess);
 
       alpaka::memcpy(queue, result_h, result);
       alpaka::wait(queue);
    }
 
-   ASSERT_EQ(cudaStreamDestroy(stream), cudaSuccess);
+   ASSERT_EQ(TestRtStreamDestroy(stream), TestRtSuccess);
 
    float *res_ptr = reinterpret_cast<float*>(alpaka::getPtrNative(result_h));
    for (size_t i = 0; i < 12; ++i) {
