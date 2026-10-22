@@ -415,6 +415,17 @@ HelperFunctionsCode GenerateHelperFunctionsCode(const std::set<std::string> & ne
                                                 const std::string & modelNamespace,
                                                 bool sgemmAlreadyDeclared = false);
 
+class RModel;
+
+namespace Utils {
+void TraceGeneration(const RModel &model, const std::string &message);
+std::string DebugLogCode(const RModel &model, const std::string &messageExpr);
+std::string DebugLiteral(const std::string &text);
+
+size_t CountOccurrences(const std::string &text, const std::string &needle);
+void CollectKernelMembers_GPU_ALPAKA(const std::string &text, std::vector<std::string> &members);
+std::string LaunchCodeDebug_GPU_ALPAKA(const RModel &model, const std::string &label, const std::string &code);
+} // namespace Utils
 
 } // namespace SOFIE
 

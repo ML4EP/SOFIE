@@ -22,6 +22,8 @@ namespace SOFIE {
 
 // device buffer / view alias per tensor type; must match the 'using Buf* / ViewConst*'
 // aliases emitted into the generated Session
+static constexpr std::size_t kPoolAlignBytes = 256;
+
 static std::string GetBufType(ETensorType t) {
    switch (t) {
       case ETensorType::FLOAT:  return "BufF1D";
@@ -78,13 +80,22 @@ static std::string DeclareViewLine(const std::string &name, ETensorType t) {
 
 std::string RModel::DeclareDeviceTensor_GPU_ALPAKA(const std::string &name, ETensorType type,
                                                    const std::string &lengthExpr) {
-   if (!fCustomMemory)
+   Utils::TraceGeneration(*this, "declaring device tensor " + name + " (" + ConvertTypeToString(type) + ", " + lengthExpr + " elements) " +
+                   (fCustomMemory ? "as a region of the memory block" : "as an alpaka buffer"));
+   if (!fCustomMemory) {
+      if (fDebug)
+         fAllocatedBuffers.push_back({name, type, lengthExpr});
       return AllocBufLine(name, type, lengthExpr);
+   }
    fDeviceRegions.push_back({name, type, lengthExpr});
    return DeclareViewLine(name, type);
 }
 
 void RModel::CheckNoDeviceAllocation_GPU_ALPAKA() const {
+   if (!fDebug)
+      throw std::runtime_error("sofie: CheckNoDeviceAllocation_GPU_ALPAKA is only available for a model generated with Options::kDebug");
+   if (!fCustomMemory)
+      throw std::runtime_error("sofie: CheckNoDeviceAllocation_GPU_ALPAKA is only available for a model generated with Options::kCustomMemory");
    const std::string needle = "alpaka::allocBuf<";
    size_t pos = 0;
    while ((pos = fGC.find(needle, pos)) != std::string::npos) {
@@ -95,6 +106,37 @@ void RModel::CheckNoDeviceAllocation_GPU_ALPAKA() const {
                                   " allocates device memory with alpaka, which is not supported with this option: " + line);
       pos += needle.size();
    }
+}
+
+std::string RModel::GetDeviceRegionsReport_GPU_ALPAKA() const {
+   if (!fDebug)
+      throw std::runtime_error("sofie: GetDeviceRegionsReport_GPU_ALPAKA is only available for a model generated with Options::kDebug");
+   std::stringstream out;
+   out << "Device tensors of model " << fName << ", " << fAllocatedBuffers.size() << " allocated by alpaka and " << fDeviceRegions.size()
+       << " regions of a memory block:\n";
+   constexpr size_t align = kPoolAlignBytes;
+   size_t requested = 0, reserved = 0;
+   bool allKnown = true;
+   std::vector<DeviceRegion> listed = fAllocatedBuffers;
+   listed.insert(listed.end(), fDeviceRegions.begin(), fDeviceRegions.end());
+   for (const auto &r : listed) {
+      const size_t typeSize = GetTypeSize(r.type);
+      char *end = nullptr;
+      const unsigned long long length = std::strtoull(r.lengthExpr.c_str(), &end, 10);
+      if (!r.lengthExpr.empty() && *end == '\0') {
+         const size_t bytes = length * typeSize;
+         const size_t padded = (bytes + align - 1) / align * align;
+         out << "  " << r.name << ": " << bytes << " bytes, " << padded << " reserved\n";
+         requested += bytes;
+         reserved += padded;
+      } else {
+         out << "  " << r.name << ": (" << r.lengthExpr << ") * " << typeSize << " bytes, known at construction\n";
+         allKnown = false;
+      }
+   }
+   out << (allKnown ? "total: " : "total of the regions with a constant size: ") << requested << " bytes, " << reserved
+       << " reserved, padding " << reserved - requested << " bytes\n";
+   return out.str();
 }
 
 void RModel::GenerateInitializedTensorInfo_GPU_ALPAKA() {
@@ -244,7 +286,7 @@ void RModel::GenerateDynamicTensorInfo_GPU_ALPAKA() {
    fGC += "//---- allocate unified intermediate tensor pool\n";
    std::stringstream out;
 
-   constexpr std::size_t kPoolAlign = 256;
+   constexpr std::size_t kPoolAlign = kPoolAlignBytes;
    auto alignUp = [](std::size_t v, std::size_t a) -> std::size_t { return (v + a - 1) & ~(a - 1); };
 
    // --- Unified pool: lifetime-aware packing of all pooled intermediates ---
@@ -311,13 +353,17 @@ void RModel::GenerateDynamicTensorInfo_GPU_ALPAKA() {
          if (fIt != fIntermediateTensorFrequencyLookup.end()) lastUse = fIt->second;
 
          entries.push_back({tname, type, sizeExpr, lengthExpr, producer, lastUse, isConst, constBytes});
+         Utils::TraceGeneration(*this, "pooled tensor " + tname + ": (" + sizeExpr + ") bytes, alive from operator " + std::to_string(producer) +
+                         " to operator " + std::to_string(lastUse));
       }
 
       if (fCustomMemory) {
          AddNeededHelperFunction("CustomMemory");
+         if (fDebug)
+            AddNeededHelperFunction("DebugMemory");
          out << "\n" << "// --- Device memory block: planned by SOFIE, allocated and assigned through the memory provider ---\n";
          out << "{\n";
-         out << "constexpr std::size_t kPoolAlign = 256;\n";
+         out << "constexpr std::size_t kPoolAlign = " << kPoolAlignBytes << ";\n";
          out << "auto alignUp = [](std::size_t v, std::size_t a) -> std::size_t {\n";
          out << "return (v + a - 1) & ~(a - 1);\n";
          out << "};\n";
@@ -340,20 +386,59 @@ void RModel::GenerateDynamicTensorInfo_GPU_ALPAKA() {
          out << "fPoolTotalFreeMemory = poolResult.total_free_bytes;\n";
          out << "fPoolLargestFreeBlock = poolResult.largest_free_block;\n";
          out << "std::size_t totalBytes = staticBytes + poolResult.total_bytes;\n";
+         out << Utils::DebugLogCode(*this, "\"planned device memory block: \" + std::to_string(totalBytes) + \" bytes, \" + std::to_string(staticBytes) + \" bytes in "
+                             + std::to_string(fDeviceRegions.size()) + " regions, \" + std::to_string(poolResult.total_bytes) + \" bytes for "
+                             + std::to_string(entries.size()) + " pooled tensors, alignment " + std::to_string(kPoolAlignBytes) + "\"");
          out << "auto* blockBase = fPoolBlock.Allocate(sofieMemory, totalBytes);\n";
-         out << "fUnifiedPoolSize = totalBytes;\n\n";
+         out << "fUnifiedPoolSize = totalBytes;\n";
+         if (fDebug) {
+            out << Utils::DebugLogCode(*this, "\"memory block allocated through the provider: \" + std::to_string(totalBytes) + \" bytes at address \" + std::to_string(reinterpret_cast<std::uintptr_t>(blockBase))");
+            out << "if (blockBase && reinterpret_cast<std::uintptr_t>(blockBase) % " << kPoolAlignBytes << " != 0)\n";
+            out << Utils::DebugLogCode(*this, "\"warning: the memory block is not aligned to " + std::to_string(kPoolAlignBytes) + " bytes, as a cudaMalloc allocation is\"");
+         }
+         out << "\n";
          for (size_t i = 0; i < fDeviceRegions.size(); ++i) {
             auto &r = fDeviceRegions[i];
-            out << "deviceBuf_" << r.name << " = " << GetViewType(r.type) << "{reinterpret_cast<"
-                << ConvertOutputTypeToString(r.type) << "*>(PlaceTensor(sofieMemory, blockBase, regionOffset_" << i << ", regionBytes_" << i << ")), devAcc, Ext1D::all(Idx{"
-                << r.lengthExpr << "})};\n";
+            const std::string typeName = ConvertOutputTypeToString(r.type);
+            const std::string place = "PlaceTensor(sofieMemory, blockBase, regionOffset_" + std::to_string(i) + ", regionBytes_" +
+                                      std::to_string(i) + ")";
+            const std::string view = "deviceBuf_" + r.name + " = " + GetViewType(r.type) + "{reinterpret_cast<" + typeName +
+                                     "*>(" + (fDebug ? "regionPtr" : place) + "), devAcc, Ext1D::all(Idx{" + r.lengthExpr + "})};\n";
+            if (fDebug) {
+               out << "{\nvoid* regionPtr = " << place << ";\n" << view;
+               out << "fMemoryRegions.push_back({\"" << r.name << "\", regionPtr, regionOffset_" << i << ", (" << r.lengthExpr
+                   << ") * " << GetTypeSize(r.type) << ", regionBytes_" << i << ", 0, std::numeric_limits<int>::max(), \"block\"});\n";
+               out << Utils::DebugLogCode(*this, "\"tensor " + r.name + " placed at offset \" + std::to_string(regionOffset_" + std::to_string(i) +
+                                   ") + \", \" + std::to_string(fMemoryRegions.back().requestedBytes) + \" bytes requested, \" + std::to_string(regionBytes_" +
+                                   std::to_string(i) + ") + \" reserved\"");
+               out << "}\n";
+            } else {
+               out << view;
+            }
          }
          for (size_t i = 0; i < entries.size(); ++i) {
             auto &e = entries[i];
-            out << "deviceBuf_" << e.name << " = " << GetViewType(e.type) << "{reinterpret_cast<"
-                << ConvertOutputTypeToString(e.type) << "*>(PlaceTensor(sofieMemory, blockBase, staticBytes + poolResult.offsets[" << i << "], alignUp(" << e.sizeExpr
-                << ", kPoolAlign))), devAcc, Ext1D::all(Idx{" << e.lengthExpr << "})};\n";
+            const std::string typeName = ConvertOutputTypeToString(e.type);
+            const std::string offset = "staticBytes + poolResult.offsets[" + std::to_string(i) + "]";
+            const std::string reserved = "alignUp(" + e.sizeExpr + ", kPoolAlign)";
+            const std::string place = "PlaceTensor(sofieMemory, blockBase, " + offset + ", " + reserved + ")";
+            const std::string view = "deviceBuf_" + e.name + " = " + GetViewType(e.type) + "{reinterpret_cast<" + typeName +
+                                     "*>(" + (fDebug ? "poolPtr" : place) + "), devAcc, Ext1D::all(Idx{" + e.lengthExpr + "})};\n";
+            if (fDebug) {
+               const int end = (int)(std::max(e.lastUseOp, e.producerOp) + 1);
+               out << "{\nvoid* poolPtr = " << place << ";\n" << view;
+               out << "fMemoryRegions.push_back({\"" << e.name << "\", poolPtr, " << offset << ", " << e.sizeExpr << ", " << reserved
+                   << ", " << e.producerOp << ", " << end << ", \"block\"});\n";
+               out << Utils::DebugLogCode(*this, "\"tensor " + e.name + " placed in the pool at offset \" + std::to_string(" + offset +
+                                   ") + \", \" + std::to_string(fMemoryRegions.back().requestedBytes) + \" bytes requested, alive from operator " +
+                                   std::to_string(e.producerOp) + " to " + std::to_string(end) + "\"");
+               out << "}\n";
+            } else {
+               out << view;
+            }
          }
+         if (fDebug)
+            out << "ValidateMemoryRegions(fMemoryRegions, kPoolAlign);\n";
          out << "}\n";
       } else if (!entries.empty()) {
          std::vector<size_t> constIdx, runtimeIdx;
@@ -392,7 +477,7 @@ void RModel::GenerateDynamicTensorInfo_GPU_ALPAKA() {
          if (!runtimeIdx.empty()) {
             // TensorLifeInfo and OrganizeMemory are emitted in the generated header
             AddNeededHelperFunction("DynamicMemory");
-            out << "constexpr std::size_t kPoolAlign = 256;\n";
+            out << "constexpr std::size_t kPoolAlign = " << kPoolAlignBytes << ";\n";
             out << "auto alignUp = [](std::size_t v, std::size_t a) -> std::size_t {\n";
             out << "return (v + a - 1) & ~(a - 1);\n";
             out << "};\n";
@@ -416,7 +501,10 @@ void RModel::GenerateDynamicTensorInfo_GPU_ALPAKA() {
          out << "if (poolTotalBytes > 0)\n";
          out << "fUnifiedPool = alpaka::allocBuf<uint8_t, Idx>(devAcc, Ext1D::all(Idx{poolTotalBytes}));\n";
          out << "auto* poolBase = (poolTotalBytes > 0) ? alpaka::getPtrNative(fUnifiedPool) : nullptr;\n";
-         out << "fUnifiedPoolSize = poolTotalBytes;\n\n";
+         out << "fUnifiedPoolSize = poolTotalBytes;\n";
+         out << Utils::DebugLogCode(*this, "\"allocated the unified pool of the intermediate tensors: \" + std::to_string(poolTotalBytes) + \" bytes for "
+                             + std::to_string(entries.size()) + " tensors\"");
+         out << "\n";
 
          out << "// Assign tensor views into unified pool\n";
          for (size_t i = 0; i < constIdx.size(); ++i) {
@@ -426,6 +514,11 @@ void RModel::GenerateDynamicTensorInfo_GPU_ALPAKA() {
             out << "deviceBuf_" << e.name << " = " << viewType
                 << "{reinterpret_cast<" << typeName << "*>(poolBase + " << constOffsets[i]
                 << "), devAcc, Ext1D::all(Idx{" << e.lengthExpr << "})};\n";
+            out << Utils::DebugLogCode(*this, "\"tensor " + e.name + " placed in the pool at offset " + std::to_string(constOffsets[i]) + "\"");
+            if (fDebug && fUseSession) {
+               out << "fMemoryRegions.push_back({\"" << e.name << "\", poolBase + " << constOffsets[i] << ", " << constOffsets[i] << ", " << e.sizeExpr
+                   << ", " << e.constBytes << ", " << e.producerOp << ", " << (int)(std::max(e.lastUseOp, e.producerOp) + 1) << ", \"pool\"});\n";
+            }
          }
          for (size_t i = 0; i < runtimeIdx.size(); ++i) {
             auto &e = entries[runtimeIdx[i]];
@@ -434,6 +527,13 @@ void RModel::GenerateDynamicTensorInfo_GPU_ALPAKA() {
             out << "deviceBuf_" << e.name << " = " << viewType
                 << "{reinterpret_cast<" << typeName << "*>(poolBase + kConstPoolBytes + runtimePoolResult.offsets["
                 << i << "]), devAcc, Ext1D::all(Idx{" << e.lengthExpr << "})};\n";
+            out << Utils::DebugLogCode(*this, "\"tensor " + e.name + " placed in the pool at offset \" + std::to_string(kConstPoolBytes + runtimePoolResult.offsets[" +
+                                std::to_string(i) + "])");
+            if (fDebug && fUseSession) {
+               const std::string offset = "kConstPoolBytes + runtimePoolResult.offsets[" + std::to_string(i) + "]";
+               out << "fMemoryRegions.push_back({\"" << e.name << "\", poolBase + " << offset << ", " << offset << ", " << e.sizeExpr
+                   << ", alignUp(" << e.sizeExpr << ", kPoolAlign), " << e.producerOp << ", " << (int)(std::max(e.lastUseOp, e.producerOp) + 1) << ", \"pool\"});\n";
+            }
          }
 
          out << "}\n";
@@ -659,17 +759,24 @@ void RModel::GenerateOutput_GPU_ALPAKA() {
       fGC += RModelProfilerGPU::GenerateBeginInferCode();
    }
 
+   fGC += Utils::DebugLogCode(*this, Utils::DebugLiteral("running the inference of model " + fName + ": enqueueing the operators"));
+
    for (size_t op_idx = 0; op_idx < fOperators.size(); ++op_idx) {
       if (fVerbose)
          std::cout << "Generating code for operator .... " << op_idx << std::endl;
 
-      if (fFusion.skip.count(op_idx)) continue;
+      const std::string opLabel = "operator " + std::to_string(op_idx) + " (" + toString(fOperators[op_idx]->GetKind()) + ")";
+
+      if (fFusion.skip.count(op_idx)) {
+         Utils::TraceGeneration(*this, opLabel + ": fused into another kernel, no launch code of its own");
+         continue;
+      }
 
       if (const auto *kernelGroup = fFusion.FindKernel(op_idx)) {
          if (kernelGroup->launchOpIndex == op_idx) {
             for (const auto &branch : kernelGroup->branches)
                fGC += GenerateDynamicOutputReallocForNames(branch.outputTensors);
-            fGC += Fusion::Launch(*this, *kernelGroup);
+            fGC += Utils::LaunchCodeDebug_GPU_ALPAKA(*this, "fused kernel group " + kernelGroup->suffix(), Fusion::Launch(*this, *kernelGroup));
          }
 
          continue;
@@ -678,18 +785,20 @@ void RModel::GenerateOutput_GPU_ALPAKA() {
       if (const auto *eltwiseGroup = fFusion.FindEltwise(op_idx)) {
          if (eltwiseGroup->launchOpIndex == op_idx) {
             fGC += GenerateDynamicOutputReallocForNames(eltwiseGroup->outputTensors);
-            fGC += Fusion::Launch(*this, *eltwiseGroup);
+            fGC += Utils::LaunchCodeDebug_GPU_ALPAKA(*this, "fused elementwise group " + eltwiseGroup->suffix(), Fusion::Launch(*this, *eltwiseGroup));
          }
       } else {
          auto opDynParamNames = GetOperatorKernelParams(op_idx, dynParamNames);
          fGC += GenerateDynamicOutputRealloc(op_idx);
          if (fProfile) {
-            fGC += RModelProfilerGPU::GenerateOperatorCode(*fOperators[op_idx], op_idx, opDynParamNames);
+            fGC += Utils::LaunchCodeDebug_GPU_ALPAKA(*this, opLabel, RModelProfilerGPU::GenerateOperatorCode(*fOperators[op_idx], op_idx, opDynParamNames));
          } else {
-            fGC += AlpakaOp(*fOperators[op_idx]).Generate_GPU_ALPAKA(std::to_string(op_idx), opDynParamNames);
+            fGC += Utils::LaunchCodeDebug_GPU_ALPAKA(*this, opLabel, AlpakaOp(*fOperators[op_idx]).Generate_GPU_ALPAKA(std::to_string(op_idx), opDynParamNames));
          }
       }
    }
+
+   fGC += Utils::DebugLogCode(*this, Utils::DebugLiteral("all the operators of model " + fName + " are enqueued"));
 
    if (fProfile) {
       fGC += RModelProfilerGPU::GenerateEndInferCode();
@@ -919,6 +1028,7 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
          throw std::runtime_error("sofie: Options::kKernelOnly is not supported for models with subgraphs");
       if (fVerbose)
          std::cout << "generate session code for subgraph " << graph->fName << std::endl;
+      Utils::TraceGeneration(*this, "generating the session of the sub-graph " + graph->fName);
       graph->fVerbose = fVerbose;
       graph->fBatchSize = fBatchSize;
       graph->fFusion = Fusion::Compute(*graph);
@@ -934,26 +1044,37 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
          OpNeedsBlas = true;
       }
 
+      const std::string opLabel = "operator " + std::to_string(id) + " (" + toString(fOperators[id]->GetKind()) + ")";
       if (const auto *kernelGroup = fFusion.FindKernel(id)) {
-         if (kernelGroup->branches.front().opIndices.front() == id)
+         if (kernelGroup->branches.front().opIndices.front() == id) {
+            Utils::TraceGeneration(*this, opLabel + ": generating the fused kernel group " + kernelGroup->suffix());
             fGC += Fusion::Kernel(*this, *kernelGroup);
+         }
       } else {
          if (const auto *eltwiseGroup = fFusion.FindEltwise(id)) {
-            if (eltwiseGroup->opIndices[0] == id)
+            if (eltwiseGroup->opIndices[0] == id) {
+               Utils::TraceGeneration(*this, opLabel + ": generating the fused elementwise group " + eltwiseGroup->suffix());
                fGC += Fusion::Kernel(*this, *eltwiseGroup);
+            }
          } else {
             auto idDynParamNames = GetOperatorKernelParams(id, dynParamNames);
             if (single_initialized_operators.find(fOperators[id]->GetKind()) != single_initialized_operators.end()) {
                if (registered_operators.find(kernelKey(id)) == registered_operators.end()) {
                   if (fVerbose)
                      std::cout << "Generating ALPAKA kernel for operator " << toString(fOperators[id]->GetKind()) << std::endl;
-                  fGC += AlpakaOp(*fOperators[id]).Generate_GPU_Kernel_ALPAKA(std::to_string(id), idDynParamNames);
+                  const std::string kernelCode = AlpakaOp(*fOperators[id]).Generate_GPU_Kernel_ALPAKA(std::to_string(id), idDynParamNames);
+                  Utils::TraceGeneration(*this, opLabel + ": generating its kernel (" + std::to_string(kernelCode.size()) + " characters), shared by the operators of the same kind");
+                  fGC += kernelCode;
                   registered_operators.insert(kernelKey(id));
+               } else {
+                  Utils::TraceGeneration(*this, opLabel + ": uses the kernel already generated for its kind");
                }
             } else {
                if (fVerbose)
                   std::cout << "Generating ALPAKA kernel for operator " << toString(fOperators[id]->GetKind()) << std::endl;
-               fGC += AlpakaOp(*fOperators[id]).Generate_GPU_Kernel_ALPAKA(std::to_string(id), idDynParamNames);
+               const std::string kernelCode = AlpakaOp(*fOperators[id]).Generate_GPU_Kernel_ALPAKA(std::to_string(id), idDynParamNames);
+               Utils::TraceGeneration(*this, opLabel + ": generating its kernel (" + std::to_string(kernelCode.size()) + " characters)");
+               fGC += kernelCode;
             }
          }
       }
@@ -1125,6 +1246,19 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
          fGC += "\n//--- unified memory pool buffer (allocated in constructor)\n";
          fGC += "BufUI81D fUnifiedPool = alpaka::allocBuf<uint8_t, Idx>(devAcc, Ext1D::all(Idx{1}));\n";
       }
+      if (fDebug && fUseSession) {
+         fGC += "\n//--- debug: the memory regions of the session and the checks on their placement\n";
+         fGC += "std::vector<MemoryRegionInfo> fMemoryRegions;\n";
+         fGC += "std::vector<MemoryRegionInfo> const &GetMemoryRegions() const { return fMemoryRegions; }\n";
+         fGC += "std::size_t GetPaddingBytes() const {\n";
+         fGC += "std::size_t padding = 0;\n";
+         fGC += "for (auto const &r : fMemoryRegions)\n";
+         fGC += "padding += r.reservedBytes - r.requestedBytes;\n";
+         fGC += "return padding;\n";
+         fGC += "}\n";
+         fGC += "std::string GetMemoryReport() const { return FormatMemoryReport(fMemoryRegions, fUnifiedPoolSize); }\n";
+         fGC += "void ValidateMemory() const { ValidateMemoryRegions(fMemoryRegions, " + std::to_string(kPoolAlignBytes) + "); }\n";
+      }
       fGC += "\n//--- memory pool statistics\n";
       fGC += "std::size_t fUnifiedPoolSize = 0;\n";
       fGC += "std::size_t fPoolTotalFreeMemory = 0;\n";
@@ -1176,6 +1310,7 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
          GenerateTemporaryInitializedTensorContainers_GPU_ALPAKA();
          if (fUseWeightFile) {
             fGC += "\n//--- reading weights from file\n";
+            fGC += Utils::DebugLogCode(*this, "\"reading the weights from file \" + filename");
             ReadInitializedTensorsFromFile();
             fGC += "\n";
          }
@@ -1191,15 +1326,24 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
          }
          for (size_t id = 0; id < fOperators.size(); id++) {
             if (fFusion.skip.count(id)) continue;
-            fGC += AlpakaOp(*fOperators[id]).GenerateInitCode_GPU_ALPAKA();
+            const std::string initCode = AlpakaOp(*fOperators[id]).GenerateInitCode_GPU_ALPAKA();
+            const std::string opLabel = "operator " + std::to_string(id) + " (" + toString(fOperators[id]->GetKind()) + ")";
+            Utils::TraceGeneration(*this, opLabel + ": " + (initCode.empty() ? std::string("no init code") : "init code of " + std::to_string(initCode.size()) + " characters"));
+            if (!initCode.empty())
+               fGC += Utils::DebugLogCode(*this, Utils::DebugLiteral("initializing " + opLabel)) + initCode;
             if (fOperators[id]->GetKind() == OperatorKind::GEMM || fOperators[id]->GetKind() == OperatorKind::CONV) {
                for (auto &blasCfg : AlpakaOp(*fOperators[id]).GetBlasConfigs()) {
-                  if (!blasCfg.empty())
+                  if (!blasCfg.empty()) {
+                     fGC += Utils::DebugLogCode(*this, Utils::DebugLiteral("adding the BLAS configuration of " + opLabel));
                      fGC += "\nblas.addOperationConfig(" + blasCfg + ");\n";
+                  }
                }
             }
          }
          fGC += "\nalpaka::wait(queue);\n";
+         if (fDebug && !fCustomMemory)
+            fGC += "ValidateMemory();\n";
+         fGC += Utils::DebugLogCode(*this, Utils::DebugLiteral("the device is initialized: the session of model " + fName + " is constructed"));
 
          /*
           * Constructor shape parameters: first the ones the infer signature introduces, in that
@@ -1220,6 +1364,18 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
          std::string ctorBody;
          for (auto &p : ctorParamNames)
             ctorBody += GetMemberNameForDimShape(p) + " = " + p + ";\n";
+         if (fDebug) {
+            ctorBody += Utils::DebugLogCode(*this, Utils::DebugLiteral("constructing the session of model " + fName));
+            for (const auto &b : fAllocatedBuffers)
+            {
+               ctorBody += Utils::DebugLogCode(*this, "\"device buffer deviceBuf_" + b.name + " allocated by alpaka: \" + std::to_string((" + b.lengthExpr +
+                                        ") * " + std::to_string(GetTypeSize(b.type)) + ") + \" bytes\"");
+               const std::string bytes = "(" + b.lengthExpr + ") * " + std::to_string(GetTypeSize(b.type));
+               ctorBody += "fMemoryRegions.push_back({\"" + b.name + "\", alpaka::getPtrNative(deviceBuf_" + b.name + "), 0, " + bytes + ", " +
+                           bytes + ", 0, std::numeric_limits<int>::max(), \"alpaka\"});\n";
+            }
+            ctorBody += "@@SOFIE_KERNEL_OBJECTS_LOG@@\n";
+         }
          ctorBody += fGC;
          fGC = savedGC;
 
@@ -1324,6 +1480,7 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
             fGC += "// the pool block is returned to the memory provider once the queue has finished\n";
             fGC += "~" + sessionName + "() {\n";
             fGC += "alpaka::wait(queue);\n";
+            fGC += Utils::DebugLogCode(*this, Utils::DebugLiteral("the queue has finished: the device memory block of model " + fName + " is released through the provider"));
             fGC += "}\n\n";
          }
       }
@@ -1368,6 +1525,19 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
    if (fGC.size() > kernelObjectsPos)
       fGC.insert(kernelObjectsPos, "\n// kernel objects launched by the inference methods\n");
 
+   if (fDebug) {
+      std::vector<std::string> kernelMembers;
+      Utils::CollectKernelMembers_GPU_ALPAKA(fGC.substr(kernelObjectsPos), kernelMembers);
+      std::string members;
+      for (const auto &m : kernelMembers)
+         members += (members.empty() ? "" : ", ") + m;
+      Utils::TraceGeneration(*this, "kernel objects of the session: " + (members.empty() ? std::string("none") : members));
+      const std::string marker = "@@SOFIE_KERNEL_OBJECTS_LOG@@\n";
+      const size_t markerPos = fGC.find(marker);
+      if (markerPos != std::string::npos)
+         fGC.replace(markerPos, marker.size(), Utils::DebugLogCode(*this, Utils::DebugLiteral("kernel objects instantiated with the session: " + (members.empty() ? std::string("none") : members))));
+   }
+
    GenerateOutput_GPU_ALPAKA();
 
    // Emit resetState() for recurrent/stateful operator buffers, and zero all
@@ -1407,8 +1577,19 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
       fGC += "};   // end of Session\n";
    }
 
-   if (fCustomMemory)
+   if (fDebug) {
+      std::string helpers;
+      for (const auto &h : fNeededHelperFunctions)
+         helpers += (helpers.empty() ? "" : ", ") + h;
+      Utils::TraceGeneration(*this, "session code generated (" + std::to_string(fGC.size()) + " characters), helper functions needed: " +
+                      (helpers.empty() ? std::string("none") : helpers));
+   }
+
+   if (fCustomMemory && fDebug) {
       CheckNoDeviceAllocation_GPU_ALPAKA();
+      if (fVerbose)
+         std::cout << GetDeviceRegionsReport_GPU_ALPAKA();
+   }
 }
 
 void RModel::GenerateGPU_ALPAKA(std::underlying_type_t<Options> options, int batchSize, bool verbose) {
@@ -1469,11 +1650,29 @@ void RModel::GenerateGPU_ALPAKA(std::underlying_type_t<Options> options, int bat
       AddNeededHelperFunction("CustomMemory");
    }
 
+   if (static_cast<std::underlying_type_t<Options>>(Options::kDebug) & options) {
+      fDebug = true;
+      AddNeededHelperFunction("DebugLog");
+      if (fUseSession)
+         AddNeededHelperFunction("DebugMemory");
+   }
+
+   Utils::TraceGeneration(*this, std::string("generating the GPU (alpaka) code, options: custom memory ") + (fCustomMemory ? "on" : "off") +
+                   ", external stream " + (fExternalStream ? "on" : "off") + ", strided input " + (fStridedInput ? "on" : "off") +
+                   ", profile " + (fProfile ? "on" : "off") + ", kernel only " + (fKernelOnly ? "on" : "off") + ", session " +
+                   (fUseSession ? "on" : "off") + ", " + std::to_string(fOperators.size()) + " operators");
+
    Initialize(batchSize, verbose);
+   Utils::TraceGeneration(*this, "model initialized: " + std::to_string(fInitializedTensors.size()) + " initialized tensors, " +
+                   std::to_string(fIntermediateTensorInfos.size()) + " intermediate tensors, " +
+                   std::to_string(fDynamicTensorInfos.size()) + " dynamic tensors, " + std::to_string(fSubGraphs.size()) + " sub-graphs");
 
    CheckAlpakaOperators();
+   Utils::TraceGeneration(*this, "all the operators have an alpaka implementation");
 
    fFusion = Fusion::Compute(*this);
+   Utils::TraceGeneration(*this, "fusion: " + std::to_string(fFusion.kernel.size()) + " kernel groups, " + std::to_string(fFusion.eltwise.size()) +
+                   " elementwise groups, " + std::to_string(fFusion.skip.size()) + " operators fused into another one");
 
    std::string hgname;
    if (!fIsSubGraph) {
@@ -1501,6 +1700,7 @@ void RModel::MoveInitializedTensorsToBuffers_ALPAKA(){
          std::string slength = std::to_string(length);
          // Use the 3-argument createView(dev, container, extent) which calls std::data()
          // internally — works for both std::vector and raw C arrays.
+         fGC += Utils::DebugLogCode(*this, "\"uploading the weights of tensor " + i.first + " to the device (" + std::to_string(length * GetTypeSize(i.second.type())) + " bytes)\"");
          fGC += "auto hostBuf_"+i.first+" = alpaka::createView(hostAcc, tensor_"+i.first+", " + slength + ");\n";
          fGC += "alpaka::memcpy(queue, deviceBuf_"+i.first+", hostBuf_"+i.first+");\n";
    }

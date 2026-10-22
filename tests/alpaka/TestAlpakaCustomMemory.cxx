@@ -7,6 +7,9 @@
 #include "CustomMemoryChain_GPU_ALPAKA.hxx"
 #include "CustomMemoryStreamChain_GPU_ALPAKA.hxx"
 #include "CustomMemoryIf_GPU_ALPAKA.hxx"
+#include "CustomMemoryDebugChain_GPU_ALPAKA.hxx"
+#include "DebugDefaultChain_GPU_ALPAKA.hxx"
+#include "DebugStreamChain_GPU_ALPAKA.hxx"
 
 namespace {
 
@@ -236,4 +239,134 @@ TEST_F(SofieAlpakaCustomMemoryTest, SubGraphSessionsUseTheProvider)
       }
    }
    EXPECT_EQ(state.allocations, state.deallocations);
+}
+
+TEST_F(SofieAlpakaCustomMemoryTest, DebugModeReportsTheRegions)
+{
+   using Session = SOFIE_CustomMemoryDebugChain::Session<alpaka::TagGpuCudaRt>;
+   Provider state;
+   auto x_d = UploadOnes(15);
+   auto provider = MakeProvider<SOFIE_CustomMemoryDebugChain::MemoryProvider>(state, true);
+   Session session(provider, "CustomMemoryDebugChain_GPU_ALPAKA.dat");
+
+   auto const &regions = session.GetMemoryRegions();
+   ASSERT_GE(regions.size(), 4u);
+   std::size_t padding = 0;
+   for (auto const &r : regions) {
+      EXPECT_EQ(r.reservedBytes % 256, 0u) << r.name;
+      EXPECT_GE(r.reservedBytes, r.requestedBytes) << r.name;
+      padding += r.reservedBytes - r.requestedBytes;
+   }
+   EXPECT_EQ(session.GetPaddingBytes(), padding);
+   EXPECT_GT(padding, 0u);
+   EXPECT_NO_THROW(session.ValidateMemory());
+
+   const std::string report = session.GetMemoryReport();
+   EXPECT_NE(report.find("managed by the session: " + std::to_string(state.blockBytes)), std::string::npos) << report;
+   EXPECT_NE(report.find("\nW  "), std::string::npos) << report;
+
+   auto result = session.infer(x_d);
+   CheckChain(result);
+}
+
+TEST_F(SofieAlpakaCustomMemoryTest, DebugModeRejectsBadAssignments)
+{
+   using Session = SOFIE_CustomMemoryDebugChain::Session<alpaka::TagGpuCudaRt>;
+   Provider state;
+   auto provider = MakeProvider<SOFIE_CustomMemoryDebugChain::MemoryProvider>(state, false);
+
+   provider.assign = [&state](std::size_t) -> void * { return state.block; };
+   EXPECT_THROW(Session(provider, "CustomMemoryDebugChain_GPU_ALPAKA.dat"), std::runtime_error);
+
+   provider.assign = [&state](std::size_t offset) -> void * { return static_cast<char *>(state.block) + offset + 4; };
+   EXPECT_THROW(Session(provider, "CustomMemoryDebugChain_GPU_ALPAKA.dat"), std::runtime_error);
+}
+
+TEST_F(SofieAlpakaCustomMemoryTest, DebugModeTracesTheSession)
+{
+   using Session = SOFIE_CustomMemoryDebugChain::Session<alpaka::TagGpuCudaRt>;
+   Provider state;
+   auto x_d = UploadOnes(15);
+   auto provider = MakeProvider<SOFIE_CustomMemoryDebugChain::MemoryProvider>(state, true);
+
+   testing::internal::CaptureStdout();
+   {
+      Session session(provider, "CustomMemoryDebugChain_GPU_ALPAKA.dat");
+      auto result = session.infer(x_d);
+   }
+   const std::string log = testing::internal::GetCapturedStdout();
+   for (const char *expected : {"[SOFIE debug] constructing the session of model CustomMemoryDebugChain",
+                                "reading the weights from file", "planned device memory block", "memory block allocated through the provider",
+                                "tensor W placed at offset", "uploading the weights of tensor W", "kernel objects instantiated with the session",
+                                "adding the BLAS configuration of operator 0", "the session of model CustomMemoryDebugChain is constructed",
+                                "running the inference of model CustomMemoryDebugChain", "launching operator", "kernel launch(es)",
+                                "are enqueued", "released through the provider"})
+      EXPECT_NE(log.find(expected), std::string::npos) << expected << "\n" << log;
+
+   SOFIE_CustomMemoryDebugChain::DebugLogEnabled() = false;
+   testing::internal::CaptureStdout();
+   {
+      Session session(provider, "CustomMemoryDebugChain_GPU_ALPAKA.dat");
+   }
+   EXPECT_TRUE(testing::internal::GetCapturedStdout().empty());
+   SOFIE_CustomMemoryDebugChain::DebugLogEnabled() = true;
+}
+
+TEST_F(SofieAlpakaCustomMemoryTest, DebugModeWithoutCustomMemoryTracesTheAlpakaAllocations)
+{
+   using Session = SOFIE_DebugDefaultChain::Session<alpaka::TagGpuCudaRt>;
+   auto x_d = UploadOnes(15);
+   testing::internal::CaptureStdout();
+   {
+      Session session("DebugDefaultChain_GPU_ALPAKA.dat");
+      auto result = session.infer(x_d);
+      CheckChain(result);
+   }
+   const std::string log = testing::internal::GetCapturedStdout();
+   for (const char *expected : {"device buffer deviceBuf_W allocated by alpaka: 80 bytes", "allocated the unified pool",
+                                "placed in the pool at offset", "launching operator"})
+      EXPECT_NE(log.find(expected), std::string::npos) << expected << "\n" << log;
+}
+
+TEST_F(SofieAlpakaCustomMemoryTest, DebugModeReportsTheMemoryWithoutCustomMemory)
+{
+   using Session = SOFIE_DebugDefaultChain::Session<alpaka::TagGpuCudaRt>;
+   auto x_d = UploadOnes(15);
+   Session session("DebugDefaultChain_GPU_ALPAKA.dat");
+
+   auto const &regions = session.GetMemoryRegions();
+   std::set<std::string> origins;
+   for (auto const &r : regions)
+      origins.insert(r.origin);
+   EXPECT_TRUE(origins.count("alpaka"));
+   EXPECT_TRUE(origins.count("pool"));
+   EXPECT_GT(session.GetPaddingBytes(), 0u);
+   EXPECT_NO_THROW(session.ValidateMemory());
+
+   const std::string report = session.GetMemoryReport();
+   EXPECT_NE(report.find("\nW  alpaka"), std::string::npos) << report;
+   EXPECT_NE(report.find("pool  "), std::string::npos) << report;
+   EXPECT_NE(report.find("managed by the session: " + std::to_string(session.GetIntermediateMemoryPoolSize())), std::string::npos) << report;
+
+   auto result = session.infer(x_d);
+   CheckChain(result);
+}
+
+TEST_F(SofieAlpakaCustomMemoryTest, DebugModeWithAnExternalStream)
+{
+   using Session = SOFIE_DebugStreamChain::Session<alpaka::TagGpuCudaRt>;
+   cudaStream_t stream;
+   ASSERT_EQ(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), cudaSuccess);
+   auto x_d = UploadOnes(15);
+   testing::internal::CaptureStdout();
+   {
+      Session session(stream, "DebugStreamChain_GPU_ALPAKA.dat");
+      EXPECT_NO_THROW(session.ValidateMemory());
+      auto result = session.infer(x_d);
+      ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
+      CheckChain(result);
+   }
+   const std::string log = testing::internal::GetCapturedStdout();
+   EXPECT_NE(log.find("launching operator"), std::string::npos) << log;
+   ASSERT_EQ(cudaStreamDestroy(stream), cudaSuccess);
 }

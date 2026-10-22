@@ -30,16 +30,13 @@ public:
    virtual std::string GenerateResetStateCode_GPU_ALPAKA() { return ""; }
    virtual std::vector<std::string> GetPersistentTensorNames_GPU_ALPAKA() const { return {}; }
 
-   /// device scratch memory of the operator which, with Options::kCustomMemory, is placed in the memory block of the session
    struct DeviceScratch {
       std::string name;
       ETensorType type;
       std::string lengthExpr;
    };
    virtual std::vector<DeviceScratch> GetDeviceScratch_GPU_ALPAKA() const { return {}; }
-   /// the graphs run by the operator (the branches of an If), before they are attached to the model
    virtual std::vector<std::shared_ptr<RModel>> GetSubGraphModels() const { return {}; }
-   /// output tensors whose size is only known at inference time, with the number of elements to reserve for them
    virtual std::vector<std::pair<std::string, std::string>> GetOutputCapacities_GPU_ALPAKA() const { return {}; }
    void SetCustomMemory(bool enabled) { fCustomMemory = enabled; }
    virtual std::string Generate_GPU_Kernel_ALPAKA(std::string /*opName*/) { return ""; }

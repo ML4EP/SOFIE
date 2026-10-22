@@ -1,4 +1,5 @@
 #include "SOFIE/utils/SOFIE_common.hxx"
+#include "SOFIE/RModel.hxx"
 
 #include <cctype>
 #include <sstream>
@@ -6,6 +7,7 @@
 #include <charconv>
 #include <unordered_map>
 #include <set>
+#include <iostream>
 namespace SOFIE {
 
 /// @brief  Convert shape from integer format to dynamic one (based on Dim)
@@ -582,5 +584,61 @@ void CloseNestedLoops(std::stringstream &out, size_t loopRank) {
    }
 }
 
+namespace Utils {
+
+void TraceGeneration(const RModel &model, const std::string &message)
+{
+   if (model.IsDebug())
+      std::cout << "[SOFIE generator] " << model.GetName() << ": " << message << std::endl;
+}
+
+std::string DebugLogCode(const RModel &model, const std::string &messageExpr)
+{
+   return model.IsDebug() ? "DebugLog(" + messageExpr + ");\n" : "";
+}
+
+std::string DebugLiteral(const std::string &text) {
+   std::string out = "\"";
+   for (char c : text) {
+      if (c == '"' || c == '\\')
+         out += '\\';
+      out += c;
+   }
+   return out + "\"";
+}
+
+size_t CountOccurrences(const std::string &text, const std::string &needle) {
+   size_t count = 0;
+   for (size_t pos = text.find(needle); pos != std::string::npos; pos = text.find(needle, pos + needle.size()))
+      ++count;
+   return count;
+}
+
+void CollectKernelMembers_GPU_ALPAKA(const std::string &text, std::vector<std::string> &members) {
+   std::istringstream lines(text);
+   std::string line;
+   while (std::getline(lines, line)) {
+      const size_t space = line.find(' ');
+      if (space == std::string::npos || line.empty() || line.back() != ';')
+         continue;
+      const std::string type = line.substr(0, space);
+      const std::string member = line.substr(space + 1, line.size() - space - 2);
+      if (type.find("Kernel") != std::string::npos && member.find(' ') == std::string::npos &&
+          member.find('<') == std::string::npos)
+         members.push_back(member);
+   }
+}
+
+std::string LaunchCodeDebug_GPU_ALPAKA(const RModel &model, const std::string &label, const std::string &code)
+{
+   const size_t kernels = CountOccurrences(code, "alpaka::exec<") + CountOccurrences(code, "alpaka::enqueue(");
+   const size_t blasCalls = CountOccurrences(code, "blas.");
+   TraceGeneration(model, label + ": launch code of " + std::to_string(code.size()) + " characters, " + std::to_string(kernels) +
+                         " kernel launch(es), " + std::to_string(blasCalls) + " BLAS call(s)");
+   return DebugLogCode(model, DebugLiteral("launching " + label + ": " + std::to_string(kernels) + " kernel launch(es), " +
+                                                     std::to_string(blasCalls) + " BLAS call(s)")) + code;
+}
+
+} // namespace Utils
 
 } // namespace SOFIE

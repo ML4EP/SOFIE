@@ -759,6 +759,7 @@ void RModel::Initialize(const std::map<std::string, size_t> & inputParams, bool 
          auto& r = *fOperators[op_idx].get();
          std::cout << "Initializing operator " << i << "  " << typeid(r).name() << std::endl;
       }
+      Utils::TraceGeneration(*this, "initializing operator " + std::to_string(op_idx) + " (" + toString(fOperators[op_idx]->GetKind()) + ")");
       fOperators[op_idx]->Initialize(*this);
       // every operator reading a strided graph input must be able to access it through its strides
       if (fStridedInput && !fOperators[op_idx]->IsOutputConstant()) {
@@ -847,6 +848,7 @@ void RModel::InitializeSubGraph(std::shared_ptr<RModel>  graph) {
    graph->fStridedInput = fStridedInput;
    graph->fExternalStream = fExternalStream;
    graph->fCustomMemory = fCustomMemory;
+   graph->fDebug = fDebug;
 
    graph->Initialize(fBatchSize, fVerbose);
    // set the same options as parent model. The weights of a sub-graph are not read from the weight file of the
@@ -1780,6 +1782,9 @@ void RModel::Generate(std::underlying_type_t<Options> options, int batchSize, bo
                                   "(the strides are passed to its constructor)");
       fStridedInput = true;
    }
+
+   if (static_cast<std::underlying_type_t<Options>>(Options::kDebug) & options)
+      fDebug = true;
 
    if (fProfile)
       RModelProfiler::AddNeededStdLibs(*this);

@@ -63,6 +63,11 @@ int main()
    Emit(BuildChain("CustomMemoryChain"), static_cast<int>(Options::kCustomMemory), "CustomMemoryChain");
    Emit(BuildChain("CustomMemoryStreamChain"),
         static_cast<int>(Options::kCustomMemory) | static_cast<int>(Options::kExternalStream), "CustomMemoryStreamChain");
+   Emit(BuildChain("CustomMemoryDebugChain"),
+        static_cast<int>(Options::kCustomMemory) | static_cast<int>(Options::kDebug), "CustomMemoryDebugChain");
+   Emit(BuildChain("DebugDefaultChain"), static_cast<int>(Options::kDebug), "DebugDefaultChain");
+   Emit(BuildChain("DebugStreamChain"),
+        static_cast<int>(Options::kDebug) | static_cast<int>(Options::kExternalStream), "DebugStreamChain");
    Emit(BuildIf(), static_cast<int>(Options::kCustomMemory), "CustomMemoryIf");
    return 0;
 }

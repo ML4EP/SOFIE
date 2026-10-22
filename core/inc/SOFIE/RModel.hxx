@@ -46,6 +46,7 @@ private:
       ETensorType type;
       std::string lengthExpr;
    };
+   std::vector<DeviceRegion> fAllocatedBuffers;
    std::vector<DeviceRegion> fDeviceRegions; // tensors with their own region of the custom memory block
    std::set<std::string> fArenaDynamicOutputs; // dynamic outputs of the custom memory block, viewed with their per-call extent
    std::vector<std::string> fUnifiedPoolTensorNames; // intermediate tensors (static + dynamic) placed in the unified runtime pool
@@ -204,9 +205,9 @@ public:
    {
       Generate(static_cast<std::underlying_type_t<Options>>(options), batchSize, verbose);
    }
-   // check that all the operators of the model (and of its sub-graphs) have an alpaka implementation: the missing
-   // ones are printed and false is returned if there is any
    bool CheckGPUOperators() const;
+   void CheckNoDeviceAllocation_GPU_ALPAKA() const;
+   std::string GetDeviceRegionsReport_GPU_ALPAKA() const;
    void GenerateGPU_ALPAKA(std::underlying_type_t<Options> options, int batchSize = -1, bool verbose = false);
    void GenerateGPU_ALPAKA(Options options = Options::kDefault, int batchSize = -1, bool verbose = false)
    {
@@ -289,7 +290,6 @@ protected:
    void GenerateSessionCode_GPU_ALPAKA();
    void GenerateGPU_ALPAKA_Buffers();
    std::string DeclareDeviceTensor_GPU_ALPAKA(const std::string &name, ETensorType type, const std::string &lengthExpr);
-   void CheckNoDeviceAllocation_GPU_ALPAKA() const;
    void GeneratePersistentTensorInfo_GPU_ALPAKA();
 
    void CheckAndFuseOperators();

@@ -1,9 +1,9 @@
-# SOFIE
+# SOFIE - System for Optimized Fast Inference code Emit
 
-This is an experimental standalone version of **SOFIE** — a tool for Fast ML Inference
-within [ROOT](https://root.cern), the scientific data analysis framework.
+A tool for Fast ML Inference across heterogeneous architectures through
+code generation.
 
-This standalone is especially developed for implementing and evaluating inference on
+SOFIE implements and evaluates inference on
 **heterogeneous architectures** (CUDA GPUs, AMD GPUs via HIP/ROCm, CPUs) using the
 [alpaka](https://github.com/alpaka-group/alpaka) portability layer.
 
@@ -159,7 +159,10 @@ architectures:
 
 ```
 SOFIE/
-├── core/           # Core SOFIE library (RModel, operators, RTensor, code generators)
+├── core/           # Core SOFIE library 
+|  ├── functions/   # RFunction implementations for GNN operations
+|  ├── operators/   # ROperator implementations for ML operations
+|  ├── utils/       # helper methods for generator and to be embedded in the generated code
 ├── parsers/        # ONNX → RModel parser
 ├── tests/
 │   ├── cpu/        # CPU unit/integration tests (GoogleTest)
@@ -210,7 +213,7 @@ To use the generated inference code:
 float input[INPUT_SIZE];
 std::vector<float> out = SOFIE_example_model::infer(input);
 
-// Generated header file shall contain a Session class which requires initialization to load the corresponding weights.
+// Generated header file shall contain a Session struct which requires initialization to load the corresponding weights.
 SOFIE_example_model::Session s("example_model.dat")
 
 // Once instantiated the session object's infer method can be used
@@ -234,6 +237,96 @@ and can be inspected with the standard Python and Rust safetensors tooling:
 ```c++
 model.Generate(Options::kSafetensorsWeightFile);
 ```
+
+### GPU inference with alpaka
+
+The GPU code is generated leveraging the [alpaka](https://github.com/alpaka-group/alpaka) portability layer: the generated header contains the alpaka kernels of the
+operators and a `Session` class which launches them, so the same header runs on NVIDIA GPUs (CUDA), AMD GPUs (HIP), and on CPUs, depending on the
+accelerator tag the `Session` is instantiated with. Matrix operations (Gemm, Conv) use [sofieBLAS](https://github.com/ML4EP/sofieBLAS).
+
+**Generation.** Parse the model as for the CPU and call `GenerateGPU_ALPAKA`:
+
+```c++
+SOFIE::RModelParser_ONNX parser;
+SOFIE::RModel model = parser.Parse("./example_model.onnx");
+model.GenerateGPU_ALPAKA();                                   // GenerateGPU_ALPAKA(options, batchSize = -1, verbose = false)
+model.OutputGenerated("./example_model_GPU_ALPAKA.hxx");      // header, and the weights file next to it
+```
+
+An operator without an alpaka implementation makes the generation fail with an error naming it (see [Supported operators](#supported-operators)).
+`batchSize` replaces a symbolic batch dimension by a fixed value. The options can be combined with `|`:
+
+| Option | Effect |
+|---|---|
+| `Options::kNoWeightFile` | Weights embedded in the header instead of a separate file |
+| `Options::kKernelOnly` | Only the kernels, no `Session` |
+| `Options::kStridedInput` | Inputs with custom strides, see [Strided inputs](#strided-inputs) |
+| `Options::kProfile` | Per-operator timing, see [Profiling in user code](#profiling-in-user-code) |
+| `Options::kExternalStream` | The `Session` runs on a stream of the application, see below |
+| `Options::kCustomMemory` | The application provides the device memory, see below |
+| `Options::kDebug` | Verbose generation and `Session`, memory checks, see below |
+
+**The `Session`.** The header defines `SOFIE_<model>::Session<tagAcc>`, a class template on the alpaka accelerator tag, for example
+`alpaka::TagGpuCudaRt`, `alpaka::TagGpuHipRt` or `alpaka::TagCpuSerial`. A session creates the platform, the device number 0 of the accelerator
+(`devAcc`), the host device (`hostAcc`) and a non-blocking queue (`queue`), allocates the device buffers, loads the weights and instantiates the kernels, so
+the creation is the expensive step and a session is meant to be reused for many inferences. The members are public.
+
+```c++
+SOFIE_example_model::Session<alpaka::TagGpuCudaRt> session("example_model_GPU_ALPAKA.dat");
+```
+
+The constructor takes the weights file and, for a model with symbolic input dimensions, the maximum value of each one of them (`size_t`, with the value of
+the model as default), which sizes the device buffers. A session can also run on a queue of the application, `Session(QueueAcc &queue, filename, ...)`;
+the sessions of the sub-graphs of a model (`If`) use the queue of the main one.
+
+**Types.** The tensors are one dimensional alpaka objects of the type of the tensor (`float`, `double`, `int32_t`, `int64_t`, `uint8_t`):
+
+| Type | alpaka type | Ownership |
+|---|---|---|
+| `BufF1D`, `BufD1D`, `BufI321D`, `BufI641D`, `BufUI81D` | `alpaka::Buf<Acc, T, Dim, Idx>` | owns its device memory |
+| `ViewF1D`, ..., `ViewConstF1D`, ... | `alpaka::ViewPlainPtr<DevAcc, T, Dim, Idx>` | view of memory owned by someone else |
+
+with `Idx = std::size_t`, `Dim = alpaka::DimInt<1>` and `Ext1D = alpaka::Vec<Dim, Idx>`.
+
+**Inference.** The inputs are device buffers, and the shape parameters of the model are passed before the first input whose shape uses them:
+
+| Method | Description |
+|---|---|
+| `infer(params..., inputs...)` | Runs the model, waits for the queue and returns the output buffer (a `std::tuple` for several outputs) |
+| `infer_nosync(params..., inputs...)` | The same without waiting: call `alpaka::wait(session.queue)` before reading the results |
+| `infer(std::span<ViewConstF1D const> inputs, std::span<ViewF1D> outputs, params...)` | Takes views and copies the results into the output views of the caller, then waits |
+
+The returned buffers belong to the session and are overwritten by the next inference. The values of the shape parameters cannot exceed
+the maximum values given to the constructor (otherwise a `std::runtime_error` is thrown).
+
+```c++
+using Idx = std::size_t;
+using Ext1D = alpaka::Vec<alpaka::DimInt<1>, Idx>;
+alpaka::PlatformCpu hostPlatform{};
+auto host = alpaka::getDevByIdx(hostPlatform, 0);
+
+auto x_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{12}));       // fill it through alpaka::getPtrNative(x_h)
+auto x_d = alpaka::allocBuf<float, Idx>(session.devAcc, Ext1D::all(Idx{12}));
+alpaka::memcpy(session.queue, x_d, x_h);
+
+auto y_d = session.infer(x_d);
+
+auto y_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{4}));
+alpaka::memcpy(session.queue, y_h, y_d);
+alpaka::wait(session.queue);
+```
+
+**Other members of the `Session`.**
+
+| Member | Description |
+|---|---|
+| `resetState(queue)` | Zeroes the state of the recurrent operators and the intermediate buffers |
+| `GetIntermediateMemoryPoolSize()`, `GetTotalFreeMemory()`, `GetLargestFreeBlock()`, `GetFragmentation()` | Statistics of the memory pool of the intermediate tensors |
+| `threadsPerBlock` | Number of threads per block of the kernels (256 by default) |
+
+**Compilation.** The header includes `alpaka/alpaka.hpp` and `sofieBLAS/sofieBLAS.hpp`, so the alpaka and sofieBLAS include directories are needed, and the code
+is compiled for the accelerator: for CUDA as C++20 CUDA code with `-DALPAKA_ACC_GPU_CUDA_ENABLED -DALPAKA_HAS_STD_ATOMIC_REF` and the `nvcc` options
+`--extended-lambda --expt-relaxed-constexpr`, linking `cudart`, `cublas` and `cublasLt`. The CMake of `tests/` is a working example.
 
 ### External CUDA/HIP stream
 
@@ -270,10 +363,10 @@ struct MemoryProvider {
 The constructor computes the size of everything the session needs on the device, calls `alloc` once with that size, and places
 the tensors in the block at offsets computed by SOFIE: every tensor gets its own region (weights, persistent state, shape tensors,
 graph outputs, operator scratch memory), and the intermediate tensors are packed by SOFIE's lifetime-aware planner so that tensors with disjoint
-lifetimes share memory. All regions are aligned to 256 bytes, so `alloc` has to return a pointer with that alignment (as `cudaMalloc` does).
+lifetimes share memory. All regions are aligned to 256 bytes, so `alloc` has to return a pointer with that alignment.
 For each tensor `assign(offset)` is called with the offset SOFIE planned for it, and returns the address where the tensor is laid down
-(at least as many bytes as the tensor, rounded up to 256, are accessed from there); it must not return a null pointer. This lets the application
-map offsets of the block onto memory of its own, for example an arena it manages. Without `assign` the tensor is placed at `block + offset`.
+(the memory from there has to hold the tensor, and be aligned to 256 bytes); it must not return a null pointer. This lets the application
+map offsets of the block onto memory of its own. Without `assign` the tensor is placed at `block + offset`.
 The weights are no exception: their regions are assigned like those of every other tensor, then the constructor copies the weights read from the
 weight file into them.
 
@@ -312,12 +405,79 @@ When the shape is dynamic, the strides are used as given for every call, while c
 the shape of each call. An operator reading a graph input must implement `ROperator::SupportsStridedInput()`, otherwise
 generation fails with an error naming it.
 
-With `Options::kKernelOnly`  combined with `Options::kStridedInput`, the generated header contains the heterogeneous alpaka kernels, `sofie_strided_layout` (the logical shape and the strides, in elements, of an input) and `sofie_strided_offset`
+### Kernel-only mode
+
+`Options::kKernelOnly` generates only the alpaka kernels of the operators, for applications which manage the device buffers, the queue and the launches on
+their own, for example to use the SOFIE kernels in a larger pipeline.
+
+```c++
+model.GenerateGPU_ALPAKA(Options::kKernelOnly);
+model.OutputGenerated("MyModel_KernelOnly_GPU_ALPAKA.hxx");
+```
+
+The header has no `Session`, no weights file and no memory management. In the namespace `SOFIE_<model>` it defines:
+
+- `sofie_workdiv<Dim, Idx>(numElements, blockSize = 256)`, the work division covering a number of elements with blocks of threads;
+- one kernel functor per operator (shared by the operators of the same kind) or per group of fused operators.
+  A kernel takes the device pointers of its inputs and outputs, the number of elements and the attributes of the operator.
+
+The caller launches the kernels with alpaka, in the order of the operators and with buffers of its own:
+
+```c++
+using Acc = alpaka::TagToAcc<alpaka::TagGpuCudaRt, alpaka::DimInt<1>, std::size_t>;
+auto workDiv = SOFIE_LeakyReluKernelOnly::sofie_workdiv<alpaka::DimInt<1>, std::size_t>(Ext1D::all(n));
+alpaka::enqueue(queue, alpaka::createTaskKernel<Acc>(workDiv, SOFIE_LeakyReluKernelOnly::LeakyReluKernel{},
+                                                     alpaka::getPtrNative(input_d), alpaka::getPtrNative(output_d), n, /*alpha=*/0.1f));
+```
+
+An operator whose computation is a BLAS call only has its auxiliary kernels in the header.
+Models with sub-graphs (`If`) are not supported in this mode.
+
+Combined with `Options::kStridedInput`, the header also contains `sofie_strided_layout` (the logical shape and the strides, in elements, of an input) and `sofie_strided_offset`
 (the offset in the input buffer of the element with a given row-major logical index). The kernels reading a graph input
 take its `sofie_strided_layout` as an argument, so there is no stride storage: the caller builds the layouts. A broadcast
 input has the shape of the output and a zero stride for the broadcast dimensions.
 
-SOFIE also supports generating inference code with RDataFrame as inputs, refer to the tutorials below for examples.
+### Debug mode
+
+`Options::kDebug` facilitates useful information to debug the generation process and the generated code; it can be used alone or combined with any of the other modes (`kCustomMemory`, `kExternalStream`,
+`kStridedInput`, `kProfile`).
+
+**Verbose generation and execution.**
+
+- The generator prints `[SOFIE generator] <model>: ...` lines for the initialization of every operator (also for the CPU generation), the model summary,
+  the fusion groups, every device tensor and pooled tensor (with its lifetime), the kernel generated for every operator (or shared with an operator of the
+  same kind), the init code and the launch code of every operator (with its number of kernel launches and BLAS calls), the sub-graphs, the kernel objects and
+  the helper functions of the generated code.
+- The generated `Session` prints `[SOFIE debug] ...` lines while it runs: the construction, the reading and the upload of the weights, the allocation
+  of the device buffers, the pool or the memory block with the placement of every tensor, the kernel objects instantiated with the session, the
+  initialization of every operator, and, in each inference, the launch of every operator with its number of kernel launches and BLAS calls.
+  The printing can be switched off at run time with `SOFIE_Model::DebugLogEnabled() = false;`.
+
+**Memory diagnostics.** The generated `Session` has these methods, for the memory managed by SOFIE in any mode: the buffers allocated by alpaka and the
+pool of the intermediate tensors in the default mode, the regions of the block and the pooled tensors with `Options::kCustomMemory`.
+
+```c++
+session.GetMemoryReport();     // table with the origin (alpaka, pool, block), offset, size, reserved size and lifetime of every tensor, and the padding
+session.GetMemoryRegions();    // the same information as a vector of MemoryRegionInfo (name, address, offset, sizes, lifetime, origin)
+session.GetPaddingBytes();     // bytes reserved for the alignment
+session.ValidateMemory();      // throws if a tensor has no memory, is not aligned to 256 bytes (the offset in the pool, the address in the block)
+                               // or overlaps with another one alive at the same time
+```
+
+`ValidateMemory` is also called at the end of the construction of the session. With `Options::kCustomMemory` it runs before the weights are uploaded.
+
+**Generator checks.** They can be called after the generation of a model with `Options::kDebug`:
+
+```c++
+model.GenerateGPU_ALPAKA(Options::kCustomMemory | Options::kDebug, -1, /*verbose=*/true);   // verbose also prints the device tensors
+std::string tensors = model.GetDeviceRegionsReport_GPU_ALPAKA();   // size and reserved size of the device tensors known at generation
+model.CheckNoDeviceAllocation_GPU_ALPAKA();                        // throws if the generated code allocates device memory with alpaka (kDebug and kCustomMemory only)
+```
+
+`CheckNoDeviceAllocation_GPU_ALPAKA` is only available for a model generated with both `Options::kDebug` and `Options::kCustomMemory`: it is a debug check, and it checks the
+contract of that option (in the default mode the code allocates through alpaka, by design). It throws an exception for any other model; with the two options
+the generator calls it by itself after the generation. `GetDeviceRegionsReport_GPU_ALPAKA` is also only available with `Options::kDebug`, in any memory mode, and throws an exception otherwise.
 
 ---
 
@@ -422,8 +582,6 @@ supported = model.CheckGPUOperators();   // prints the operators without an alpa
 
 ---
 
-## Inspiration
+## License
 
-The standalone version of SOFIE is developed with inspiration from the standalone
-version of RooFit developed by Jonas Rembser, which can be found
-[here](https://github.com/guitargeek/roofit).
+[LGPL-2.1](https://github.com/ML4EP/SOFIE/blob/main/LICENSE)
