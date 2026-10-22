@@ -22,6 +22,8 @@ private:
    std::vector<std::string> fNYs;
    std::shared_ptr<RModel> fModel_then;
    std::shared_ptr<RModel> fModel_else;
+
+   std::vector<std::shared_ptr<RModel>> GetSubGraphModels() const override { return {fModel_then, fModel_else}; }
    std::string fInputSignature_modelThen;
    std::string fInputSignature_modelElse;
 

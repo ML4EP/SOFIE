@@ -832,16 +832,17 @@ void RModel::CollectOperatorsWithoutAlpaka(std::vector<MissingGPUOperator> &miss
 {
    for (size_t id = 0; id < fOperators.size(); id++) {
       const ROperator &op = *fOperators[id];
-      if (GetAlpaka(op))
+      if (const auto *alpakaOp = GetAlpaka(op)) {
+         for (const auto &graph : alpakaOp->GetSubGraphModels())
+            graph->CollectOperatorsWithoutAlpaka(missing);
          continue;
+      }
       int status = 0;
       char *demangled = abi::__cxa_demangle(typeid(op).name(), nullptr, nullptr, &status);
       const std::string type = status == 0 && demangled ? demangled : typeid(op).name();
       std::free(demangled);
       missing.push_back({fName, id, type});
    }
-   for (const auto &graph : fSubGraphs)
-      graph->CollectOperatorsWithoutAlpaka(missing);
 }
 
 void RModel::CheckAlpakaOperators() const
