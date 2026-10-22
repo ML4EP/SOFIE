@@ -11,7 +11,7 @@ TEST_F(SofieAlpakaTest, IfSimpleThen)
    auto cond_d = makeDeviceBuf<uint8_t>(host, device, queue, &cond, 1);
    auto x_d = makeDeviceBuf<float>(host, device, queue, x.data(), x.size());
 
-   SOFIE_IfSimple::Session<alpaka::TagGpuCudaRt> session;
+   SOFIE_IfSimple::Session<TestTag> session;
    auto result = session.infer(cond_d, x_d);
    auto out = toHost(host, queue, result, x.size());
 
@@ -27,7 +27,7 @@ TEST_F(SofieAlpakaTest, IfSimpleElse)
    auto cond_d = makeDeviceBuf<uint8_t>(host, device, queue, &cond, 1);
    auto x_d = makeDeviceBuf<float>(host, device, queue, x.data(), x.size());
 
-   SOFIE_IfSimple::Session<alpaka::TagGpuCudaRt> session;
+   SOFIE_IfSimple::Session<TestTag> session;
    auto result = session.infer(cond_d, x_d);
    auto out = toHost(host, queue, result, x.size());
 
@@ -42,7 +42,7 @@ TEST_F(SofieAlpakaTest, IfSimpleSwitchBranch)
    std::vector<float> x = {1, -2, 3, -4, 5, -6};
    auto x_d = makeDeviceBuf<float>(host, device, queue, x.data(), x.size());
 
-   SOFIE_IfSimple::Session<alpaka::TagGpuCudaRt> session;
+   SOFIE_IfSimple::Session<TestTag> session;
    for (uint8_t cond : {1, 0, 0, 1}) {
       auto cond_d = makeDeviceBuf<uint8_t>(host, device, queue, &cond, 1);
       auto result = session.infer(cond_d, x_d);
@@ -60,7 +60,7 @@ TEST_F(SofieAlpakaTest, IfTwoOutputsThen)
    auto cond_d = makeDeviceBuf<uint8_t>(host, device, queue, &cond, 1);
    auto x_d = makeDeviceBuf<float>(host, device, queue, x.data(), x.size());
 
-   SOFIE_IfTwoOutputs::Session<alpaka::TagGpuCudaRt> session;
+   SOFIE_IfTwoOutputs::Session<TestTag> session;
    auto result = session.infer(cond_d, x_d);
    auto out = toHost(host, queue, result, x.size());
 
@@ -76,7 +76,7 @@ TEST_F(SofieAlpakaTest, IfTwoOutputsElse)
    auto cond_d = makeDeviceBuf<uint8_t>(host, device, queue, &cond, 1);
    auto x_d = makeDeviceBuf<float>(host, device, queue, x.data(), x.size());
 
-   SOFIE_IfTwoOutputs::Session<alpaka::TagGpuCudaRt> session;
+   SOFIE_IfTwoOutputs::Session<TestTag> session;
    auto result = session.infer(cond_d, x_d);
    auto out = toHost(host, queue, result, x.size());
 

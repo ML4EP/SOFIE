@@ -28,8 +28,6 @@ private:
    std::vector<Dim> fShapeY;
    std::string fType;
 
-   static constexpr size_t fStagingBCap = 64;
-   size_t fStagingB = fStagingBCap;
    size_t fBlockSize = 256;
 
 public:
@@ -88,10 +86,6 @@ public:
          fK = Dim{std::min(kdim.dim, fShapeX[fAttrAxis].dim)};
 
       fAxisIsDynamic = fShapeX[fAttrAxis].isParam;
-      if (!fAxisIsDynamic) {
-         size_t itemsPerThread = (fShapeX[fAttrAxis].dim + fBlockSize - 1) / fBlockSize;
-         fStagingB = std::min(std::max<size_t>(itemsPerThread, 1), fStagingBCap);
-      }
 
       // output shape is equal to input shape apart for value in fAttrAxis
       fShapeY = fShapeX;
@@ -218,32 +212,22 @@ public:
       return out.str();
    }
 
-   // Hierarchical GPU path: one block per slice, fBlockSize threads cooperating on that
-   // slice's whole axis via a block-shared result (sVals/sInds, capacity K, K = the
-   // model's requested k unclamped - the only value that needs to be a compile-time
-   // constant here) guarded by a spinlock, plus a fill counter (sCount). Each thread
-   // scans a strided subset of the axis into a tiny private register buffer (rsV/rsI,
-   // size fStagingB - independent of K). This mirrors the shape of
-   // real GPU top-k selection structures, simplified to use a
-   // block-shared array + lock for the merge instead of warp-shuffle-only cooperation: 
-   // a shared-memory merge is both simpler and the more portable
-   // choice here. The spinlock is safe specifically because this is a *single-block*
-   // design, unlike the cross-block case.
+   /* GPU path: one block per slice, fBlockSize threads cooperating on that slice's
+      whole axis. Every thread keeps the best K of the elements it scans in a sorted
+      register list (K is the model's requested k, the one value that has to be a
+      compile-time constant here). The lists are then combined without any shared
+      writes during the scan: the lanes of a warp merge pairwise through shuffles
+      until lane 0 holds the warp's best K, each warp parks that list in shared
+      memory, and after one block barrier the first warp merges the per-warp lists
+      the same way and writes the result.
 
-   // Admission before touching the shared state: a candidate only gets buffered locally
-   // once it beats the current shared threshold (sVals[topKCount-1], once sCount reaches
-   // topKCount) - anything worse is dropped immediately, for free, without acquiring the
-   // lock. That read is deliberately lock-free: sCount and the shared array only ever get 
-   // strictly tighter/more-populated over the scan, so an out-of-date value can make a 
-   // thread buffer something that turns out unnecessary. It still has to be read
-   // through volatile-qualified pointers.
-   //
-   // A thread's local buffer is flushed into the shared result whenever it fills, and
-   // once more after the thread's own portion of the axis is exhausted -
-   // required for correctness in general (a short axis, or many threads, means a
-   // thread's last few buffered candidates may never trigger a fill-driven flush).
-   //
-   // fStagingB and fBlockSize are compile-time literals with no closed-form optimum
+      No thread ever waits for another thread's progress, only for the block
+      barrier, so the kernel runs the same on hardware that schedules the lanes of a
+      warp independently and on lockstep wavefronts. The result is deterministic:
+      ties are broken on the lower index at every merge, matching the CPU path.
+
+      Each merge of two sorted K-lists is a K-step two-pointer pass done by one
+      lane. For K in the hundreds a bitonic network across lanes would be faster. */
    std::string Generate_GPU_Kernel_ALPAKA(std::string /*opName*/) override {
       if (fShapeX.empty())
          throw std::runtime_error("SOFIE Operator TopK called to Generate without being initialized first");
@@ -252,54 +236,47 @@ public:
 
       std::string CMP = fAttrLargest ? ">" : "<";
       std::string K = std::to_string(fRequestedK);
-      std::string B = std::to_string(fStagingB);
       std::string P = std::to_string(fBlockSize);
-      std::string better = fAttrLargest
-         ? "(v > sVals[p-1] || (v == sVals[p-1] && idx < sInds[p-1]))"
-         : "(v < sVals[p-1] || (v == sVals[p-1] && idx < sInds[p-1]))";
-      std::string beatsWorst = fAttrLargest
-         ? "(v > sVals[topKCount-1] || (v == sVals[topKCount-1] && idx < sInds[topKCount-1]))"
-         : "(v < sVals[topKCount-1] || (v == sVals[topKCount-1] && idx < sInds[topKCount-1]))";
-      // Admission-check variant for the one read site that happens outside the lock
-      std::string beatsWorstVolatile = fAttrLargest
-         ? "(v >= vSVals[topKCount-1])"
-         : "(v <= vSVals[topKCount-1])";
+      // unused list slots hold the value that loses every comparison
+      std::string worst = fAttrLargest ? "std::numeric_limits<T>::lowest()" : "std::numeric_limits<T>::max()";
       std::string kname = "TopKKernel_" + fNVal;
 
-      auto emitLockAcquire = [&]() {
-         std::string s;
-         s += "{\n";
-         s += "unsigned int ns = 8u;\n";
-         s += "while (alpaka::atomicCas(acc, &sLock, 0, 1, alpaka::hierarchy::Grids{}) != 0) {\n";
-         s += "#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 700\n";
-         s += "__nanosleep(ns);\n";
-         s += "if (ns < 256u) ns <<= 1;\n";
-         s += "#elif defined(__HIP_DEVICE_COMPILE__)\n";
-         s += "__builtin_amdgcn_s_sleep(2);\n";
-         s += "(void)ns;\n";
-         s += "#else\n";
-         s += "(void)ns;\n";
-         s += "#endif\n";
-         s += "}\n";
-         s += "}\n";
-         return s;
+      // "a beats b": the better value, or the lower index on a tie
+      auto beats = [&](const std::string &aV, const std::string &aI, const std::string &bV, const std::string &bI) {
+         return "(" + aV + " " + CMP + " " + bV + " || (" + aV + " == " + bV + " && " + aI + " < " + bI + "))";
       };
 
-      auto emitInsert = [&]() {
+      /* Shuffle rounds over one warp: each round the lower half of the active lanes
+         fetches its partner's list and merges it into its own, so after log2(warpSize)
+         rounds lane 0 holds the best K of all the lanes' lists. */
+      auto emitWarpMerge = [&]() {
          std::string s;
-         s += "if ((std::size_t)sCount < topKCount) {\n";
-         s += "int p = sCount;\n";
-         s += "while (p > 0 && " + better + ") { sVals[p] = sVals[p-1]; sInds[p] = sInds[p-1]; --p; }\n";
-         s += "sVals[p] = v; sInds[p] = idx; sCount++;\n";
-         s += "} else if (" + beatsWorst + ") {\n";
-         s += "int p = (int)topKCount - 1;\n";
-         s += "while (p > 0 && " + better + ") { sVals[p] = sVals[p-1]; sInds[p] = sInds[p-1]; --p; }\n";
-         s += "sVals[p] = v; sInds[p] = idx;\n";
-         s += "} else break;\n";
+         s += "for (std::int32_t offset = warpSize / 2; offset > 0; offset >>= 1) {\n";
+         s += "T oV[" + K + "]; int64_t oI[" + K + "];\n";
+         s += "for (int p = 0; p < " + K + "; ++p) {\n";
+         s += "oV[p] = alpaka::warp::shfl_down(acc, myV[p], static_cast<std::uint32_t>(offset));\n";
+         s += "oI[p] = alpaka::warp::shfl_down(acc, myI[p], static_cast<std::uint32_t>(offset));\n";
+         s += "}\n";
+         s += "mergeBestK_" + fNVal + "(myV, myI, oV, oI);\n";
+         s += "}\n";
          return s;
       };
 
       std::string op = "\n//------ TopK_KERNEL_ALPAKA\n";
+
+      /* Merge two sorted K-lists (best first) into the best K of their union, written
+         back into the first. A K-step two-pointer pass; an exhausted side loses. */
+      op += "template<typename T>\n";
+      op += "ALPAKA_FN_ACC inline void mergeBestK_" + fNVal + "(T* aV, int64_t* aI, T const* bV, int64_t const* bI) {\n";
+      op += "T rV[" + K + "]; int64_t rI[" + K + "]; int i = 0, j = 0;\n";
+      op += "for (int p = 0; p < " + K + "; ++p) {\n";
+      op += "bool const takeA = (j == " + K + ") || (i < " + K + " && " + beats("aV[i]", "aI[i]", "bV[j]", "bI[j]") + ");\n";
+      op += "rV[p] = takeA ? aV[i] : bV[j]; rI[p] = takeA ? aI[i] : bI[j];\n";
+      op += "i += takeA; j += !takeA;\n";
+      op += "}\n";
+      op += "for (int p = 0; p < " + K + "; ++p) { aV[p] = rV[p]; aI[p] = rI[p]; }\n";
+      op += "}\n\n";
+
       op += "struct " + kname + " {\n";
       op += "template<typename TAcc, typename T>\n";
       op += "ALPAKA_FN_ACC void operator()(\n";
@@ -321,6 +298,8 @@ public:
 
       op += "auto const slice = alpaka::getIdx<alpaka::Grid, alpaka::Blocks>(acc)[0];\n";
       op += "auto const tid = alpaka::getIdx<alpaka::Block, alpaka::Threads>(acc)[0];\n";
+      op += "std::int32_t const warpSize = alpaka::warp::getSize(acc);\n";
+      op += "std::int32_t const laneId = static_cast<std::int32_t>(tid) % warpSize;\n";
       op += "if (slice >= numSlices) return;\n\n";
 
       op += "std::size_t const i = slice / nAfter;\n";
@@ -328,59 +307,47 @@ public:
       op += "std::size_t const xbase = i * strideXBefore + j;\n";
       op += "std::size_t const ybase = i * strideYBefore + j;\n\n";
 
-      op += "auto& sVals  = alpaka::declareSharedVar<T[" + K + "], __COUNTER__>(acc);\n";
-      op += "auto& sInds  = alpaka::declareSharedVar<int64_t[" + K + "], __COUNTER__>(acc);\n";
-      op += "auto& sCount = alpaka::declareSharedVar<int, __COUNTER__>(acc);\n";
-      op += "auto& sLock  = alpaka::declareSharedVar<int, __COUNTER__>(acc);\n\n";
+      op += "std::int32_t const warpId = static_cast<std::int32_t>(tid) / warpSize;\n";
+      op += "std::int32_t const nWarps = " + P + " / warpSize;\n\n";
 
-      op += "if (tid == 0) { sCount = 0; sLock = 0; }\n";
-      op += "alpaka::syncBlockThreads(acc);\n\n";
+      // one K-list per warp, sized for 32-wide warps; 64-wide wavefronts use the first half
+      op += "auto& wVals = alpaka::declareSharedVar<T[(" + P + " / 32) * " + K + "], __COUNTER__>(acc);\n";
+      op += "auto& wInds = alpaka::declareSharedVar<int64_t[(" + P + " / 32) * " + K + "], __COUNTER__>(acc);\n\n";
 
-      op += "T const volatile* vSVals = sVals;\n";
-      op += "int const volatile* vSCount = &sCount;\n\n";
-
-      op += "T rsV[" + B + "]; int64_t rsI[" + B + "]; int rsN = 0;\n\n";
-
+      // each thread keeps the best K of the elements it scans, sorted best first
+      op += "T myV[" + K + "]; int64_t myI[" + K + "];\n";
+      op += "for (int p = 0; p < " + K + "; ++p) { myV[p] = " + worst + "; myI[p] = -1; }\n";
       op += "for (std::size_t idx = tid; idx < nElAxis; idx += " + P + "u) {\n";
-      op += "T v = " + (fHasStridedInput ? StridedKernelRead("x", "layoutX", "xbase + strideXAxis * idx")
-                                                          : std::string("x[xbase + strideXAxis * idx]")) + ";\n";
-      op += "bool admit;\n";
-      op += "if ((std::size_t)*vSCount < topKCount) admit = true;\n";
-      op += "else admit = " + beatsWorstVolatile + ";\n";
-      op += "if (admit) {\n";
-      op += "int p = rsN;\n";
-      op += "while (p > 0 && v " + CMP + " rsV[p-1]) { rsV[p] = rsV[p-1]; rsI[p] = rsI[p-1]; --p; }\n";
-      op += "rsV[p] = v; rsI[p] = (int64_t)idx; rsN++;\n";
-      op += "if (rsN == " + B + ") {\n";
-      op += emitLockAcquire();
-      op += "alpaka::mem_fence(acc, alpaka::memory_scope::Device{});\n";
-      op += "for (int r = 0; r < " + B + "; ++r) {\n";
-      op += "T v = rsV[r]; int64_t idx = rsI[r];\n";
-      op += emitInsert();
-      op += "}\n";
-      op += "alpaka::mem_fence(acc, alpaka::memory_scope::Device{});\n";
-      op += "alpaka::atomicExch(acc, &sLock, 0, alpaka::hierarchy::Grids{});\n";
-      op += "rsN = 0;\n";
-      op += "}\n";
+      op += "T const v = " + (fHasStridedInput ? StridedKernelRead("x", "layoutX", "xbase + strideXAxis * idx")
+                                                : std::string("x[xbase + strideXAxis * idx]")) + ";\n";
+      op += "int64_t const vi = static_cast<int64_t>(idx);\n";
+      op += "if (" + beats("v", "vi", "myV[" + K + "-1]", "myI[" + K + "-1]") + ") {\n";
+      op += "int p = " + K + " - 1;\n";
+      op += "while (p > 0 && " + beats("v", "vi", "myV[p-1]", "myI[p-1]") + ") { myV[p] = myV[p-1]; myI[p] = myI[p-1]; --p; }\n";
+      op += "myV[p] = v; myI[p] = vi;\n";
       op += "}\n";
       op += "}\n\n";
 
-      op += "// drain: flush whatever's left, required for correctness in general\n";
-      op += "if (rsN > 0) {\n";
-      op += emitLockAcquire();
-      op += "alpaka::mem_fence(acc, alpaka::memory_scope::Device{});\n";
-      op += "for (int r = 0; r < rsN; ++r) {\n";
-      op += "T v = rsV[r]; int64_t idx = rsI[r];\n";
-      op += emitInsert();
+      // merge across the warp, then park each warp's list in shared memory
+      op += emitWarpMerge();
+      op += "if (laneId == 0) {\n";
+      op += "for (int p = 0; p < " + K + "; ++p) { wVals[warpId * " + K + " + p] = myV[p]; wInds[warpId * " + K + " + p] = myI[p]; }\n";
       op += "}\n";
-      op += "alpaka::mem_fence(acc, alpaka::memory_scope::Device{});\n";
-      op += "alpaka::atomicExch(acc, &sLock, 0, alpaka::hierarchy::Grids{});\n";
-      op += "}\n\n";
-
       op += "alpaka::syncBlockThreads(acc);\n\n";
-      op += "for (std::size_t s = tid; s < topKCount; s += " + P + "u) {\n";
-      op += "vals[ybase + strideYAxis * s] = sVals[s];\n";
-      op += "inds[ybase + strideYAxis * s] = sInds[s];\n";
+
+      // the first warp merges the per-warp lists the same way and writes the result
+      op += "if (warpId == 0) {\n";
+      op += "for (int p = 0; p < " + K + "; ++p) {\n";
+      op += "myV[p] = laneId < nWarps ? wVals[laneId * " + K + " + p] : " + worst + ";\n";
+      op += "myI[p] = laneId < nWarps ? wInds[laneId * " + K + " + p] : -1;\n";
+      op += "}\n";
+      op += emitWarpMerge();
+      op += "if (laneId == 0) {\n";
+      op += "for (std::size_t s = 0; s < topKCount; ++s) {\n";
+      op += "vals[ybase + strideYAxis * s] = myV[s];\n";
+      op += "inds[ybase + strideYAxis * s] = myI[s];\n";
+      op += "}\n";
+      op += "}\n";
       op += "}\n";
       op += "}\n";
       op += "};\n";

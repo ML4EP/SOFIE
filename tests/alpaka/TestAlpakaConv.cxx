@@ -60,10 +60,9 @@ TEST_F(SofieAlpakaTest, ConvWithPadding)
    auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{sizeof(ConvWithPadding_ExpectedOutput::all_ones) / sizeof(float)}));
 
    {
-        SOFIE_ConvWithPadding::Session<alpaka::TagGpuCudaRt> session("ConvWithPadding_FromONNX_GPU_ALPAKA.dat");
+        SOFIE_ConvWithPadding::Session<TestTag> session("ConvWithPadding_FromONNX_GPU_ALPAKA.dat");
         auto result = session.infer(input_d);
         alpaka::wait(queue);
-        cudaDeviceSynchronize();
         alpaka::memcpy(queue, result_h, result);
         alpaka::wait(queue);
 
@@ -97,10 +96,9 @@ TEST_F(SofieAlpakaTest, ConvWithoutPadding)
    auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{sizeof(ConvWithoutPadding_ExpectedOutput::all_ones) / sizeof(float)}));
 
    {
-        SOFIE_ConvWithoutPadding::Session<alpaka::TagGpuCudaRt> session("ConvWithoutPadding_FromONNX_GPU_ALPAKA.dat");
+        SOFIE_ConvWithoutPadding::Session<TestTag> session("ConvWithoutPadding_FromONNX_GPU_ALPAKA.dat");
         auto result = session.infer(input_d);
         alpaka::wait(queue);
-        cudaDeviceSynchronize();
         alpaka::memcpy(queue, result_h, result);
         alpaka::wait(queue);
 
@@ -136,10 +134,9 @@ TEST_F(SofieAlpakaTest, ConvWithAutopadSameLower)
    auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{sizeof(ConvWithAutopadSameLower_ExpectedOutput::all_ones) / sizeof(float)}));
 
    {
-        SOFIE_ConvWithAutopadSameLower::Session<alpaka::TagGpuCudaRt> session("ConvWithAutopadSameLower_FromONNX_GPU_ALPAKA.dat");
+        SOFIE_ConvWithAutopadSameLower::Session<TestTag> session("ConvWithAutopadSameLower_FromONNX_GPU_ALPAKA.dat");
         auto result = session.infer(input_d);
         alpaka::wait(queue);
-        cudaDeviceSynchronize();
         alpaka::memcpy(queue, result_h, result);
         alpaka::wait(queue);
 
@@ -172,10 +169,9 @@ TEST_F(SofieAlpakaTest, ConvWithAutopadSameUpper)
    auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{sizeof(ConvWithAutopadSameUpper_ExpectedOutput::all_ones) / sizeof(float)}));
 
    {
-        SOFIE_ConvWithAutopadSameUpper::Session<alpaka::TagGpuCudaRt> session("ConvWithAutopadSameUpper_FromONNX_GPU_ALPAKA.dat");
+        SOFIE_ConvWithAutopadSameUpper::Session<TestTag> session("ConvWithAutopadSameUpper_FromONNX_GPU_ALPAKA.dat");
         auto result = session.infer(input_d);
         alpaka::wait(queue);
-        cudaDeviceSynchronize();
         alpaka::memcpy(queue, result_h, result);
         alpaka::wait(queue);
    }
@@ -209,10 +205,9 @@ TEST_F(SofieAlpakaTest, ConvWithStridesPadding)
    auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{sizeof(ConvWithStridesPadding_ExpectedOutput::all_ones) / sizeof(float)}));
 
    {
-        SOFIE_ConvWithStridesPadding::Session<alpaka::TagGpuCudaRt> session("ConvWithStridesPadding_FromONNX_GPU_ALPAKA.dat");
+        SOFIE_ConvWithStridesPadding::Session<TestTag> session("ConvWithStridesPadding_FromONNX_GPU_ALPAKA.dat");
         auto result = session.infer(input_d);
         alpaka::wait(queue);
-        cudaDeviceSynchronize();
         alpaka::memcpy(queue, result_h, result);
         alpaka::wait(queue);
 
@@ -247,10 +242,9 @@ TEST_F(SofieAlpakaTest, ConvWithStridesNoPadding)
    auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{sizeof(ConvWithStridesNoPadding_ExpectedOutput::all_ones) / sizeof(float)}));
 
    {
-        SOFIE_ConvWithStridesNoPadding::Session<alpaka::TagGpuCudaRt> session("ConvWithStridesNoPadding_FromONNX_GPU_ALPAKA.dat");
+        SOFIE_ConvWithStridesNoPadding::Session<TestTag> session("ConvWithStridesNoPadding_FromONNX_GPU_ALPAKA.dat");
         auto result = session.infer(input_d);
         alpaka::wait(queue);
-        cudaDeviceSynchronize();
         alpaka::memcpy(queue, result_h, result);
         alpaka::wait(queue);
 
@@ -286,10 +280,9 @@ TEST_F(SofieAlpakaTest, ConvWithAsymmetricPadding)
    auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{sizeof(ConvWithAsymmetricPadding_ExpectedOutput::all_ones) / sizeof(float)}));
 
    {
-        SOFIE_ConvWithAsymmetricPadding::Session<alpaka::TagGpuCudaRt> session("ConvWithAsymmetricPadding_FromONNX_GPU_ALPAKA.dat");
+        SOFIE_ConvWithAsymmetricPadding::Session<TestTag> session("ConvWithAsymmetricPadding_FromONNX_GPU_ALPAKA.dat");
         auto result = session.infer(input_d);
         alpaka::wait(queue);
-        cudaDeviceSynchronize();
         alpaka::memcpy(queue, result_h, result);
         alpaka::wait(queue);
 
@@ -322,10 +315,9 @@ TEST_F(SofieAlpakaTest, ConvGroup2)
    auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{sizeof(ConvGroup2_ExpectedOutput::correct) / sizeof(float)}));
 
    {
-      SOFIE_ConvGroup2::Session<alpaka::TagGpuCudaRt> session("ConvGroup2_FromONNX_GPU_ALPAKA.dat");
+      SOFIE_ConvGroup2::Session<TestTag> session("ConvGroup2_FromONNX_GPU_ALPAKA.dat");
       auto result = session.infer(input_d);
       alpaka::wait(queue);
-      cudaDeviceSynchronize();
       alpaka::memcpy(queue, result_h, result);
       alpaka::wait(queue);
    }
@@ -356,10 +348,9 @@ TEST_F(SofieAlpakaTest, ConvGroup4)
    auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{sizeof(ConvGroup4_ExpectedOutput::correct) / sizeof(float)}));
 
    {
-      SOFIE_ConvGroup4::Session<alpaka::TagGpuCudaRt> session("ConvGroup4_FromONNX_GPU_ALPAKA.dat");
+      SOFIE_ConvGroup4::Session<TestTag> session("ConvGroup4_FromONNX_GPU_ALPAKA.dat");
       auto result = session.infer(input_d);
       alpaka::wait(queue);
-      cudaDeviceSynchronize();
       alpaka::memcpy(queue, result_h, result);
       alpaka::wait(queue);
    }
@@ -390,10 +381,9 @@ TEST_F(SofieAlpakaTest, ConvBatch4Group2)
    auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{sizeof(ConvBatch4Group2_ExpectedOutput::correct) / sizeof(float)}));
 
    {
-      SOFIE_ConvBatch4Group2::Session<alpaka::TagGpuCudaRt> session("ConvBatch4Group2_FromONNX_GPU_ALPAKA.dat");
+      SOFIE_ConvBatch4Group2::Session<TestTag> session("ConvBatch4Group2_FromONNX_GPU_ALPAKA.dat");
       auto result = session.infer(input_d);
       alpaka::wait(queue);
-      cudaDeviceSynchronize();
       alpaka::memcpy(queue, result_h, result);
       alpaka::wait(queue);
    }
@@ -424,10 +414,9 @@ TEST_F(SofieAlpakaTest, ConvGroupBatch)
    auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{nOut}));
 
    {
-      SOFIE_ConvGroupBatch::Session<alpaka::TagGpuCudaRt> session("ConvGroupBatch_FromONNX_GPU_ALPAKA.dat");
+      SOFIE_ConvGroupBatch::Session<TestTag> session("ConvGroupBatch_FromONNX_GPU_ALPAKA.dat");
       auto result = session.infer(input_d);
       alpaka::wait(queue);
-      cudaDeviceSynchronize();
       alpaka::memcpy(queue, result_h, result);
       alpaka::wait(queue);
    }
@@ -457,10 +446,9 @@ TEST_F(SofieAlpakaTest, ConvBatch2)
    auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{sizeof(ConvBatch2_ExpectedOutput::correct) / sizeof(float)}));
 
    {
-      SOFIE_ConvBatch2::Session<alpaka::TagGpuCudaRt> session("ConvBatch2_FromONNX_GPU_ALPAKA.dat");
+      SOFIE_ConvBatch2::Session<TestTag> session("ConvBatch2_FromONNX_GPU_ALPAKA.dat");
       auto result = session.infer(input_d);
       alpaka::wait(queue);
-      cudaDeviceSynchronize();
       alpaka::memcpy(queue, result_h, result);
       alpaka::wait(queue);
    }
@@ -491,10 +479,9 @@ TEST_F(SofieAlpakaTest, ConvBatch4)
    auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{sizeof(ConvBatch4_ExpectedOutput::correct) / sizeof(float)}));
 
    {
-      SOFIE_ConvBatch4::Session<alpaka::TagGpuCudaRt> session("ConvBatch4_FromONNX_GPU_ALPAKA.dat");
+      SOFIE_ConvBatch4::Session<TestTag> session("ConvBatch4_FromONNX_GPU_ALPAKA.dat");
       auto result = session.infer(input_d);
       alpaka::wait(queue);
-      cudaDeviceSynchronize();
       alpaka::memcpy(queue, result_h, result);
       alpaka::wait(queue);
    }
@@ -525,10 +512,9 @@ TEST_F(SofieAlpakaTest, ConvBatch8)
    auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{sizeof(ConvBatch8_ExpectedOutput::correct) / sizeof(float)}));
 
    {
-      SOFIE_ConvBatch8::Session<alpaka::TagGpuCudaRt> session("ConvBatch8_FromONNX_GPU_ALPAKA.dat");
+      SOFIE_ConvBatch8::Session<TestTag> session("ConvBatch8_FromONNX_GPU_ALPAKA.dat");
       auto result = session.infer(input_d);
       alpaka::wait(queue);
-      cudaDeviceSynchronize();
       alpaka::memcpy(queue, result_h, result);
       alpaka::wait(queue);
    }
@@ -560,10 +546,9 @@ TEST_F(SofieAlpakaTest, ConvWithBias)
    auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{sizeof(ConvWithBias_ExpectedOutput::all_ones) / sizeof(float)}));
 
    {
-        SOFIE_ConvWithBias::Session<alpaka::TagGpuCudaRt> session("ConvWithBias_FromONNX_GPU_ALPAKA.dat");
+        SOFIE_ConvWithBias::Session<TestTag> session("ConvWithBias_FromONNX_GPU_ALPAKA.dat");
         auto result = session.infer(input_d);
         alpaka::wait(queue);
-        cudaDeviceSynchronize();
         alpaka::memcpy(queue, result_h, result);
         alpaka::wait(queue);
    }
@@ -596,10 +581,9 @@ TEST_F(SofieAlpakaTest, Conv1d)
    auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{sizeof(Conv1d_ExpectedOutput::all_ones) / sizeof(float)}));
 
    {
-        SOFIE_Conv1d::Session<alpaka::TagGpuCudaRt> session("Conv1d_FromONNX_GPU_ALPAKA.dat");
+        SOFIE_Conv1d::Session<TestTag> session("Conv1d_FromONNX_GPU_ALPAKA.dat");
         auto result = session.infer(input_d);
         alpaka::wait(queue);
-        cudaDeviceSynchronize();
         alpaka::memcpy(queue, result_h, result);
         alpaka::wait(queue);
    }
@@ -632,10 +616,9 @@ TEST_F(SofieAlpakaTest, Conv3d)
    auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{sizeof(Conv3d_ExpectedOutput::all_ones) / sizeof(float)}));
 
    {
-        SOFIE_Conv3d::Session<alpaka::TagGpuCudaRt> session("Conv3d_FromONNX_GPU_ALPAKA.dat");
+        SOFIE_Conv3d::Session<TestTag> session("Conv3d_FromONNX_GPU_ALPAKA.dat");
         auto result = session.infer(input_d);
         alpaka::wait(queue);
-        cudaDeviceSynchronize();
         alpaka::memcpy(queue, result_h, result);
         alpaka::wait(queue);
    }
@@ -667,10 +650,9 @@ TEST_F(SofieAlpakaTest, ConvWithDilation)
    auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{sizeof(ConvWithDilation_ExpectedOutput::all_ones) / sizeof(float)}));
 
    {
-        SOFIE_ConvWithDilation::Session<alpaka::TagGpuCudaRt> session("ConvWithDilation_FromONNX_GPU_ALPAKA.dat");
+        SOFIE_ConvWithDilation::Session<TestTag> session("ConvWithDilation_FromONNX_GPU_ALPAKA.dat");
         auto result = session.infer(input_d);
         alpaka::wait(queue);
-        cudaDeviceSynchronize();
         alpaka::memcpy(queue, result_h, result);
         alpaka::wait(queue);
    }
@@ -710,9 +692,8 @@ TEST_F(SofieAlpakaTest, DynamicConv1D)
 
         auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{outSize}));
         {
-            SOFIE_DynamicConv1D::Session<alpaka::TagGpuCudaRt> session("DynamicConv1D_FromONNX_GPU_ALPAKA.dat", N, P);
+            SOFIE_DynamicConv1D::Session<TestTag> session("DynamicConv1D_FromONNX_GPU_ALPAKA.dat", N, P);
             auto result = session.infer(N, P, input_d);
-            cudaDeviceSynchronize();
             alpaka::memcpy(queue, result_h, result);
             alpaka::wait(queue);
         }
@@ -756,9 +737,8 @@ TEST_F(SofieAlpakaTest, DynamicConv1DNoBias)
 
         auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{outSize}));
         {
-            SOFIE_DynamicConv1DNoBias::Session<alpaka::TagGpuCudaRt> session("DynamicConv1DNoBias_FromONNX_GPU_ALPAKA.dat", N, P);
+            SOFIE_DynamicConv1DNoBias::Session<TestTag> session("DynamicConv1DNoBias_FromONNX_GPU_ALPAKA.dat", N, P);
             auto result = session.infer(N, P, input_d);
-            cudaDeviceSynchronize();
             alpaka::memcpy(queue, result_h, result);
             alpaka::wait(queue);
         }
@@ -798,9 +778,8 @@ TEST_F(SofieAlpakaTest, DynamicConv2DNoBias)
 
         auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{outSize}));
         {
-            SOFIE_DynamicConv2DNoBias::Session<alpaka::TagGpuCudaRt> session("DynamicConv2DNoBias_FromONNX_GPU_ALPAKA.dat", N, P);
+            SOFIE_DynamicConv2DNoBias::Session<TestTag> session("DynamicConv2DNoBias_FromONNX_GPU_ALPAKA.dat", N, P);
             auto result = session.infer(N, P, input_d);
-            cudaDeviceSynchronize();
             alpaka::memcpy(queue, result_h, result);
             alpaka::wait(queue);
         }

@@ -33,6 +33,7 @@ jobs:
       valid: ${{ steps.parse.outputs.valid }}
       flavor: ${{ steps.parse.outputs.flavor }}
       valid_flavors: ${{ steps.parse.outputs.valid_flavors }}
+      backend: ${{ steps.parse.outputs.backend }}
     steps:
       - name: React to trigger comment
         if: github.event_name == 'issue_comment'
@@ -50,11 +51,13 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            // default flavor keyed by name -> actual self-hosted runner label
+            // default flavor keyed by name -> { self-hosted runner label, alpaka backend }
             const flavors = {
-              l40s: 'ml4ep-l40s',
-              h100: 'ml4ep-h100',
-              'h100-47gb': 'ml4ep-h100-47gb',
+              l40s: { runner: 'ml4ep-l40s', backend: 'cuda' },
+              h100: { runner: 'ml4ep-h100', backend: 'cuda' },
+              'h100-47gb': { runner: 'ml4ep-h100-47gb', backend: 'cuda' },
+              w7900: { runner: 'ml4ep-w7900', backend: 'hip' },
+              mi300x: { runner: 'ml4ep-mi300x', backend: 'hip' },
             };
             let flavor = 'l40s';
             let valid = true;
@@ -67,7 +70,8 @@ jobs:
             }
             core.setOutput('flavor', flavor);
             core.setOutput('valid', String(valid));
-            core.setOutput('runner_label', valid ? flavors[flavor] : '');
+            core.setOutput('runner_label', valid ? flavors[flavor].runner : '');
+            core.setOutput('backend', valid ? flavors[flavor].backend : '');
             core.setOutput('valid_flavors', Object.keys(flavors).join(', '));
       - name: Post run link
         if: github.event_name == 'issue_comment'
@@ -86,14 +90,21 @@ jobs:
     name: GPU Unit Tests
     needs: parse-command
     if: needs.parse-command.outputs.valid == 'true'
+    concurrency:
+      group: gpu-tests-${{ needs.parse-command.outputs.flavor }}-${{ github.event.issue.number || github.ref }}
+      cancel-in-progress: true
     runs-on: ${{ needs.parse-command.outputs.runner_label }}
     container:
       image: registry.cern.ch/ngt/lxplus-like:9
       options: --user 0:0
     timeout-minutes: 60
     steps:
-      - name: GPU check
+      - name: GPU check (NVIDIA)
+        if: needs.parse-command.outputs.backend == 'cuda'
         run: nvidia-smi
+      - name: GPU check (AMD)
+        if: needs.parse-command.outputs.backend == 'hip'
+        run: rocm-smi
       - name: Setup build environment
         run: |
           set -euo pipefail
@@ -118,16 +129,17 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.DEPS_CACHE }}
-          key: cmake-deps-tests-${{ hashFiles('tests/CMakeLists.txt') }}
-          restore-keys: cmake-deps-tests-
+          key: cmake-deps-tests-${{ needs.parse-command.outputs.backend }}-${{ hashFiles('tests/CMakeLists.txt') }}
+          restore-keys: cmake-deps-tests-${{ needs.parse-command.outputs.backend }}-
       - name: Configure
         run: |
           cmake -B build -S . \
             -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
             -DSOFIE_BUILD_TESTS=ON \
             -DENABLE_ALPAKA_TESTS=ON \
-            -DALPAKA_BACKEND=cuda \
+            -DALPAKA_BACKEND=${{ needs.parse-command.outputs.backend }} \
             "-DCMAKE_CUDA_ARCHITECTURES=${{ env.CUDA_ARCH }}" \
+            -DCMAKE_HIP_ARCHITECTURES=native \
             "-DFETCHCONTENT_BASE_DIR=${{ env.DEPS_CACHE }}"
       - name: Build and run tests
         working-directory: build

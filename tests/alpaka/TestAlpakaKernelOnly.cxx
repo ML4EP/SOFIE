@@ -10,8 +10,6 @@
 #include "KernelOnlyStridedChain_KernelOnly_GPU_ALPAKA.hxx"
 #include "KernelOnlyStridedBinary_KernelOnly_GPU_ALPAKA.hxx"
 
-using Acc = alpaka::TagToAcc<alpaka::TagGpuCudaRt, Dim, Idx>;
-
 TEST_F(SofieAlpakaTest, KernelOnlyLeakyRelu)
 {
     constexpr float TOLERANCE = DEFAULT_TOLERANCE;
@@ -23,12 +21,11 @@ TEST_F(SofieAlpakaTest, KernelOnlyLeakyRelu)
     auto output_d = alpaka::allocBuf<float, Idx>(device, Ext1D::all(Idx{n}));
 
     auto workDiv = SOFIE_LeakyReluKernelOnly::sofie_workdiv<Dim, Idx>(Ext1D::all(Idx{n}));
-    auto task = alpaka::createTaskKernel<Acc>(workDiv, SOFIE_LeakyReluKernelOnly::LeakyReluKernel{},
+    auto task = alpaka::createTaskKernel<TestAcc>(workDiv, SOFIE_LeakyReluKernelOnly::LeakyReluKernel{},
                                                alpaka::getPtrNative(input_d), alpaka::getPtrNative(output_d),
                                                n, alpha);
     alpaka::enqueue(queue, task);
     alpaka::wait(queue);
-    cudaDeviceSynchronize();
 
     auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{n}));
     alpaka::memcpy(queue, result_h, output_d);
@@ -55,10 +52,10 @@ TEST_F(SofieAlpakaTest, KernelOnlyStridedChain)
 
         SOFIE_KernelOnlyStridedChain::sofie_strided_layout<2> layout{{3, 5}, {strides[0], strides[1]}};
         auto workDiv = SOFIE_KernelOnlyStridedChain::sofie_workdiv<Dim, Idx>(Ext1D::all(Idx{n}));
-        alpaka::enqueue(queue, alpaka::createTaskKernel<Acc>(workDiv, SOFIE_KernelOnlyStridedChain::UnaryNegStridedKernel{},
+        alpaka::enqueue(queue, alpaka::createTaskKernel<TestAcc>(workDiv, SOFIE_KernelOnlyStridedChain::UnaryNegStridedKernel{},
                                                               alpaka::getPtrNative(in_d), alpaka::getPtrNative(neg_d),
                                                               n, layout));
-        alpaka::enqueue(queue, alpaka::createTaskKernel<Acc>(workDiv, SOFIE_KernelOnlyStridedChain::SigmoidKernel{},
+        alpaka::enqueue(queue, alpaka::createTaskKernel<TestAcc>(workDiv, SOFIE_KernelOnlyStridedChain::SigmoidKernel{},
                                                               alpaka::getPtrNative(neg_d), alpaka::getPtrNative(out_d), n));
         auto out = toHost(host, queue, out_d, n);
 
@@ -81,7 +78,7 @@ TEST_F(SofieAlpakaTest, KernelOnlyStridedBinary)
     SOFIE_KernelOnlyStridedBinary::sofie_strided_layout<3> layoutA{{2, 3, 4}, {1, 8, 2}};
     SOFIE_KernelOnlyStridedBinary::sofie_strided_layout<3> layoutB{{2, 3, 4}, {0, 2, 0}};
     auto workDiv = SOFIE_KernelOnlyStridedBinary::sofie_workdiv<Dim, Idx>(Ext1D::all(Idx{n}));
-    alpaka::enqueue(queue, alpaka::createTaskKernel<Acc>(workDiv, SOFIE_KernelOnlyStridedBinary::Binary0SubKernel{},
+    alpaka::enqueue(queue, alpaka::createTaskKernel<TestAcc>(workDiv, SOFIE_KernelOnlyStridedBinary::Binary0SubKernel{},
                                                           alpaka::getPtrNative(a_d), alpaka::getPtrNative(b_d),
                                                           alpaka::getPtrNative(out_d), layoutA, layoutB, n));
     auto out = toHost(host, queue, out_d, n);

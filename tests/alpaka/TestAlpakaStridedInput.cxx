@@ -106,7 +106,7 @@ TEST_F(SofieAlpakaStridedTest, ContiguousDefault)
 {
    StridedBuffer<> in({3, 5}, {5, 1});
    auto input_d = makeDeviceBuf<float>(host, device, queue, in.storage.data(), in.storage.size());
-   SOFIE_StridedUnaryChain::Session<alpaka::TagGpuCudaRt> session;
+   SOFIE_StridedUnaryChain::Session<TestTag> session;
    auto result = session.infer(input_d);
    std::vector<float> ref(15);
    for (size_t i = 0; i < 15; i++)
@@ -118,7 +118,7 @@ TEST_F(SofieAlpakaStridedTest, RowPadding)
 {
    StridedBuffer<> in({3, 5}, {8, 1});
    auto input_d = makeDeviceBuf<float>(host, device, queue, in.storage.data(), in.storage.size());
-   SOFIE_StridedUnaryChain::Session<alpaka::TagGpuCudaRt> session("", {{8, 1}});
+   SOFIE_StridedUnaryChain::Session<TestTag> session("", {{8, 1}});
    auto result = session.infer(input_d);
    std::vector<float> ref(15);
    for (size_t i = 0; i < 15; i++)
@@ -130,7 +130,7 @@ TEST_F(SofieAlpakaStridedTest, Transposed)
 {
    StridedBuffer<> in({3, 5}, {1, 3});
    auto input_d = makeDeviceBuf<float>(host, device, queue, in.storage.data(), in.storage.size());
-   SOFIE_StridedUnaryChain::Session<alpaka::TagGpuCudaRt> session("", {{1, 3}});
+   SOFIE_StridedUnaryChain::Session<TestTag> session("", {{1, 3}});
    auto result = session.infer(input_d);
    std::vector<float> ref(15);
    for (size_t i = 0; i < 15; i++)
@@ -142,7 +142,7 @@ TEST_F(SofieAlpakaStridedTest, SameOperatorKindOnStridedAndContiguousInput)
 {
    StridedBuffer<> in({2, 3, 4}, {1, 8, 2});
    auto input_d = makeDeviceBuf<float>(host, device, queue, in.storage.data(), in.storage.size());
-   SOFIE_StridedReluTwice::Session<alpaka::TagGpuCudaRt> session("", {{1, 8, 2}});
+   SOFIE_StridedReluTwice::Session<TestTag> session("", {{1, 8, 2}});
    auto result = session.infer(input_d);
    std::vector<float> ref(24);
    for (size_t i = 0; i < 24; i++)
@@ -155,7 +155,7 @@ TEST_F(SofieAlpakaStridedTest, DynamicShapeStridedSubBatch)
    // maximum batch 8, run a batch of 6 rows read from a matrix with leading dimension 7
    StridedBuffer<> in({6, 5}, {7, 1});
    auto input_d = makeDeviceBuf<float>(host, device, queue, in.storage.data(), in.storage.size());
-   SOFIE_StridedTanhDyn::Session<alpaka::TagGpuCudaRt> session("", 8, {{7, 1}});
+   SOFIE_StridedTanhDyn::Session<TestTag> session("", 8, {{7, 1}});
    auto result = session.infer(6, input_d);
    std::vector<float> ref(30);
    for (size_t i = 0; i < 30; i++)
@@ -165,8 +165,8 @@ TEST_F(SofieAlpakaStridedTest, DynamicShapeStridedSubBatch)
 
 TEST_F(SofieAlpakaStridedTest, InvalidStridesAreRejected)
 {
-   EXPECT_THROW((SOFIE_StridedUnaryChain::Session<alpaka::TagGpuCudaRt>("", {{5, 1}, {5, 1}})), std::runtime_error);
-   EXPECT_THROW((SOFIE_StridedUnaryChain::Session<alpaka::TagGpuCudaRt>("", {{5, 1, 1}})), std::runtime_error);
+   EXPECT_THROW((SOFIE_StridedUnaryChain::Session<TestTag>("", {{5, 1}, {5, 1}})), std::runtime_error);
+   EXPECT_THROW((SOFIE_StridedUnaryChain::Session<TestTag>("", {{5, 1, 1}})), std::runtime_error);
 }
 
 TEST_F(SofieAlpakaStridedTest, GemmBiasReluLayouts)
@@ -175,7 +175,7 @@ TEST_F(SofieAlpakaStridedTest, GemmBiasReluLayouts)
    for (const auto &strides : std::vector<std::vector<size_t>>{{5, 1}, {8, 1}, {1, 3}}) {
       StridedBuffer<> in({3, 5}, strides);
       auto input_d = makeDeviceBuf<float>(host, device, queue, in.storage.data(), in.storage.size());
-      SOFIE_StridedGemmBiasRelu::Session<alpaka::TagGpuCudaRt> session("StridedGemmBiasRelu_GPU_ALPAKA.dat", {strides});
+      SOFIE_StridedGemmBiasRelu::Session<TestTag> session("StridedGemmBiasRelu_GPU_ALPAKA.dat", {strides});
       auto result = session.infer(input_d);
       Check(result, RefGemmBiasRelu(in.logical));
    }
@@ -186,7 +186,7 @@ TEST_F(SofieAlpakaStridedTest, GemmTransposedOperands)
    for (const auto &strides : std::vector<std::vector<size_t>>{{3, 1}, {8, 1}, {1, 5}}) {
       StridedBuffer<> in({5, 3}, strides);
       auto input_d = makeDeviceBuf<float>(host, device, queue, in.storage.data(), in.storage.size());
-      SOFIE_StridedGemmTransAB::Session<alpaka::TagGpuCudaRt> session("StridedGemmTransAB_GPU_ALPAKA.dat", {strides});
+      SOFIE_StridedGemmTransAB::Session<TestTag> session("StridedGemmTransAB_GPU_ALPAKA.dat", {strides});
       auto result = session.infer(input_d);
       Check(result, RefGemmTransAB(in.logical));
    }
@@ -196,7 +196,7 @@ TEST_F(SofieAlpakaStridedTest, GemmWithoutUnitStrideThrows)
 {
    StridedBuffer<> in({3, 5}, {20, 2});
    auto input_d = makeDeviceBuf<float>(host, device, queue, in.storage.data(), in.storage.size());
-   SOFIE_StridedGemmBiasRelu::Session<alpaka::TagGpuCudaRt> session("StridedGemmBiasRelu_GPU_ALPAKA.dat", {{20, 2}});
+   SOFIE_StridedGemmBiasRelu::Session<TestTag> session("StridedGemmBiasRelu_GPU_ALPAKA.dat", {{20, 2}});
    EXPECT_THROW(session.infer(input_d), std::runtime_error);
 }
 
@@ -207,7 +207,7 @@ TEST_F(SofieAlpakaStridedTest, GemmWithoutUnitStrideThrows)
       for (const auto &strides : std::vector<std::vector<size_t>>{{1, 8, 2}, {16, 5, 1}, {12, 4, 1}}) {              \
          StridedBuffer<TYPE> in({2, 3, 4}, strides, GENERATOR);                                                         \
          auto input_d = ToDevice(in);                                                                                 \
-         SOFIE_Strided##NAME::Session<alpaka::TagGpuCudaRt> session("", {strides});                                  \
+         SOFIE_Strided##NAME::Session<TestTag> session("", {strides});                                  \
          auto y = session.infer(input_d);                                                                             \
          std::vector<TYPE> ref;                                                                                       \
          for (TYPE x : in.logical)                                                                                    \
@@ -228,7 +228,7 @@ TEST_F(SofieAlpakaStridedTest, CastAndIsNaN)
 {
    StridedBuffer<> in({2, 3, 4}, {1, 8, 2}, [](size_t k) { return 0.9f * float(k) - 7.3f; });
    auto input_d = ToDevice(in);
-   SOFIE_StridedCast::Session<alpaka::TagGpuCudaRt> cast("", {{1, 8, 2}});
+   SOFIE_StridedCast::Session<TestTag> cast("", {{1, 8, 2}});
    auto castResult = cast.infer(input_d);
    std::vector<int32_t> castRef;
    for (float x : in.logical)
@@ -237,7 +237,7 @@ TEST_F(SofieAlpakaStridedTest, CastAndIsNaN)
 
    StridedBuffer<> withNaN({2, 3, 4}, {16, 5, 1}, [](size_t k) { return k % 5 == 0 ? std::nanf("") : float(k); });
    auto nan_d = ToDevice(withNaN);
-   SOFIE_StridedIsNaN::Session<alpaka::TagGpuCudaRt> isnan("", {{16, 5, 1}});
+   SOFIE_StridedIsNaN::Session<TestTag> isnan("", {{16, 5, 1}});
    auto nanResult = isnan.infer(nan_d);
    std::vector<uint8_t> nanRef;
    for (float x : withNaN.logical)
@@ -251,7 +251,7 @@ TEST_F(SofieAlpakaStridedTest, BinaryWithBroadcast)
    StridedBuffer<> b({3, 1}, {2, 7}, [](size_t k) { return 1.5f * float(k) + 0.25f; });
    auto a_d = ToDevice(a);
    auto b_d = ToDevice(b);
-   SOFIE_StridedBinary::Session<alpaka::TagGpuCudaRt> session("", {{1, 8, 2}, {2, 7}});
+   SOFIE_StridedBinary::Session<TestTag> session("", {{1, 8, 2}, {2, 7}});
    auto y = session.infer(a_d, b_d);
    std::vector<float> ref(24);
    for (size_t k = 0; k < 24; k++)
@@ -265,7 +265,7 @@ TEST_F(SofieAlpakaStridedTest, BinaryOnlyOneInputStrided)
    StridedBuffer<> b({3, 1}, {2, 7}, [](size_t k) { return 1.5f * float(k) + 0.25f; });
    auto a_d = ToDevice(a);
    auto b_d = ToDevice(b);
-   SOFIE_StridedBinary::Session<alpaka::TagGpuCudaRt> session("", {{}, {2, 7}});
+   SOFIE_StridedBinary::Session<TestTag> session("", {{}, {2, 7}});
    auto y = session.infer(a_d, b_d);
    std::vector<float> ref(24);
    for (size_t k = 0; k < 24; k++)
@@ -279,7 +279,7 @@ TEST_F(SofieAlpakaStridedTest, Comparison)
    StridedBuffer<> b({4}, {3}, [](size_t k) { return 0.4f * float(k); });
    auto a_d = ToDevice(a);
    auto b_d = ToDevice(b);
-   SOFIE_StridedCompare::Session<alpaka::TagGpuCudaRt> session("", {{1, 8, 2}, {3}});
+   SOFIE_StridedCompare::Session<TestTag> session("", {{1, 8, 2}, {3}});
    auto y = session.infer(a_d, b_d);
    std::vector<uint8_t> ref(24);
    for (size_t k = 0; k < 24; k++)
@@ -293,7 +293,7 @@ TEST_F(SofieAlpakaStridedTest, BitwiseAnd)
    StridedBuffer<int32_t> b({2, 3, 4}, {1, 8, 2}, [](size_t k) { return int32_t(5 * k + 2); });
    auto a_d = ToDevice(a);
    auto b_d = ToDevice(b);
-   SOFIE_StridedBitwiseAnd::Session<alpaka::TagGpuCudaRt> session("", {{12, 4, 1}, {1, 8, 2}});
+   SOFIE_StridedBitwiseAnd::Session<TestTag> session("", {{12, 4, 1}, {1, 8, 2}});
    auto y = session.infer(a_d, b_d);
    std::vector<int32_t> ref(24);
    for (size_t k = 0; k < 24; k++)
@@ -309,7 +309,7 @@ TEST_F(SofieAlpakaStridedTest, NarySum)
    auto a_d = ToDevice(a);
    auto b_d = ToDevice(b);
    auto c_d = ToDevice(c);
-   SOFIE_StridedNarySum::Session<alpaka::TagGpuCudaRt> session("", {{1, 8, 2}, {1, 3}, {2}});
+   SOFIE_StridedNarySum::Session<TestTag> session("", {{1, 8, 2}, {1, 3}, {2}});
    auto y = session.infer(a_d, b_d, c_d);
    std::vector<float> ref(24);
    for (size_t k = 0; k < 24; k++)
@@ -325,7 +325,7 @@ TEST_F(SofieAlpakaStridedTest, Where)
    auto c_d = ToDevice(c);
    auto x_d = ToDevice(x);
    auto y_d = ToDevice(y);
-   SOFIE_StridedWhere::Session<alpaka::TagGpuCudaRt> session("", {{2, 5}, {1, 8, 2}, {3}});
+   SOFIE_StridedWhere::Session<TestTag> session("", {{2, 5}, {1, 8, 2}, {3}});
    auto z = session.infer(c_d, x_d, y_d);
    std::vector<float> ref(24);
    for (size_t k = 0; k < 24; k++)
@@ -338,7 +338,7 @@ TEST_F(SofieAlpakaStridedTest, Transpose)
    for (const auto &strides : std::vector<std::vector<size_t>>{{1, 8, 2}, {16, 5, 1}, {12, 4, 1}}) {
       StridedBuffer<> in({2, 3, 4}, strides);
       auto in_d = ToDevice(in);
-      SOFIE_StridedTranspose::Session<alpaka::TagGpuCudaRt> s("", {strides});
+      SOFIE_StridedTranspose::Session<TestTag> s("", {strides});
       std::vector<float> ref(24);
       for (size_t l = 0; l < 4; l++)
          for (size_t i = 0; i < 2; i++)
@@ -354,7 +354,7 @@ TEST_F(SofieAlpakaStridedTest, Slice)
    for (const auto &strides : std::vector<std::vector<size_t>>{{6, 1}, {9, 1}, {1, 4}, {2, 9}}) {
       StridedBuffer<> in({4, 6}, strides);
       auto in_d = ToDevice(in);
-      SOFIE_StridedSlice::Session<alpaka::TagGpuCudaRt> s("", {strides});
+      SOFIE_StridedSlice::Session<TestTag> s("", {strides});
       std::vector<float> ref;
       for (size_t i = 0; i < 2; i++)
          for (size_t j = 0; j < 2; j++)
@@ -370,7 +370,7 @@ TEST_F(SofieAlpakaStridedTest, Gather)
    StridedBuffer<int64_t> idx({3}, {2}, [](size_t k) { return int64_t((2 * k + 3) % 4); });
    auto x_d = ToDevice(x);
    auto idx_d = ToDevice(idx);
-   SOFIE_StridedGather::Session<alpaka::TagGpuCudaRt> s("", {{1, 4}, {2}});
+   SOFIE_StridedGather::Session<TestTag> s("", {{1, 4}, {2}});
    std::vector<float> ref;
    for (size_t i = 0; i < 3; i++)
       for (size_t c = 0; c < 5; c++)
@@ -387,7 +387,7 @@ TEST_F(SofieAlpakaStridedTest, ConcatMixedStridedAndContiguousInputs)
    auto a_d = ToDevice(a);
    auto b_d = ToDevice(b);
    auto c_d = ToDevice(c);
-   SOFIE_StridedConcat::Session<alpaka::TagGpuCudaRt> s("", {{1, 2}, {}, {5, 3}});
+   SOFIE_StridedConcat::Session<TestTag> s("", {{1, 2}, {}, {5, 3}});
    std::vector<float> ref;
    for (size_t r = 0; r < 2; r++) {
       for (size_t j = 0; j < 3; j++)
@@ -404,7 +404,7 @@ TEST_F(SofieAlpakaStridedTest, Split)
 {
    StridedBuffer<> in({2, 6}, {1, 2});
    auto in_d = ToDevice(in);
-   SOFIE_StridedSplit::Session<alpaka::TagGpuCudaRt> s("", {{1, 2}});
+   SOFIE_StridedSplit::Session<TestTag> s("", {{1, 2}});
    auto y = s.infer(in_d);
    std::vector<float> ref0, ref1;
    for (size_t r = 0; r < 2; r++)
@@ -420,7 +420,7 @@ TEST_F(SofieAlpakaStridedTest, Pad)
 {
    StridedBuffer<> in({2, 3}, {1, 2});
    auto in_d = ToDevice(in);
-   SOFIE_StridedPad::Session<alpaka::TagGpuCudaRt> s("StridedPad_GPU_ALPAKA.dat", {{1, 2}});
+   SOFIE_StridedPad::Session<TestTag> s("StridedPad_GPU_ALPAKA.dat", {{1, 2}});
    std::vector<float> ref(20, 0.f);
    for (size_t i = 0; i < 2; i++)
       for (size_t j = 0; j < 3; j++)
@@ -433,7 +433,7 @@ TEST_F(SofieAlpakaStridedTest, Tile)
 {
    StridedBuffer<> in({2, 3}, {1, 2});
    auto in_d = ToDevice(in);
-   SOFIE_StridedTile::Session<alpaka::TagGpuCudaRt> s("", {{1, 2}});
+   SOFIE_StridedTile::Session<TestTag> s("", {{1, 2}});
    std::vector<float> ref(36);
    for (size_t i = 0; i < 4; i++)
       for (size_t j = 0; j < 9; j++)
@@ -446,7 +446,7 @@ TEST_F(SofieAlpakaStridedTest, Expand)
 {
    StridedBuffer<> in({3, 1}, {2, 7});
    auto in_d = ToDevice(in);
-   SOFIE_StridedExpand::Session<alpaka::TagGpuCudaRt> s("", {{2, 7}});
+   SOFIE_StridedExpand::Session<TestTag> s("", {{2, 7}});
    std::vector<float> ref(24);
    for (size_t k = 0; k < 24; k++)
       ref[k] = in.logical[(k / 4) % 3];
@@ -460,7 +460,7 @@ TEST_F(SofieAlpakaStridedTest, Expand)
       for (const auto &strides : std::vector<std::vector<size_t>>{{1, 8, 2}, {16, 5, 1}, {12, 4, 1}}) {              \
          StridedBuffer<> in(SHAPE, strides);                                                                            \
          auto in_d = ToDevice(in);                                                                                    \
-         SOFIE_Strided##NAME::Session<alpaka::TagGpuCudaRt> s(WEIGHTS, {strides});                                   \
+         SOFIE_Strided##NAME::Session<TestTag> s(WEIGHTS, {strides});                                   \
          auto y = s.infer(in_d);                                                                                      \
          Check(y, std::vector<float>(REFERENCE(in.logical)));                                                         \
       }                                                                                                               \
@@ -484,7 +484,7 @@ TEST_F(SofieAlpakaStridedTest, GroupNorm)
    for (const auto &strides : std::vector<std::vector<size_t>>{{1, 8, 3}, {40, 5, 1}, {12, 3, 1}}) {
       StridedBuffer<> in({2, 4, 3}, strides);
       auto in_d = ToDevice(in);
-      SOFIE_StridedGroupNorm::Session<alpaka::TagGpuCudaRt> s("StridedGroupNorm_GPU_ALPAKA.dat", {strides});
+      SOFIE_StridedGroupNorm::Session<TestTag> s("StridedGroupNorm_GPU_ALPAKA.dat", {strides});
       auto y = s.infer(in_d);
       Check(y, RefGroupNorm(in.logical));
    }
@@ -495,10 +495,10 @@ TEST_F(SofieAlpakaStridedTest, Pooling)
    for (const auto &strides : std::vector<std::vector<size_t>>{{32, 16, 4, 1}, {64, 24, 5, 1}, {32, 1, 8, 2}}) {
       StridedBuffer<> in({1, 2, 4, 4}, strides);
       auto in_d = ToDevice(in);
-      SOFIE_StridedMaxPool::Session<alpaka::TagGpuCudaRt> maxPool("", {strides});
+      SOFIE_StridedMaxPool::Session<TestTag> maxPool("", {strides});
       auto yMax = maxPool.infer(in_d);
       Check(yMax, RefPool(in.logical, true));
-      SOFIE_StridedAvgPool::Session<alpaka::TagGpuCudaRt> avgPool("", {strides});
+      SOFIE_StridedAvgPool::Session<TestTag> avgPool("", {strides});
       auto yAvg = avgPool.infer(in_d);
       Check(yAvg, RefPool(in.logical, false));
    }
@@ -509,7 +509,7 @@ TEST_F(SofieAlpakaStridedTest, TopK)
    for (const auto &strides : std::vector<std::vector<size_t>>{{1, 8, 2}, {16, 5, 1}, {12, 4, 1}}) {
       StridedBuffer<> in({2, 3, 4}, strides, [](size_t k) { return float((k * 13) % 24); });
       auto in_d = ToDevice(in);
-      SOFIE_StridedTopK::Session<alpaka::TagGpuCudaRt> s("", {strides});
+      SOFIE_StridedTopK::Session<TestTag> s("", {strides});
       auto result = s.infer(in_d);
       std::vector<float> refValues;
       std::vector<int64_t> refIndices;
@@ -533,10 +533,10 @@ TEST_F(SofieAlpakaStridedTest, ReshapeAndFlatten)
    for (const auto &strides : std::vector<std::vector<size_t>>{{1, 8, 2}, {16, 5, 1}, {12, 4, 1}}) {
       StridedBuffer<> in({2, 3, 4}, strides);
       auto in_d = ToDevice(in);
-      SOFIE_StridedReshape::Session<alpaka::TagGpuCudaRt> reshape("", {strides});
+      SOFIE_StridedReshape::Session<TestTag> reshape("", {strides});
       auto y = reshape.infer(in_d);
       Check(y, in.logical);
-      SOFIE_StridedFlatten::Session<alpaka::TagGpuCudaRt> flatten("", {strides});
+      SOFIE_StridedFlatten::Session<TestTag> flatten("", {strides});
       auto yf = flatten.infer(in_d);
       Check(yf, in.logical);
    }
@@ -547,7 +547,7 @@ TEST_F(SofieAlpakaStridedTest, Trilu)
    for (const auto &strides : std::vector<std::vector<size_t>>{{1, 8, 2}, {16, 5, 1}}) {
       StridedBuffer<> in({2, 3, 4}, strides);
       auto in_d = ToDevice(in);
-      SOFIE_StridedTrilu::Session<alpaka::TagGpuCudaRt> s("", {strides});
+      SOFIE_StridedTrilu::Session<TestTag> s("", {strides});
       std::vector<float> ref(24);
       for (size_t b = 0; b < 2; b++)
          for (size_t r = 0; r < 3; r++)
@@ -563,7 +563,7 @@ TEST_F(SofieAlpakaStridedTest, NonZero)
    for (const auto &strides : std::vector<std::vector<size_t>>{{1, 8, 2}, {16, 5, 1}}) {
       StridedBuffer<> in({2, 3, 4}, strides, [](size_t k) { return k % 3 == 0 ? 0.f : float(k); });
       auto in_d = ToDevice(in);
-      SOFIE_StridedNonZero::Session<alpaka::TagGpuCudaRt> s("", {strides});
+      SOFIE_StridedNonZero::Session<TestTag> s("", {strides});
       std::vector<int64_t> nonZero[3];
       for (size_t k = 0; k < 24; k++)
          if (in.logical[k] != 0.f) {
@@ -586,7 +586,7 @@ TEST_F(SofieAlpakaStridedTest, GatherND)
    StridedBuffer<int64_t> rows({3, 1}, {2, 5}, [](size_t k) { return int64_t((2 * k + 3) % 4); });
    auto x_d = ToDevice(x);
    auto rows_d = ToDevice(rows);
-   SOFIE_StridedGatherND::Session<alpaka::TagGpuCudaRt> s("", {{1, 4}, {2, 5}});
+   SOFIE_StridedGatherND::Session<TestTag> s("", {{1, 4}, {2, 5}});
    std::vector<float> ref;
    for (size_t i = 0; i < 3; i++)
       for (size_t c = 0; c < 5; c++)
@@ -596,7 +596,7 @@ TEST_F(SofieAlpakaStridedTest, GatherND)
 
    StridedBuffer<int64_t> elems({3, 2}, {1, 3}, [](size_t k) { return int64_t(k % 4 == 0 ? 3 : (k % 5)); });
    auto elems_d = ToDevice(elems);
-   SOFIE_StridedGatherNDElems::Session<alpaka::TagGpuCudaRt> e("", {{1, 4}, {1, 3}});
+   SOFIE_StridedGatherNDElems::Session<TestTag> e("", {{1, 4}, {1, 3}});
    std::vector<float> refElems;
    for (size_t i = 0; i < 3; i++)
       refElems.push_back(x.logical[elems.logical[i * 2] * 5 + elems.logical[i * 2 + 1]]);
@@ -612,7 +612,7 @@ TEST_F(SofieAlpakaStridedTest, ScatterND)
    auto x_d = ToDevice(x);
    auto idx_d = ToDevice(idx);
    auto upd_d = ToDevice(upd);
-   SOFIE_StridedScatterND::Session<alpaka::TagGpuCudaRt> s("", {{1, 4}, {3, 7}, {1, 2}});
+   SOFIE_StridedScatterND::Session<TestTag> s("", {{1, 4}, {3, 7}, {1, 2}});
    std::vector<float> ref = x.logical;
    for (size_t n = 0; n < 2; n++)
       for (size_t c = 0; c < 5; c++)
@@ -629,7 +629,7 @@ TEST_F(SofieAlpakaStridedTest, ScatterElements)
    auto x_d = ToDevice(x);
    auto idx_d = ToDevice(idx);
    auto upd_d = ToDevice(upd);
-   SOFIE_StridedScatterElements::Session<alpaka::TagGpuCudaRt> s("", {{1, 3}, {1, 2}, {8, 2}});
+   SOFIE_StridedScatterElements::Session<TestTag> s("", {{1, 3}, {1, 2}, {8, 2}});
    std::vector<float> ref = x.logical;
    for (size_t i = 0; i < 2; i++)
       for (size_t j = 0; j < 4; j++)
@@ -644,7 +644,7 @@ TEST_F(SofieAlpakaStridedTest, Convolution)
    for (const auto &strides : std::vector<std::vector<size_t>>{{108, 36, 6, 1}, {200, 50, 6, 1}, {108, 1, 18, 3}}) {
       StridedBuffer<> in({2, 3, 6, 6}, strides);
       auto in_d = ToDevice(in);
-      SOFIE_StridedConv::Session<alpaka::TagGpuCudaRt> s("StridedConv_GPU_ALPAKA.dat", {strides});
+      SOFIE_StridedConv::Session<TestTag> s("StridedConv_GPU_ALPAKA.dat", {strides});
       auto y = s.infer(in_d);
       Check(y, RefConv(in.logical));
    }
@@ -659,7 +659,7 @@ TEST_F(SofieAlpakaStridedTest, ScaledDotProductAttention)
       auto q_d = ToDevice(q);
       auto k_d = ToDevice(k);
       auto v_d = ToDevice(v);
-      SOFIE_StridedSDPA::Session<alpaka::TagGpuCudaRt> s("", {strides, strides, strides});
+      SOFIE_StridedSDPA::Session<TestTag> s("", {strides, strides, strides});
       auto y = s.infer(q_d, k_d, v_d);
       Check(y, RefSDPA(q.logical, k.logical, v.logical));
    }
@@ -680,7 +680,7 @@ TEST_F(SofieAlpakaStridedTest, ScanOperators)
             C({1, 3, 4}, st[4], gen(5)), D({2}, st[5], gen(6));
          auto u_d = ToDevice(u), delta_d = ToDevice(delta), A_d = ToDevice(A), B_d = ToDevice(B), C_d = ToDevice(C),
               D_d = ToDevice(D);
-         SOFIE_StridedMamba::Session<alpaka::TagGpuCudaRt> s("", st);
+         SOFIE_StridedMamba::Session<TestTag> s("", st);
          auto y = s.infer(u_d, delta_d, A_d, B_d, C_d, D_d);
          return toHost(host, queue, y, 8);
       };
@@ -693,7 +693,7 @@ TEST_F(SofieAlpakaStridedTest, ScanOperators)
          StridedBuffer<> r({1, 2, 3, 2}, st[0], gen(1)), k({1, 2, 3, 2}, st[1], gen(2)), v({1, 2, 3, 2}, st[2], gen(3)),
             w({1, 2, 3, 2}, st[3], gen(4)), u({2, 2}, st[4], gen(5));
          auto r_d = ToDevice(r), k_d = ToDevice(k), v_d = ToDevice(v), w_d = ToDevice(w), u_d = ToDevice(u);
-         SOFIE_StridedRWKV::Session<alpaka::TagGpuCudaRt> s("", st);
+         SOFIE_StridedRWKV::Session<TestTag> s("", st);
          auto y = s.infer(r_d, k_d, v_d, w_d, u_d);
          return toHost(host, queue, y, 12);
       };
@@ -705,7 +705,7 @@ TEST_F(SofieAlpakaStridedTest, ScanOperators)
       auto run = [&](const std::vector<std::vector<size_t>> &st) {
          StridedBuffer<> x({1, 3, 4}, st[0], gen(1)), a({1, 3, 4}, st[1], [](size_t k) { return 0.1f + 0.07f * float(k % 11); });
          auto x_d = ToDevice(x), a_d = ToDevice(a);
-         SOFIE_StridedGriffin::Session<alpaka::TagGpuCudaRt> s("", st);
+         SOFIE_StridedGriffin::Session<TestTag> s("", st);
          auto y = s.infer(x_d, a_d);
          return toHost(host, queue, y, 12);
       };
@@ -722,7 +722,7 @@ TEST_F(SofieAlpakaStridedTest, GemmBothOperandsStrided)
       StridedBuffer<> b({5, 4}, layoutsB[i], [](size_t k) { return 0.1f * float(k % 7) - 0.3f; });
       auto a_d = ToDevice(a);
       auto b_d = ToDevice(b);
-      SOFIE_StridedGemmAB::Session<alpaka::TagGpuCudaRt> s("", {layoutsA[i], layoutsB[i]});
+      SOFIE_StridedGemmAB::Session<TestTag> s("", {layoutsA[i], layoutsB[i]});
       std::vector<float> ref(12, 0.f);
       for (size_t r = 0; r < 3; r++)
          for (size_t c = 0; c < 4; c++)
@@ -742,7 +742,7 @@ TEST_F(SofieAlpakaStridedTest, GemmTransposedOperandsBothStrided)
       StridedBuffer<> b({4, 5}, layoutsB[i], [](size_t k) { return 0.1f * float(k % 7) - 0.3f; });
       auto a_d = ToDevice(a);
       auto b_d = ToDevice(b);
-      SOFIE_StridedGemmABt::Session<alpaka::TagGpuCudaRt> s("", {layoutsA[i], layoutsB[i]});
+      SOFIE_StridedGemmABt::Session<TestTag> s("", {layoutsA[i], layoutsB[i]});
       std::vector<float> ref(12, 0.f);
       for (size_t r = 0; r < 3; r++)
          for (size_t c = 0; c < 4; c++)
@@ -759,7 +759,7 @@ TEST_F(SofieAlpakaStridedTest, GemmOperandWithoutUnitStrideThrows)
    StridedBuffer<> b({5, 4}, {8, 2});
    auto a_d = ToDevice(a);
    auto b_d = ToDevice(b);
-   SOFIE_StridedGemmAB::Session<alpaka::TagGpuCudaRt> s("", {{5, 1}, {8, 2}});
+   SOFIE_StridedGemmAB::Session<TestTag> s("", {{5, 1}, {8, 2}});
    EXPECT_THROW(s.infer(a_d, b_d), std::runtime_error);
 }
 
@@ -770,7 +770,7 @@ TEST_F(SofieAlpakaStridedTest, IfBranches)
       StridedBuffer<> x({3, 5}, strides);
       auto x_d = ToDevice(x);
       // the condition has no strides (empty array)
-      SOFIE_StridedIf::Session<alpaka::TagGpuCudaRt> session("", {std::vector<size_t>{}, strides});
+      SOFIE_StridedIf::Session<TestTag> session("", {std::vector<size_t>{}, strides});
       for (uint8_t cond : {1, 0, 1}) {
          StridedBuffer<uint8_t> c({1}, {1}, [cond](size_t) { return cond; });
          auto c_d = ToDevice(c);

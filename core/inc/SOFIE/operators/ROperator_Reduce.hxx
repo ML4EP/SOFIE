@@ -607,9 +607,14 @@ public:
       // ---- shared-memory tree reduction down to one warp's worth of partials ----
       // Stops once the active thread count fits in a single warp; the final
       // warp-width combine below uses shuffles instead of shared memory.
+      // The shuffle stage must not span more lanes than the block has threads:
+      // a 32-thread block on a 64-wide wavefront would read lanes 32-63,
+      // which hold no thread and come back as garbage.
       op += "std::int32_t const warpSize = alpaka::warp::getSize(acc);\n";
+      op += "std::int32_t const width = warpSize < static_cast<std::int32_t>(" + bsExpr
+            + ") ? warpSize : static_cast<std::int32_t>(" + bsExpr + ");\n";
       op += "for (std::size_t s = " + halfBsExpr
-            + "; s >= static_cast<std::size_t>(warpSize); s >>= 1u) {\n";
+            + "; s >= static_cast<std::size_t>(width); s >>= 1u) {\n";
       op += "if (thread_id < s) {\n";
       if (Op == ReduceProd)
          op += "shmem[thread_id] *= shmem[thread_id + s];\n";
@@ -623,9 +628,9 @@ public:
       op += "alpaka::syncBlockThreads(acc);\n";
       op += "}\n\n";
 
-      op += "if (thread_id < static_cast<std::size_t>(warpSize)) {\n";
+      op += "if (thread_id < static_cast<std::size_t>(width)) {\n";
       op += "T val = shmem[thread_id];\n";
-      op += "for (std::int32_t offset = warpSize / 2; offset > 0; offset >>= 1) {\n";
+      op += "for (std::int32_t offset = width / 2; offset > 0; offset >>= 1) {\n";
       op += "T const other = alpaka::warp::shfl_down(acc, val, static_cast<std::uint32_t>(offset));\n";
       if (Op == ReduceProd)
          op += "val *= other;\n";
@@ -658,7 +663,7 @@ public:
          op += "output[out_idx] = result;\n";
       }
       op += "}\n";
-      op += "}\n"; // end if (thread_id < warpSize)
+      op += "}\n"; // end if (thread_id < width)
 
       op += "}\n"; // end operator()
       op += "};\n";     // end struct

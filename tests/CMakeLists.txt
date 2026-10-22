@@ -200,7 +200,8 @@ SOFIE_ADD_TEST(
 if (ENABLE_ALPAKA_TESTS)
 
   string(TOLOWER "${ALPAKA_BACKEND}" _alpaka_backend)
-  if (NOT _alpaka_backend IN_LIST ALPAKA_BACKEND)
+  get_property(_alpaka_known_backends CACHE ALPAKA_BACKEND PROPERTY STRINGS)
+  if (NOT _alpaka_backend IN_LIST _alpaka_known_backends)
     message(FATAL_ERROR "Unsupported ALPAKA_BACKEND=${ALPAKA_BACKEND}")
   endif()
 
@@ -241,6 +242,27 @@ SOFIE_GENERATE_EXECUTABLE(
   )
 
   ##########################################################################
+  # Test sources, compiled for whichever backend is selected below
+  ##########################################################################
+  set(ALPAKA_TEST_SOURCES
+    alpaka/TestAlpakaLinear.cxx
+    alpaka/TestAlpakaConv.cxx
+    alpaka/TestAlpakaNormalization.cxx
+    alpaka/TestAlpakaElementwiseUnary.cxx
+    alpaka/TestAlpakaElementwiseBinaryLogic.cxx
+    alpaka/TestAlpakaReduce.cxx
+    alpaka/TestAlpakaShapeIndexing.cxx
+    alpaka/TestAlpakaGNN.cxx
+    alpaka/TestAlpakaPool.cxx
+    alpaka/TestAlpakaLowRank.cxx
+    alpaka/TestAlpakaKernelOnly.cxx
+    alpaka/TestAlpakaStridedInput.cxx
+    alpaka/TestAlpakaNormReduction.cxx
+    alpaka/TestAlpakaSequenceOps.cxx
+    alpaka/TestAlpakaSubGraph.cxx
+  )
+
+  ##########################################################################
   # CUDA backend
   ##########################################################################
   if (_alpaka_backend STREQUAL "cuda")
@@ -250,32 +272,14 @@ SOFIE_GENERATE_EXECUTABLE(
     enable_language(CUDA)
     find_package(CUDAToolkit REQUIRED)
 
-    set(ALPAKA_CUDA_TEST_SOURCES
-      alpaka/TestAlpakaLinear.cxx
-      alpaka/TestAlpakaConv.cxx
-      alpaka/TestAlpakaNormalization.cxx
-      alpaka/TestAlpakaElementwiseUnary.cxx
-      alpaka/TestAlpakaElementwiseBinaryLogic.cxx
-      alpaka/TestAlpakaReduce.cxx
-      alpaka/TestAlpakaShapeIndexing.cxx
-      alpaka/TestAlpakaGNN.cxx
-      alpaka/TestAlpakaPool.cxx
-      alpaka/TestAlpakaLowRank.cxx
-      alpaka/TestAlpakaKernelOnly.cxx
-      alpaka/TestAlpakaStridedInput.cxx
-      alpaka/TestAlpakaNormReduction.cxx
-      alpaka/TestAlpakaSequenceOps.cxx
-      alpaka/TestAlpakaSubGraph.cxx
-    )
-
     set_source_files_properties(
-      ${ALPAKA_CUDA_TEST_SOURCES}
+      ${ALPAKA_TEST_SOURCES}
       PROPERTIES LANGUAGE CUDA
     )
 
     SOFIE_GENERATE_EXECUTABLE(
       TestCustomModelsFromONNXForAlpakaCuda
-      ${ALPAKA_CUDA_TEST_SOURCES}
+      ${ALPAKA_TEST_SOURCES}
       LIBRARIES SOFIE_core GTest::gtest GTest::gtest_main
       FIXTURES_REQUIRED sofie-compile-models-onnx-alpaka;sofie-lowrank-emit;sofie-strided-emit
       FIXTURES_SETUP sofie-test-models-onnx-alpaka-build
@@ -343,10 +347,76 @@ SOFIE_GENERATE_EXECUTABLE(
       TIMEOUT 1800
     )
 
+  ##########################################################################
+  # HIP backend
+  ##########################################################################
   elseif (_alpaka_backend STREQUAL "hip")
-    message(FATAL_ERROR
-      "ALPAKA_BACKEND=hip is not implemented yet (AMD GPU support is planned, "
-      "see tests/alpaka/). Use ALPAKA_BACKEND=cuda for now.")
+
+    message(STATUS "Enabling Alpaka HIP tests")
+
+    enable_language(HIP)
+    set(ROCM_BASE "/opt/rocm" CACHE PATH "ROCm installation prefix")
+
+    set_source_files_properties(
+      ${ALPAKA_TEST_SOURCES}
+      PROPERTIES LANGUAGE HIP
+    )
+
+    SOFIE_GENERATE_EXECUTABLE(
+      TestCustomModelsFromONNXForAlpakaHip
+      ${ALPAKA_TEST_SOURCES}
+      LIBRARIES SOFIE_core GTest::gtest GTest::gtest_main
+      FIXTURES_REQUIRED sofie-compile-models-onnx-alpaka;sofie-lowrank-emit;sofie-strided-emit
+      FIXTURES_SETUP sofie-test-models-onnx-alpaka-build
+    )
+
+    target_include_directories(
+      TestCustomModelsFromONNXForAlpakaHip PRIVATE
+      ${CMAKE_CURRENT_BINARY_DIR}
+      ${alpaka_SOURCE_DIR}/include
+      ${sofieblas_SOURCE_DIR}/include
+      ${ROCM_BASE}/include
+      ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+
+    set_target_properties(
+      TestCustomModelsFromONNXForAlpakaHip
+      PROPERTIES
+        HIP_STANDARD 20
+        HIP_STANDARD_REQUIRED ON
+    )
+
+    target_compile_definitions(
+      TestCustomModelsFromONNXForAlpakaHip PRIVATE
+      ALPAKA_ACC_GPU_HIP_ENABLED
+      ALPAKA_HAS_STD_ATOMIC_REF
+    )
+
+    target_compile_options(
+      TestCustomModelsFromONNXForAlpakaHip PRIVATE
+      -O3
+    )
+
+    target_link_directories(
+      TestCustomModelsFromONNXForAlpakaHip PRIVATE
+      ${ROCM_BASE}/lib
+    )
+
+    # ROOT-compatible: plain signature only
+    target_link_libraries(
+      TestCustomModelsFromONNXForAlpakaHip
+      hipblaslt
+      hipblas
+      amdhip64
+    )
+
+    SOFIE_ADD_TEST(
+      TestCustomModelsFromONNXForAlpakaHip
+      EXEC ./TestCustomModelsFromONNXForAlpakaHip
+      FIXTURES_REQUIRED sofie-compile-models-onnx-alpaka;sofie-lowrank-emit;sofie-test-models-onnx-alpaka-build
+      TIMEOUT 1800
+    )
+
   elseif (_alpaka_backend STREQUAL "sycl")
     message(FATAL_ERROR "ALPAKA_BACKEND=sycl is not implemented yet.")
   elseif (_alpaka_backend STREQUAL "cpu")
