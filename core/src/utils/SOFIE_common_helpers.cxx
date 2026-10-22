@@ -738,6 +738,71 @@ private:
 };
 )SOFIE";
 
+constexpr const char *kCustomMemory = R"SOFIE(
+struct MemoryProvider {
+   std::function<void *(std::size_t)> alloc;
+   std::function<void *(std::size_t)> assign;
+   std::function<void(void *)> dealloc;
+};
+
+class PoolBlock {
+public:
+   PoolBlock() = default;
+   PoolBlock(PoolBlock const &) = delete;
+   PoolBlock &operator=(PoolBlock const &) = delete;
+   PoolBlock(PoolBlock &&other) noexcept : fPtr(other.fPtr), fFree(std::move(other.fFree)) { other.fPtr = nullptr; }
+   PoolBlock &operator=(PoolBlock &&other) noexcept
+   {
+      if (this != &other) {
+         Release();
+         fPtr = other.fPtr;
+         fFree = std::move(other.fFree);
+         other.fPtr = nullptr;
+      }
+      return *this;
+   }
+   ~PoolBlock() { Release(); }
+
+   void *Allocate(MemoryProvider const &provider, std::size_t bytes)
+   {
+      Release();
+      if (bytes == 0)
+         return nullptr;
+      if (!provider.alloc)
+         throw std::runtime_error("sofie: MemoryProvider::alloc is not set");
+      fPtr = provider.alloc(bytes);
+      if (!fPtr)
+         throw std::runtime_error("sofie: MemoryProvider::alloc returned a null pointer for " + std::to_string(bytes) +
+                                  " bytes");
+      fFree = provider.dealloc;
+      return fPtr;
+   }
+
+private:
+   void Release()
+   {
+      if (fPtr && fFree)
+         fFree(fPtr);
+      fPtr = nullptr;
+   }
+
+   void *fPtr = nullptr;
+   std::function<void(void *)> fFree;
+};
+
+inline void *PlaceTensor(MemoryProvider const &provider, void *block, std::size_t offset, std::size_t bytes)
+{
+   if (bytes == 0)
+      return nullptr;
+   if (!provider.assign)
+      return static_cast<unsigned char *>(block) + offset;
+   void *ptr = provider.assign(offset);
+   if (!ptr)
+      throw std::runtime_error("sofie: MemoryProvider::assign returned a null pointer for offset " + std::to_string(offset));
+   return ptr;
+}
+)SOFIE";
+
 constexpr const char *kInputTensorDims = R"SOFIE(
 struct SingleDim {
    enum class Kind { Static, Symbolic };
@@ -790,7 +855,8 @@ HelperFunctionsCode GenerateHelperFunctionsCode(const std::set<std::string> &nee
    const bool safetensorsBlob = need("SafetensorsBlob");
    const bool readSafetensors = need("SafetensorsReader");
    const bool inputDims = need("InputTensorDims");
-   const bool dynMemory = need("DynamicMemory");
+   const bool customMemory = need("CustomMemory");
+   const bool dynMemory = need("DynamicMemory") || customMemory;
    const bool gnnData = need("GNN_Data");
 
    const bool im2colFamily = im2col || im2col3d || col2im || im2colStrided || im2col3dStrided;
@@ -819,6 +885,8 @@ HelperFunctionsCode GenerateHelperFunctionsCode(const std::set<std::string> &nee
       addStd({"array", "string_view", "cstddef"});
    if (dynMemory)
       addStd({"set", "unordered_map", "stdexcept", "iterator"});
+   if (customMemory)
+      addStd({"functional", "span", "string", "utility"});
 
    auto Block = [](const char *comment, const char *code) {
       return std::string("\n// ") + comment + "\n" + code;
@@ -875,6 +943,8 @@ HelperFunctionsCode GenerateHelperFunctionsCode(const std::set<std::string> &nee
       defs += Block("shape and stride descriptor of the input tensors", kInputTensorDims);
    if (dynMemory)
       defs += Block("memory planner for the dynamic intermediate tensors", shared_code::kShared_MemoryPlanner);
+   if (customMemory)
+      defs += Block("user supplied allocation and placement of the intermediate tensor pool", kCustomMemory);
    if (gnnData)
       defs += Block("data structure holding the nodes, edges and globals of a graph", kGNNData);
 

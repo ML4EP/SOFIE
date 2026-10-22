@@ -322,11 +322,21 @@ public:
       return out.str();
    }
 
-   std::string GenerateInitCode_GPU_ALPAKA() override {
-      if (fIsOutputConstant) return "";
-      std::string maxLen = fIsInputDynamic
+   std::string NonZeroCapacityExpr() const {
+      return fIsInputDynamic
          ? ("static_cast<Idx>(" + std::to_string(fRank) + "u * (" + ConvertDimShapeToLength(fShapeX) + "))")
          : (std::to_string(fRank * fInputLength) + "u");
+   }
+
+   std::vector<std::pair<std::string, std::string>> GetOutputCapacities_GPU_ALPAKA() const override {
+      if (fIsOutputConstant) return {};
+      return {{fNY, NonZeroCapacityExpr()}};
+   }
+
+   std::string GenerateInitCode_GPU_ALPAKA() override {
+      if (fIsOutputConstant) return "";
+      if (IsOutputPooled(fNY)) return "";
+      std::string maxLen = NonZeroCapacityExpr();
       return "deviceBuf_" + fNY + " = alpaka::allocBuf<int64_t, Idx>(devAcc, Ext1D::all(Idx{" + maxLen + "}));\n";
    }
 };

@@ -359,6 +359,15 @@ public:
       return "TopKKernel_" + fNVal + " topKernel_" + fNVal + ";\n";
    }
 
+   std::vector<std::pair<std::string, std::string>> GetOutputCapacities_GPU_ALPAKA() const override {
+      if (!fAxisIsDynamic || fShapeX.empty())
+         return {};
+      size_t axis = fAttrAxis < 0 ? fShapeX.size() + fAttrAxis : fAttrAxis;
+      auto sx = UTILITY::ComputeSliceInfo(fShapeX, axis);
+      std::string maxLen = "((" + sx.nBefore + ") * (" + sx.nAfter + ") * " + std::to_string(fRequestedK) + "u)";
+      return {{fNVal, maxLen}, {fNInd, maxLen}};
+   }
+
    std::string GenerateInitCode_GPU_ALPAKA() override {
       if (!fAxisIsDynamic)
          return "";

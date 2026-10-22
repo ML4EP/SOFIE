@@ -177,6 +177,150 @@ SOFIE/
 
 ---
 
+## Usage
+SOFIE works in a parser-generator working architecture. With SOFIE, the user gets an ONNX parser for translating models into SOFIE's internal representation.
+
+In a C++ program, we can proceed with an ONNX model:
+
+```c++
+SOFIE::RModelParser_ONNX parser;
+SOFIE::RModel model = parser.Parse(“./example_model.onnx”);
+model.Generate();
+model.OutputGenerated(“./example_output.hxx”);
+```
+
+And an C++ header file and a `.dat` file containing the model weights will be generated. You can also use
+
+```c++
+model.PrintRequiredInputTensors();
+```
+
+to check the required size and type of input tensor for that particular model, and use
+
+```c++
+model.PrintInitializedTensors();
+```
+
+to check the tensors (weights) already included in the model.
+
+To use the generated inference code:
+
+```c++
+#include "example_output.hxx"
+float input[INPUT_SIZE];
+std::vector<float> out = SOFIE_example_model::infer(input);
+
+// Generated header file shall contain a Session class which requires initialization to load the corresponding weights.
+SOFIE_example_model::Session s("example_model.dat")
+
+// Once instantiated the session object's infer method can be used
+std::vector<float> out = s.infer(input);
+```
+
+With the default settings, the weights are contained in a separate binary file, but if the user instead wants them to be in the generated header file itself, they can use approproiate generation options.
+
+```c++
+model.Generate(Options::kNoWeightFile);
+```
+
+Other such options includes `Options::kNoSession` (for not generating the Session class, and instead keeping the infer function independent).
+
+By default the separate weight file uses a simple text format (`*.dat`). A
+binary alternative is the [safetensors](https://huggingface.co/docs/safetensors)
+format (`*.safetensors`), which stores the weights as raw little-endian data
+behind a small JSON header. It loads faster, round-trips the values bit-exactly,
+and can be inspected with the standard Python and Rust safetensors tooling:
+
+```c++
+model.Generate(Options::kSafetensorsWeightFile);
+```
+
+### External CUDA/HIP stream
+
+With `Options::kExternalStream` (alpaka GPU generation, a `Session` class is required) the generated `Session` never creates a
+queue. Its only constructor takes the native `cudaStream_t` / `hipStream_t` of the caller as first argument and wraps it as a
+non-owning alpaka queue, which all the kernels, copies and BLAS calls of the session and of its sub-graphs are enqueued on.
+The stream must belong to the current device and outlive the session; the session never destroys it.
+
+```c++
+model.GenerateGPU_ALPAKA(Options::kExternalStream);
+// ...
+cudaStream_t stream = /* created by the application */;
+SOFIE_Model::Session<alpaka::TagGpuCudaRt> session(stream, "model.dat");
+auto y = session.infer(x_d);
+cudaStreamSynchronize(stream);
+```
+
+Without the option the session creates its own queue, or uses an alpaka queue passed to its constructor.
+
+### Custom memory
+
+With `Options::kCustomMemory` (alpaka GPU generation, a `Session` class is required) the application owns the device memory of the
+session and SOFIE does the planning. The generated `Session` constructor takes a `MemoryProvider` as first argument (after the queue or
+stream, when those are passed), defined in the model namespace of the header:
+
+```c++
+struct MemoryProvider {
+   std::function<void *(std::size_t)> alloc;                               // device memory block of the given size
+   std::function<void *(std::size_t)> assign;                              // optional: offset in the block -> address of that offset
+   std::function<void(void *)> dealloc;                                    // optional: called when the session is destroyed
+};
+```
+
+The constructor computes the size of everything the session needs on the device, calls `alloc` once with that size, and places
+the tensors in the block at offsets computed by SOFIE: every tensor gets its own region (weights, persistent state, shape tensors,
+graph outputs, operator scratch memory), and the intermediate tensors are packed by SOFIE's lifetime-aware planner so that tensors with disjoint
+lifetimes share memory. All regions are aligned to 256 bytes, so `alloc` has to return a pointer with that alignment (as `cudaMalloc` does).
+For each tensor `assign(offset)` is called with the offset SOFIE planned for it, and returns the address where the tensor is laid down
+(at least as many bytes as the tensor, rounded up to 256, are accessed from there); it must not return a null pointer. This lets the application
+map offsets of the block onto memory of its own, for example an arena it manages. Without `assign` the tensor is placed at `block + offset`.
+The weights are no exception: their regions are assigned like those of every other tensor, then the constructor copies the weights read from the
+weight file into them.
+
+```c++
+model.GenerateGPU_ALPAKA(Options::kCustomMemory);
+// ...
+SOFIE_Model::MemoryProvider memory;
+memory.alloc = [](std::size_t bytes) { void *p; cudaMalloc(&p, bytes); return p; };
+memory.dealloc = [](void *p) { cudaFree(p); };
+SOFIE_Model::Session<alpaka::TagGpuCudaRt> session(memory, "model.dat");
+```
+
+The block is released through `dealloc` after the queue has been waited on in the session destructor. With this option the generated
+`Session` makes no device allocation with alpaka: generation fails with an error naming the allocation if an operator needs device memory
+that cannot be planned in the constructor. A model with sub-graphs calls the provider once for the session of the main graph and once for each sub-graph session.
+`GetIntermediateMemoryPoolSize()` reports the size of the block, the free-memory statistics refer to the intermediate tensors.
+Tensors with a dynamic shape are placed with the size given by the maximum values of the shape parameters passed to the constructor.
+The option can be combined with `Options::kExternalStream`.
+
+### Strided inputs
+
+With `Options::kStridedInput` the generated `Session` constructor takes an
+extra argument: one stride array in elements per input tensor, in the order of the model inputs.
+The operators reading the inputs access them through these strides, without copying them into contiguous memory for any transformation,
+so a transposed, padded or sliced view can be passed directly to `infer`. An empty argument (the default) means
+contiguous inputs, and so does an empty array for a single input.
+
+```c++
+model.Generate(Options::kStridedInput);
+// ...
+SOFIE_Model::Session session("model.dat", /*inputStrides=*/{{8, 1}}); // 2D input with leading dimension 8
+auto y = session.infer(x_ptr);
+```
+
+When the shape is dynamic, the strides are used as given for every call, while contiguous (default) strides follow
+the shape of each call. An operator reading a graph input must implement `ROperator::SupportsStridedInput()`, otherwise
+generation fails with an error naming it.
+
+With `Options::kKernelOnly`  combined with `Options::kStridedInput`, the generated header contains the heterogeneous alpaka kernels, `sofie_strided_layout` (the logical shape and the strides, in elements, of an input) and `sofie_strided_offset`
+(the offset in the input buffer of the element with a given row-major logical index). The kernels reading a graph input
+take its `sofie_strided_layout` as an argument, so there is no stride storage: the caller builds the layouts. A broadcast
+input has the shape of the output and a zero stride for the broadcast dimensions.
+
+SOFIE also supports generating inference code with RDataFrame as inputs, refer to the tutorials below for examples.
+
+---
+
 ## Profiling in user code
 
 Both the CPU and GPU code generators accept `Options::kProfile` to embed
@@ -249,6 +393,32 @@ session.PrintMemoryInfo();
 > **Timing accuracy:** `alpaka::wait(queue)` is called after each operator kernel
 > so the wall-clock measurement captures actual GPU execution time.  This
 > disables kernel pipelining; use a non-profile build for throughput measurement.
+
+---
+
+## Supported operators
+
+The ONNX operators the parser can translate are listed by the parser itself, in alphabetical order:
+
+```cpp
+SOFIE::RModelParser_ONNX parser;
+std::vector<std::string> supportedOperators = parser.GetRegisteredOperators();
+```
+
+The GPU (alpaka) generation supports the operators implemented by classes deriving from `ROperator_ALPAKA`
+(`core/inc/SOFIE/operators/ROperator_ALPAKA.hxx`). As `CheckModel` does for the CPU, the operators of a model without a GPU implementation can be
+listed before generating any code:
+
+```cpp
+SOFIE::RModelParser_ONNX parser;
+bool supported = parser.CheckModelGPU("./example_model.onnx");   // false if any operator is missing for the CPU or for the GPU
+
+SOFIE::RModel model = parser.Parse("./example_model.onnx");
+supported = model.CheckGPUOperators();   // prints the operators without an alpaka implementation, sub-graphs included
+```
+
+`model.GenerateGPU_ALPAKA()` rejects such a model by throwing an exception naming the first of them and its position in the model.
+`SOFIE::GetAlpaka(op)` returns the alpaka interface of an operator, or `nullptr` if it has none.
 
 ---
 

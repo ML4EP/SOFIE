@@ -1384,6 +1384,13 @@ bool RModelParser_ONNX::CheckModel(std::string filename, bool verbose) {
    return true;
 }
 
+bool RModelParser_ONNX::CheckModelGPU(std::string filename, bool verbose) {
+   if (!CheckModel(filename, verbose))
+      return false;
+   RModel model = Parse(filename, verbose);
+   return model.CheckGPUOperators();
+}
+
 void RModelParser_ONNX::ParseONNXGraph(RModel & rmodel, const onnx::GraphProto & graph, std::string  graphName)
 {
    bool verbose = fVerbose;

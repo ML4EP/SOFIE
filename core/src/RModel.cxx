@@ -845,6 +845,8 @@ void RModel::InitializeSubGraph(std::shared_ptr<RModel>  graph) {
    graph->fIsSubGraph = true;
    // the operators of the sub-graph read the strided inputs of the main model
    graph->fStridedInput = fStridedInput;
+   graph->fExternalStream = fExternalStream;
+   graph->fCustomMemory = fCustomMemory;
 
    graph->Initialize(fBatchSize, fVerbose);
    // set the same options as parent model. The weights of a sub-graph are not read from the weight file of the

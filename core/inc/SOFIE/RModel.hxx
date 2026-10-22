@@ -41,6 +41,13 @@ private:
    std::unordered_map<std::string, InitializedTensor> fInitializedTensors;
    std::unordered_map<std::string, TensorInfo> fIntermediateTensorInfos;
    std::unordered_map<std::string, DynamicTensorInfo> fDynamicTensorInfos;
+   struct DeviceRegion {
+      std::string name;
+      ETensorType type;
+      std::string lengthExpr;
+   };
+   std::vector<DeviceRegion> fDeviceRegions; // tensors with their own region of the custom memory block
+   std::set<std::string> fArenaDynamicOutputs; // dynamic outputs of the custom memory block, viewed with their per-call extent
    std::vector<std::string> fUnifiedPoolTensorNames; // intermediate tensors (static + dynamic) placed in the unified runtime pool
    std::unordered_map<std::string, std::pair<std::vector<Dim>, bool>> fShapeTensors; // constant tensors describing a shape
    std::unordered_map<std::string, std::string> fAliasTensors; // alias tensors (name -> original tensor name)
@@ -197,6 +204,9 @@ public:
    {
       Generate(static_cast<std::underlying_type_t<Options>>(options), batchSize, verbose);
    }
+   // check that all the operators of the model (and of its sub-graphs) have an alpaka implementation: the missing
+   // ones are printed and false is returned if there is any
+   bool CheckGPUOperators() const;
    void GenerateGPU_ALPAKA(std::underlying_type_t<Options> options, int batchSize = -1, bool verbose = false);
    void GenerateGPU_ALPAKA(Options options = Options::kDefault, int batchSize = -1, bool verbose = false)
    {
@@ -216,6 +226,12 @@ public:
    void ForEachInferArg_GPU_ALPAKA(const std::function<void(const std::string &)> &onParam,
                                    const std::function<void(const std::string &)> &onInput) const;
 
+   struct MissingGPUOperator {
+      std::string graph;
+      size_t index;
+      std::string type;
+   };
+   void CollectOperatorsWithoutAlpaka(std::vector<MissingGPUOperator> &missing) const;
    void CheckAlpakaOperators() const;
 
    // generate the _infer_impl signature using ViewPlainPtr types instead of Buf types
@@ -272,6 +288,8 @@ protected:
    void GenerateSessionCode();
    void GenerateSessionCode_GPU_ALPAKA();
    void GenerateGPU_ALPAKA_Buffers();
+   std::string DeclareDeviceTensor_GPU_ALPAKA(const std::string &name, ETensorType type, const std::string &lengthExpr);
+   void CheckNoDeviceAllocation_GPU_ALPAKA() const;
    void GeneratePersistentTensorInfo_GPU_ALPAKA();
 
    void CheckAndFuseOperators();

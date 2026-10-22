@@ -178,6 +178,34 @@ SOFIE_ADD_TEST(
 )
 
 SOFIE_GENERATE_EXECUTABLE(
+  emitExternalStreamModels
+  models/ExternalStreamModelGenerator.cxx
+  LIBRARIES SOFIE_core
+  FIXTURES_SETUP sofie-external-stream-emit-build
+)
+
+SOFIE_ADD_TEST(
+  EmitExternalStreamModels
+  COMMAND ./emitExternalStreamModels
+  FIXTURES_REQUIRED sofie-external-stream-emit-build
+  FIXTURES_SETUP sofie-external-stream-emit;sofie-custom-memory-emit
+)
+
+SOFIE_GENERATE_EXECUTABLE(
+  emitCustomMemoryModels
+  models/CustomMemoryModelGenerator.cxx
+  LIBRARIES SOFIE_core
+  FIXTURES_SETUP sofie-custom-memory-emit-build
+)
+
+SOFIE_ADD_TEST(
+  EmitCustomMemoryModels
+  COMMAND ./emitCustomMemoryModels
+  FIXTURES_REQUIRED sofie-custom-memory-emit-build
+  FIXTURES_SETUP sofie-custom-memory-emit
+)
+
+SOFIE_GENERATE_EXECUTABLE(
   TestStridedInput
   cpu/TestStridedInput.cxx
   LIBRARIES SOFIE_core GTest::gtest GTest::gtest_main BLAS::BLAS
@@ -257,6 +285,8 @@ SOFIE_GENERATE_EXECUTABLE(
     alpaka/TestAlpakaLowRank.cxx
     alpaka/TestAlpakaKernelOnly.cxx
     alpaka/TestAlpakaStridedInput.cxx
+    alpaka/TestAlpakaExternalStream.cxx
+    alpaka/TestAlpakaCustomMemory.cxx
     alpaka/TestAlpakaNormReduction.cxx
     alpaka/TestAlpakaSequenceOps.cxx
     alpaka/TestAlpakaSubGraph.cxx
@@ -281,7 +311,7 @@ SOFIE_GENERATE_EXECUTABLE(
       TestCustomModelsFromONNXForAlpakaCuda
       ${ALPAKA_TEST_SOURCES}
       LIBRARIES SOFIE_core GTest::gtest GTest::gtest_main
-      FIXTURES_REQUIRED sofie-compile-models-onnx-alpaka;sofie-lowrank-emit;sofie-strided-emit
+      FIXTURES_REQUIRED sofie-compile-models-onnx-alpaka;sofie-lowrank-emit;sofie-strided-emit;sofie-external-stream-emit
       FIXTURES_SETUP sofie-test-models-onnx-alpaka-build
     )
 

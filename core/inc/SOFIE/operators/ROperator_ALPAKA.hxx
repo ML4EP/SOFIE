@@ -29,6 +29,17 @@ public:
    // generate code to reset recurrent/stateful buffers (called once per file boundary)
    virtual std::string GenerateResetStateCode_GPU_ALPAKA() { return ""; }
    virtual std::vector<std::string> GetPersistentTensorNames_GPU_ALPAKA() const { return {}; }
+
+   /// device scratch memory of the operator which, with Options::kCustomMemory, is placed in the memory block of the session
+   struct DeviceScratch {
+      std::string name;
+      ETensorType type;
+      std::string lengthExpr;
+   };
+   virtual std::vector<DeviceScratch> GetDeviceScratch_GPU_ALPAKA() const { return {}; }
+   /// output tensors whose size is only known at inference time, with the number of elements to reserve for them
+   virtual std::vector<std::pair<std::string, std::string>> GetOutputCapacities_GPU_ALPAKA() const { return {}; }
+   void SetCustomMemory(bool enabled) { fCustomMemory = enabled; }
    virtual std::string Generate_GPU_Kernel_ALPAKA(std::string /*opName*/) { return ""; }
    virtual std::string Generate_GPU_Kernel_ALPAKA(std::string opName, const std::vector<std::string> & /*dynParamNames*/) {
       return Generate_GPU_Kernel_ALPAKA(opName);
@@ -126,6 +137,7 @@ public:
 
 protected:
    std::set<std::string> fPooledOutputNames;
+   bool fCustomMemory = false;
 
    /// CPU: GPU kernels read a strided input X as `X[sofie_strided_offset(layoutX, logicalIndex)]`
    static std::string StridedKernelRead(const std::string &ptr, const std::string &layout, const std::string &index)

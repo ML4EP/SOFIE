@@ -76,6 +76,27 @@ static std::string DeclareViewLine(const std::string &name, ETensorType t) {
           "{static_cast<" + ConvertOutputTypeToString(t) + "*>(nullptr), devAcc, Ext1D::all(Idx{0})};\n";
 }
 
+std::string RModel::DeclareDeviceTensor_GPU_ALPAKA(const std::string &name, ETensorType type,
+                                                   const std::string &lengthExpr) {
+   if (!fCustomMemory)
+      return AllocBufLine(name, type, lengthExpr);
+   fDeviceRegions.push_back({name, type, lengthExpr});
+   return DeclareViewLine(name, type);
+}
+
+void RModel::CheckNoDeviceAllocation_GPU_ALPAKA() const {
+   const std::string needle = "alpaka::allocBuf<";
+   size_t pos = 0;
+   while ((pos = fGC.find(needle, pos)) != std::string::npos) {
+      size_t lineEnd = fGC.find('\n', pos);
+      std::string line = fGC.substr(pos, lineEnd == std::string::npos ? std::string::npos : lineEnd - pos);
+      if (line.find(", Idx>(devAcc") != std::string::npos)
+         throw std::runtime_error("sofie: Options::kCustomMemory: the generated code of model " + fName +
+                                  " allocates device memory with alpaka, which is not supported with this option: " + line);
+      pos += needle.size();
+   }
+}
+
 void RModel::GenerateInitializedTensorInfo_GPU_ALPAKA() {
    if (!fInitializedTensors.empty()){
       fGC += "\n// initialized tensors for weights\n";
@@ -96,7 +117,7 @@ void RModel::GenerateInitializedTensorInfo_GPU_ALPAKA() {
       }
 
          size_t length = ConvertShapeToLength(i.second.shape());
-         fGC += AllocBufLine(i.first, i.second.type(), std::to_string(length));
+         fGC += DeclareDeviceTensor_GPU_ALPAKA(i.first, i.second.type(), std::to_string(length));
 
    }
 }
@@ -121,18 +142,7 @@ void RModel::GeneratePersistentTensorInfo_GPU_ALPAKA()
       const ETensorType type = GetTensorType(name);
       const size_t length = ConvertShapeToLength(GetTensorShape(name));
 
-      if (type == ETensorType::FLOAT)
-         fGC += "BufF1D deviceBuf_" + name + " = alpaka::allocBuf<float, Idx>(devAcc, Ext1D::all(Idx{" + std::to_string(length) + "}));\n";
-      else if (type == ETensorType::DOUBLE)
-         fGC += "BufD1D deviceBuf_" + name + " = alpaka::allocBuf<double, Idx>(devAcc, Ext1D::all(Idx{" + std::to_string(length) + "}));\n";
-      else if (type == ETensorType::INT32)
-         fGC += "BufI321D deviceBuf_" + name + " = alpaka::allocBuf<int32_t, Idx>(devAcc, Ext1D::all(Idx{" + std::to_string(length) + "}));\n";
-      else if (type == ETensorType::INT64)
-         fGC += "BufI641D deviceBuf_" + name + " = alpaka::allocBuf<int64_t, Idx>(devAcc, Ext1D::all(Idx{" + std::to_string(length) + "}));\n";
-      else if (type == ETensorType::BOOL || type == ETensorType::UINT8)
-         fGC += "BufUI81D deviceBuf_" + name + " = alpaka::allocBuf<uint8_t, Idx>(devAcc, Ext1D::all(Idx{" + std::to_string(length) + "}));\n";
-      else
-         throw std::runtime_error("Unsupported persistent GPU tensor type: " + name);
+      fGC += DeclareDeviceTensor_GPU_ALPAKA(name, type, std::to_string(length));
    }
 }
 
@@ -238,7 +248,7 @@ void RModel::GenerateDynamicTensorInfo_GPU_ALPAKA() {
    auto alignUp = [](std::size_t v, std::size_t a) -> std::size_t { return (v + a - 1) & ~(a - 1); };
 
    // --- Unified pool: lifetime-aware packing of all pooled intermediates ---
-   if (!fUnifiedPoolTensorNames.empty()) {
+   if (!fUnifiedPoolTensorNames.empty() || fCustomMemory) {
       struct PoolEntry {
          std::string name;
          ETensorType type;
@@ -303,7 +313,49 @@ void RModel::GenerateDynamicTensorInfo_GPU_ALPAKA() {
          entries.push_back({tname, type, sizeExpr, lengthExpr, producer, lastUse, isConst, constBytes});
       }
 
-      if (!entries.empty()) {
+      if (fCustomMemory) {
+         AddNeededHelperFunction("CustomMemory");
+         out << "\n" << "// --- Device memory block: planned by SOFIE, allocated and assigned through the memory provider ---\n";
+         out << "{\n";
+         out << "constexpr std::size_t kPoolAlign = 256;\n";
+         out << "auto alignUp = [](std::size_t v, std::size_t a) -> std::size_t {\n";
+         out << "return (v + a - 1) & ~(a - 1);\n";
+         out << "};\n";
+         out << "std::size_t staticBytes = 0;\n";
+         for (size_t i = 0; i < fDeviceRegions.size(); ++i) {
+            auto &r = fDeviceRegions[i];
+            out << "const std::size_t regionOffset_" << i << " = staticBytes;\n";
+            out << "const std::size_t regionBytes_" << i << " = alignUp((" << r.lengthExpr << ") * "
+                << GetTypeSize(r.type) << ", kPoolAlign);\n";
+            out << "staticBytes += regionBytes_" << i << ";\n";
+         }
+         out << "std::vector<TensorLifeInfo> poolInfos;\n";
+         out << "poolInfos.reserve(" << entries.size() << ");\n";
+         for (auto &e : entries) {
+            int end = (int)(std::max(e.lastUseOp, e.producerOp) + 1);
+            out << "poolInfos.push_back({" << e.producerOp << ", " << end << ", alignUp(" << e.sizeExpr
+                << ", kPoolAlign)});\n";
+         }
+         out << "auto poolResult = OrganizeMemory(poolInfos);\n";
+         out << "fPoolTotalFreeMemory = poolResult.total_free_bytes;\n";
+         out << "fPoolLargestFreeBlock = poolResult.largest_free_block;\n";
+         out << "std::size_t totalBytes = staticBytes + poolResult.total_bytes;\n";
+         out << "auto* blockBase = fPoolBlock.Allocate(sofieMemory, totalBytes);\n";
+         out << "fUnifiedPoolSize = totalBytes;\n\n";
+         for (size_t i = 0; i < fDeviceRegions.size(); ++i) {
+            auto &r = fDeviceRegions[i];
+            out << "deviceBuf_" << r.name << " = " << GetViewType(r.type) << "{reinterpret_cast<"
+                << ConvertOutputTypeToString(r.type) << "*>(PlaceTensor(sofieMemory, blockBase, regionOffset_" << i << ", regionBytes_" << i << ")), devAcc, Ext1D::all(Idx{"
+                << r.lengthExpr << "})};\n";
+         }
+         for (size_t i = 0; i < entries.size(); ++i) {
+            auto &e = entries[i];
+            out << "deviceBuf_" << e.name << " = " << GetViewType(e.type) << "{reinterpret_cast<"
+                << ConvertOutputTypeToString(e.type) << "*>(PlaceTensor(sofieMemory, blockBase, staticBytes + poolResult.offsets[" << i << "], alignUp(" << e.sizeExpr
+                << ", kPoolAlign))), devAcc, Ext1D::all(Idx{" << e.lengthExpr << "})};\n";
+         }
+         out << "}\n";
+      } else if (!entries.empty()) {
          std::vector<size_t> constIdx, runtimeIdx;
          for (size_t i = 0; i < entries.size(); ++i)
             (entries[i].isConst ? constIdx : runtimeIdx).push_back(i);
@@ -514,7 +566,9 @@ void RModel::GenerateOutput_GPU_ALPAKA() {
       ETensorType type = GetTensorType(name);
       const std::string storageName = ResolveAliasTensor(name);
 
-      if (IsPooledIntermediate(storageName)) {
+      const bool inArena = std::any_of(fDeviceRegions.begin(), fDeviceRegions.end(),
+                                       [&](const DeviceRegion &r) { return r.name == storageName; });
+      if (IsPooledIntermediate(storageName) || inArena) {
          if (type == ETensorType::FLOAT)  return "ViewF1D";
          if (type == ETensorType::DOUBLE) return "ViewD1D";
          if (type == ETensorType::INT32)  return "ViewI321D";
@@ -560,6 +614,11 @@ void RModel::GenerateOutput_GPU_ALPAKA() {
          }
          if (!allKnown) continue;
          std::string lengthExpr = ConvertDimShapeToLength(it->second.shape);
+         if (fArenaDynamicOutputs.count(name)) {
+            code += "deviceBuf_" + name + " = " + GetViewType(it->second.type) + "{alpaka::getPtrNative(deviceBuf_" + name +
+                    "), devAcc, Ext1D::all(Idx{static_cast<Idx>(" + lengthExpr + ")})};\n";
+            continue;
+         }
          code += "deviceBuf_" + name + " = alpaka::allocBuf<" + ConvertOutputTypeToString(it->second.type) +
                  ", Idx>(devAcc, Ext1D::all(Idx{static_cast<Idx>(" + lengthExpr + ")}));\n";
       }
@@ -769,7 +828,7 @@ std::string TensorMember(std::string const &name) {
    return "tensor_" + name;
 }
 
-void RModel::CheckAlpakaOperators() const
+void RModel::CollectOperatorsWithoutAlpaka(std::vector<MissingGPUOperator> &missing) const
 {
    for (size_t id = 0; id < fOperators.size(); id++) {
       const ROperator &op = *fOperators[id];
@@ -779,11 +838,34 @@ void RModel::CheckAlpakaOperators() const
       char *demangled = abi::__cxa_demangle(typeid(op).name(), nullptr, nullptr, &status);
       const std::string type = status == 0 && demangled ? demangled : typeid(op).name();
       std::free(demangled);
-      throw std::runtime_error("sofie: GPU (alpaka) generation of model " + fName + ": operator " + std::to_string(id) +
-                               " (" + type + ") has no alpaka implementation");
+      missing.push_back({fName, id, type});
    }
    for (const auto &graph : fSubGraphs)
-      graph->CheckAlpakaOperators();
+      graph->CollectOperatorsWithoutAlpaka(missing);
+}
+
+void RModel::CheckAlpakaOperators() const
+{
+   std::vector<MissingGPUOperator> missing;
+   CollectOperatorsWithoutAlpaka(missing);
+   if (!missing.empty())
+      throw std::runtime_error("sofie: GPU (alpaka) generation of model " + missing[0].graph + ": operator " +
+                               std::to_string(missing[0].index) + " (" + missing[0].type +
+                               ") has no alpaka implementation");
+}
+
+bool RModel::CheckGPUOperators() const
+{
+   std::vector<MissingGPUOperator> missing;
+   CollectOperatorsWithoutAlpaka(missing);
+   if (!missing.empty()) {
+      std::cout << "List of operators without a GPU (alpaka) implementation for model " << fName << std::endl;
+      for (const auto &m : missing)
+         std::cout << m.type << "  operator " << m.index << " of graph " << m.graph << std::endl;
+      return false;
+   }
+   std::cout << "All operators in the model have a GPU (alpaka) implementation!\n";
+   return true;
 }
 
 void RModel::GenerateSessionCode_GPU_ALPAKA() {
@@ -825,6 +907,9 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
    };
 
    bool OpNeedsBlas = false;
+
+   for (auto &op : fOperators)
+      AlpakaOp(*op).SetCustomMemory(fCustomMemory);
 
    // the sessions of the sub-graphs are generated first, each one in its own
    // namespace to keep their kernels separate. They share the queue of this session
@@ -913,10 +998,16 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
 
     fGC += "\n// platform, device and queue of the accelerator and of the host\n";
     fGC += "alpaka::Platform<Acc> const platform{};\n";
-    fGC += "DevAcc devAcc = alpaka::getDevByIdx(platform, 0);\n";
+    if (fExternalStream) {
+       fGC += "QueueAcc queue;\n";
+       fGC += "DevAcc devAcc = alpaka::getDev(queue);\n";
+    } else {
+       fGC += "DevAcc devAcc = alpaka::getDevByIdx(platform, 0);\n";
+    }
     fGC += "alpaka::PlatformCpu platformHost{};\n";
     fGC += "alpaka::DevCpu hostAcc = alpaka::getDevByIdx(platformHost, 0);\n";
-    fGC += "QueueAcc queue{devAcc};\n";
+    if (!fExternalStream)
+       fGC += "QueueAcc queue{devAcc};\n";
     fGC += "// default number of threads per block\n";
     fGC += "Idx threadsPerBlock = 256;\n";
     fGC += "\n// vector types for extents and work divisions\n";
@@ -930,6 +1021,23 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
    /// Allocate memory efficiently
    GenerateInitializedTensorInfo_GPU_ALPAKA();
    GeneratePersistentTensorInfo_GPU_ALPAKA();
+
+   std::unordered_map<std::string, std::string> outputCapacities;
+   if (fCustomMemory) {
+      bool scratchHeader = false;
+      for (size_t id = 0; id < fOperators.size(); ++id) {
+         if (fFusion.skip.count(id)) continue;
+         for (const auto &scratch : AlpakaOp(*fOperators[id]).GetDeviceScratch_GPU_ALPAKA()) {
+            if (!scratchHeader) {
+               fGC += "\n// scratch memory of the operators\n";
+               scratchHeader = true;
+            }
+            fGC += DeclareDeviceTensor_GPU_ALPAKA(scratch.name, scratch.type, scratch.lengthExpr);
+         }
+         for (const auto &cap : AlpakaOp(*fOperators[id]).GetOutputCapacities_GPU_ALPAKA())
+            outputCapacities[cap.first] = cap.second;
+      }
+   }
 
    // --- Unified intermediate tensor classification and pool declaration ---
    // Both static (fIntermediateTensorInfos) and dynamic (fDynamicTensorInfos)
@@ -965,7 +1073,7 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
          } else {
             // Scratch tensor (not any operator's output) → own owning buffer
             size_t length = ConvertShapeToLength(i.second.shape);
-            tensorDecls += AllocBufLine(i.first, i.second.type, std::to_string(length));
+            tensorDecls += DeclareDeviceTensor_GPU_ALPAKA(i.first, i.second.type, std::to_string(length));
          }
       }
 
@@ -981,7 +1089,13 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
             }
          }
          bool isOutput = outputSet.count(i.first) > 0;
-         if (runtimeShape || isOutput) {
+         if (fCustomMemory && isOutput && !runtimeShape) {
+            tensorDecls += DeclareDeviceTensor_GPU_ALPAKA(i.first, i.second.type, ConvertDimShapeToLength(i.second.shape));
+            fArenaDynamicOutputs.insert(i.first);
+         } else if (fCustomMemory && runtimeShape && outputCapacities.count(i.first)) {
+            tensorDecls += DeclareDeviceTensor_GPU_ALPAKA(i.first, i.second.type, outputCapacities[i.first]);
+            fArenaDynamicOutputs.insert(i.first);
+         } else if (runtimeShape || isOutput) {
             tensorDecls += AllocBufLine(i.first, i.second.type, "1");
          } else {
             tensorDecls += DeclareViewLine(i.first, i.second.type);
@@ -999,12 +1113,14 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
             size_t len = i.second.first.size();
             if (len == 0) continue;
             fGC += "int64_t tensor_" + i.first + "[" + std::to_string(len) + "];\n";
-            fGC += "BufI641D deviceBuf_" + i.first + " = alpaka::allocBuf<int64_t, Idx>(devAcc, Ext1D::all(Idx{"
-                   + std::to_string(len) + "}));\n";
+            fGC += DeclareDeviceTensor_GPU_ALPAKA(i.first, ETensorType::INT64, std::to_string(len));
          }
       }
 
-      if (!unifiedPoolTensors.empty()) {
+      if (fCustomMemory) {
+         fGC += "\n//--- device memory block (allocated through the memory provider in the constructor)\n";
+         fGC += "PoolBlock fPoolBlock;\n";
+      } else if (!unifiedPoolTensors.empty()) {
          fGC += "\n//--- unified memory pool buffer (allocated in constructor)\n";
          fGC += "BufUI81D fUnifiedPool = alpaka::allocBuf<uint8_t, Idx>(devAcc, Ext1D::all(Idx{1}));\n";
       }
@@ -1025,8 +1141,13 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
    // sessions of the sub-graphs, running on the queue of this session
    if (!fSubGraphs.empty())
       fGC += "\n//   subgraph sessions\n";
+   if (fCustomMemory && !fSubGraphs.empty()) {
+      AddNeededHelperFunction("CustomMemory");
+      fGC += "MemoryProvider fMemory;\n";
+   }
    for (auto &graph : fSubGraphs)
-      fGC += "SubGraph_" + graph->fName + "::Session<tagAcc> fSession_" + graph->fName + "{queue};\n";
+      fGC += "SubGraph_" + graph->fName + "::Session<tagAcc> fSession_" + graph->fName +
+             (fCustomMemory ? "{queue, fMemory};\n" : "{queue};\n");
 
    // inject profiling session data member
    if (fProfile) {
@@ -1049,6 +1170,8 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
          std::string savedGC = fGC;
          fGC.clear();
 
+         if (fCustomMemory)
+            GenerateDynamicTensorInfo_GPU_ALPAKA();
          GenerateTemporaryInitializedTensorContainers_GPU_ALPAKA();
          if (fUseWeightFile) {
             fGC += "\n//--- reading weights from file\n";
@@ -1056,10 +1179,12 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
             fGC += "\n";
          }
          MoveInitializedTensorsToBuffers_ALPAKA();
-         GenerateDynamicTensorInfo_GPU_ALPAKA();
+         if (!fCustomMemory)
+            GenerateDynamicTensorInfo_GPU_ALPAKA();
          for (auto &op : fOperators) {
             for (const auto &outName : op->GetOpOutputTensors()) {
-               if (std::find(fUnifiedPoolTensorNames.begin(), fUnifiedPoolTensorNames.end(), outName) != fUnifiedPoolTensorNames.end())
+               if (std::find(fUnifiedPoolTensorNames.begin(), fUnifiedPoolTensorNames.end(), outName) != fUnifiedPoolTensorNames.end() ||
+                   fArenaDynamicOutputs.count(std::string(outName)))
                   AlpakaOp(*op).MarkOutputAsPooled(outName);
             }
          }
@@ -1117,7 +1242,7 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
          for (auto &p : ctorParamNames)
             initArgs += ", " + p;
 
-         std::string initParams = "std::string filename";
+         std::string initParams = fCustomMemory ? "MemoryProvider const &sofieMemory, std::string filename" : "std::string filename";
          for (auto &p : ctorParamNames)
             initParams += ", size_t " + p;
 
@@ -1150,30 +1275,56 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
 
          fGC += "public:\n";
 
-         // (1) default-queue constructor
-         fGC += "\n// constructor using the default queue\n";
-         if (fUseWeightFile)
-            fGC += "\n" + sessionName + "(std::string filename = \"" + fileName + "\"";
-         else
-            fGC += "\n" + sessionName + "(std::string filename = \"\"";
-         fGC += ctorParams;
-         fGC += ") {\n";
-         fGC += "InitSession(filename" + initArgs + ");\n";
-         fGC += "}\n\n";
+         const std::string nameArg = fUseWeightFile ? "std::string filename = \"" + fileName + "\"" : "std::string filename = \"\"";
+         const std::string memParam = fCustomMemory ? "MemoryProvider sofieMemory, " : "";
+         const std::string initCall = std::string("InitSession(") + (fCustomMemory ? "sofieMemory, " : "") + "filename" + initArgs + ");\n";
+         const std::string memInit = fCustomMemory && !fSubGraphs.empty() ? "fMemory(sofieMemory)" : "";
+         auto initList = [&](std::vector<std::string> members) {
+            if (OpNeedsBlas)
+               members.push_back("blas(queue)");
+            if (!memInit.empty())
+               members.push_back(memInit);
+            std::string list;
+            for (auto &m : members)
+               list += (list.empty() ? "\n: " : ", ") + m;
+            return list;
+         };
 
-         // (2) external-queue constructor
-         fGC += "// constructor using an external queue\n";
-         if (fUseWeightFile)
-            fGC += sessionName + "(QueueAcc& extQueue, std::string filename = \"" + fileName + "\"";
-         else
-            fGC += sessionName + "(QueueAcc& extQueue, std::string filename = \"\"";
-         fGC += ctorParams;
-         fGC += ")\n: queue(extQueue)";
-         if (OpNeedsBlas)
-            fGC += ", blas(queue)";
-         fGC += "\n{\n";
-         fGC += "InitSession(filename" + initArgs + ");\n";
-         fGC += "}\n\n";
+         if (fExternalStream && !fIsSubGraph) {
+            fGC += "\n// native CUDA/HIP stream type of the accelerator queue\n";
+            fGC += "using NativeStream = decltype(std::declval<QueueAcc const&>().getNativeHandle());\n\n";
+            fGC += "// constructor wrapping a native CUDA/HIP stream as a non-owning queue: the stream must outlive the session\n";
+            fGC += "// and belong to the current device\n";
+            fGC += sessionName + "(NativeStream stream, " + memParam + nameArg + ctorParams + ")" + initList({"queue(stream)"}) + "\n{\n";
+            fGC += initCall;
+            fGC += "}\n\n";
+         } else {
+            if (!fExternalStream) {
+               // (1) default-queue constructor
+               fGC += "\n// constructor using the default queue\n";
+               fGC += "\n" + sessionName + "(" + memParam + nameArg + ctorParams + ")" + initList({}) + "\n{\n";
+               fGC += initCall;
+               fGC += "}\n\n";
+            }
+
+            // (2) external-queue constructor
+            fGC += "// constructor using an external queue\n";
+            fGC += sessionName + "(QueueAcc& extQueue, " + memParam + nameArg + ctorParams + ")";
+            if (fExternalStream)
+               fGC += initList({"queue(extQueue)"});
+            else
+               fGC += initList({"devAcc(alpaka::getDev(extQueue))", "queue(extQueue)"});
+            fGC += "\n{\n";
+            fGC += initCall;
+            fGC += "}\n\n";
+         }
+
+         if (fCustomMemory) {
+            fGC += "// the pool block is returned to the memory provider once the queue has finished\n";
+            fGC += "~" + sessionName + "() {\n";
+            fGC += "alpaka::wait(queue);\n";
+            fGC += "}\n\n";
+         }
       }
    }
 
@@ -1254,6 +1405,9 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
    if (fUseSession && !fIsGNNComponent) {
       fGC += "};   // end of Session\n";
    }
+
+   if (fCustomMemory)
+      CheckNoDeviceAllocation_GPU_ALPAKA();
 }
 
 void RModel::GenerateGPU_ALPAKA(std::underlying_type_t<Options> options, int batchSize, bool verbose) {
@@ -1297,6 +1451,21 @@ void RModel::GenerateGPU_ALPAKA(std::underlying_type_t<Options> options, int bat
          throw std::runtime_error("sofie: RModel::Generate: Options::kStridedInput requires a Session class "
                                   "(the strides are passed to its constructor)");
       fStridedInput = true;
+   }
+
+   if (static_cast<std::underlying_type_t<Options>>(Options::kExternalStream) & options) {
+      if (!fUseSession)
+         throw std::runtime_error("sofie: RModel::Generate: Options::kExternalStream requires a Session class "
+                                  "(the stream is passed to its constructor)");
+      fExternalStream = true;
+   }
+
+   if (static_cast<std::underlying_type_t<Options>>(Options::kCustomMemory) & options) {
+      if (!fUseSession)
+         throw std::runtime_error("sofie: RModel::Generate: Options::kCustomMemory requires a Session class "
+                                  "(the memory provider is passed to its constructor)");
+      fCustomMemory = true;
+      AddNeededHelperFunction("CustomMemory");
    }
 
    Initialize(batchSize, verbose);

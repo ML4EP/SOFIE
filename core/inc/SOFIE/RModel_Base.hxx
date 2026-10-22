@@ -27,6 +27,8 @@ enum class Options {
    kKernelOnly = 0x80,
    kSafetensorsWeightFile = 0x100,
    kStridedInput = 0x200,
+   kExternalStream = 0x400,
+   kCustomMemory = 0x800,
 };
 
 // Optimization levels inspired by ONNXRuntime.
@@ -74,6 +76,8 @@ protected:
    bool fUseSession = true;
    bool fKernelOnly = false;
    bool fStridedInput = false;
+   bool fExternalStream = false;
+   bool fCustomMemory = false;
    bool fIsGNN = false;
    bool fIsGNNComponent = false;
 

@@ -708,6 +708,18 @@ public:
       return op;
    }
 
+   std::vector<DeviceScratch> GetDeviceScratch_GPU_ALPAKA() const override {
+      if (!fCustomMemory)
+         return {};
+      if (fInputDimShape)
+         return {{fNY + "_reduce_scratch", ConvertStringToType(fType), "132"}};
+      GpuLaunchParams lp = ComputeGpuLaunchParams();
+      if (lp.groups > 1)
+         return {{fNY + "_reduce_scratch", ConvertStringToType(fType),
+                  std::to_string(std::stoul(ConvertDimShapeToLength(fShapeY)) * lp.groups)}};
+      return {};
+   }
+
    std::string Generate_GPU_Kernel_Definitions_ALPAKA(std::string /*opName*/) override {
       bool dyn = fInputDimShape;
       GpuLaunchParams lp = ComputeGpuLaunchParams();
@@ -721,8 +733,10 @@ public:
          // T's actual element type — a boolean-derived reduction like ReduceSum
          // over an int64 tensor would otherwise get a float scratch buffer,
          // which fails to compile against the int64 input/output kernel args.
-         op += "std::unique_ptr<alpaka::Buf<Acc, " + fType + ", Dim, Idx>> reduceScratch_" + fNY + ";\n";
-         op += "std::size_t reduceScratchCapacity_" + fNY + " = 0;\n";
+         if (!fCustomMemory) {
+            op += "std::unique_ptr<alpaka::Buf<Acc, " + fType + ", Dim, Idx>> reduceScratch_" + fNY + ";\n";
+            op += "std::size_t reduceScratchCapacity_" + fNY + " = 0;\n";
+         }
       }
       return op;
    }
@@ -744,6 +758,9 @@ public:
       // the layout of a strided input is the last argument of the reduction kernel
       if (fHasStridedInput)
          dynArgs += ", layout_" + fNY + "_X";
+
+      const std::string scratchPtr = fCustomMemory ? "alpaka::getPtrNative(deviceBuf_" + fNY + "_reduce_scratch)"
+                                                   : "alpaka::getPtrNative(*reduceScratch_" + fNY + ")";
 
       std::stringstream out;
       out << "\n//------ " << Name() << "_GPU_ALPAKA\n";
@@ -769,14 +786,16 @@ public:
          out << "if (" << rl << "_groups > 1u) {\n";
          out << "std::size_t const " << rl << "_capacity = " << rl << "_outputLength * " << rl
              << "_groups;\n";
-         out << "if (!reduceScratch_" << fNY << " || reduceScratchCapacity_" << fNY << " < " << rl
-             << "_capacity) {\n";
-         out << "reduceScratch_" << fNY
-             << " = std::make_unique<alpaka::Buf<Acc, " << fType << ", Dim, Idx>>(alpaka::allocBuf<"
-             << fType << ", Idx>(devAcc, Ext1D::all(Idx{" << rl
-             << "_capacity})));\n";
-         out << "reduceScratchCapacity_" << fNY << " = " << rl << "_capacity;\n";
-         out << "}\n";
+         if (!fCustomMemory) {
+            out << "if (!reduceScratch_" << fNY << " || reduceScratchCapacity_" << fNY << " < " << rl
+                << "_capacity) {\n";
+            out << "reduceScratch_" << fNY
+                << " = std::make_unique<alpaka::Buf<Acc, " << fType << ", Dim, Idx>>(alpaka::allocBuf<"
+                << fType << ", Idx>(devAcc, Ext1D::all(Idx{" << rl
+                << "_capacity})));\n";
+            out << "reduceScratchCapacity_" << fNY << " = " << rl << "_capacity;\n";
+            out << "}\n";
+         }
          out << "alpaka::WorkDivMembers<Dim, Idx> workDiv_" << fNY << "(\n";
          out << "Vec::all(Idx{" << rl << "_capacity}),\n";
          out << "Vec::all(Idx{" << rl << "_blockSize}),\n";
@@ -784,7 +803,7 @@ public:
          out << "alpaka::exec<Acc>(queue, workDiv_" << fNY
              << ", " << kname
              << ", alpaka::getPtrNative(deviceBuf_" << fNX << ")"
-             << ", alpaka::getPtrNative(*reduceScratch_" << fNY << ")"
+             << ", " << scratchPtr
              << ", " << rl << "_reducedLength"
              << ", " << rl << "_outputLength"
              << ", " << rl << "_groups"
@@ -798,7 +817,7 @@ public:
              << "_finalize);\n";
          out << "alpaka::exec<Acc>(queue, workDiv_" << fNY << "_finalize"
              << ", " << kname2
-             << ", alpaka::getPtrNative(*reduceScratch_" << fNY << ")"
+             << ", " << scratchPtr
              << ", alpaka::getPtrNative(deviceBuf_" << fNY << ")"
              << ", " << rl << "_reducedLength"
              << ", " << rl << "_outputLength"
@@ -819,13 +838,15 @@ public:
          out << "}\n";
       } else if (lp.groups > 1) {
          std::string totalBlocks = std::to_string(std::stoul(outputLength) * lp.groups);
-         out << "if (!reduceScratch_" << fNY << ") {\n";
-         out << "reduceScratch_" << fNY
-             << " = std::make_unique<alpaka::Buf<Acc, " << fType << ", Dim, Idx>>(alpaka::allocBuf<"
-             << fType << ", Idx>(devAcc, Ext1D::all(Idx{" << totalBlocks
-             << "})));\n";
-         out << "reduceScratchCapacity_" << fNY << " = " << totalBlocks << ";\n";
-         out << "}\n";
+         if (!fCustomMemory) {
+            out << "if (!reduceScratch_" << fNY << ") {\n";
+            out << "reduceScratch_" << fNY
+                << " = std::make_unique<alpaka::Buf<Acc, " << fType << ", Dim, Idx>>(alpaka::allocBuf<"
+                << fType << ", Idx>(devAcc, Ext1D::all(Idx{" << totalBlocks
+                << "})));\n";
+            out << "reduceScratchCapacity_" << fNY << " = " << totalBlocks << ";\n";
+            out << "}\n";
+         }
 
          out << "alpaka::WorkDivMembers<Dim, Idx> workDiv_" << fNY << "(\n";
          out << "Vec::all(Idx{" << totalBlocks << "u}),\n";
@@ -834,7 +855,7 @@ public:
          out << "alpaka::exec<Acc>(queue, workDiv_" << fNY
              << ", " << kname
              << ", alpaka::getPtrNative(deviceBuf_" << fNX << ")"
-             << ", alpaka::getPtrNative(*reduceScratch_" << fNY << ")"
+             << ", " << scratchPtr
              << ", static_cast<std::size_t>(" << reducedLength << ")"
              << ", static_cast<std::size_t>(" << outputLength << ")"
              << ", static_cast<std::size_t>(" << lp.groups << "u)"
@@ -846,7 +867,7 @@ public:
          out << "auto const workDiv_" << fNY << "_finalize = sofie_workdiv(elementsPerGrid_" << fNY << "_finalize);\n";
          out << "alpaka::exec<Acc>(queue, workDiv_" << fNY << "_finalize"
              << ", " << kname2
-             << ", alpaka::getPtrNative(*reduceScratch_" << fNY << ")"
+             << ", " << scratchPtr
              << ", alpaka::getPtrNative(deviceBuf_" << fNY << ")"
              << ", static_cast<std::size_t>(" << reducedLength << ")"
              << ", static_cast<std::size_t>(" << outputLength << ")"

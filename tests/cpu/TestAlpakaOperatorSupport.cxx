@@ -86,6 +86,55 @@ TEST(AlpakaOperatorSupport, OperatorOfASubGraphIsChecked)
    EXPECT_NE(error.find("ROperator_Erf"), std::string::npos) << error;
 }
 
+TEST(AlpakaOperatorSupport, CheckGPUOperatorsAcceptsSupportedModel)
+{
+   auto model = BuildModel("CheckRelu", std::make_unique<ROperator_Relu<float>>("X", "Y"));
+   testing::internal::CaptureStdout();
+   EXPECT_TRUE(model.CheckGPUOperators());
+   EXPECT_NE(testing::internal::GetCapturedStdout().find("All operators"), std::string::npos);
+}
+
+TEST(AlpakaOperatorSupport, CheckGPUOperatorsListsAllMissingOperators)
+{
+   RModel model("CheckTwoErf", "now");
+   model.AddInputTensorInfo("X", ETensorType::FLOAT, std::vector<Dim>{Dim(3), Dim(5)});
+   model.AddInputTensorName("X");
+   model.AddOperator(std::make_unique<ROperator_Erf<float>>("X", "H"));
+   model.AddOperator(std::make_unique<ROperator_Relu<float>>("H", "R"));
+   model.AddOperator(std::make_unique<ROperator_Erf<float>>("R", "Y"));
+   model.AddOutputTensorNameList({"Y"});
+   testing::internal::CaptureStdout();
+   EXPECT_FALSE(model.CheckGPUOperators());
+   const std::string report = testing::internal::GetCapturedStdout();
+   EXPECT_NE(report.find("operator 0"), std::string::npos) << report;
+   EXPECT_EQ(report.find("operator 1"), std::string::npos) << report;
+   EXPECT_NE(report.find("operator 2"), std::string::npos) << report;
+   EXPECT_NE(report.find("ROperator_Erf"), std::string::npos) << report;
+}
+
+TEST(AlpakaOperatorSupport, CheckGPUOperatorsLooksIntoSubGraphs)
+{
+   auto thenGraph = std::make_unique<RModel>("then_branch", "now");
+   thenGraph->AddOperator(std::make_unique<ROperator_Erf<float>>("X", "then_out"));
+   thenGraph->AddOutputTensorNameList({"then_out"});
+   auto elseGraph = std::make_unique<RModel>("else_branch", "now");
+   elseGraph->AddOperator(std::make_unique<ROperator_Relu<float>>("X", "else_out"));
+   elseGraph->AddOutputTensorNameList({"else_out"});
+
+   RModel model("CheckIfErf", "now");
+   model.AddInputTensorInfo("cond", ETensorType::BOOL, std::vector<Dim>{Dim(1)});
+   model.AddInputTensorInfo("X", ETensorType::FLOAT, std::vector<Dim>{Dim(3), Dim(5)});
+   model.AddInputTensorName("cond");
+   model.AddInputTensorName("X");
+   model.AddOperator(std::make_unique<ROperator_If>("cond", std::vector<std::string>{"Y"}, std::move(thenGraph),
+                                                    std::move(elseGraph)));
+   model.AddOutputTensorNameList({"Y"});
+   testing::internal::CaptureStdout();
+   EXPECT_FALSE(model.CheckGPUOperators());
+   const std::string report = testing::internal::GetCapturedStdout();
+   EXPECT_NE(report.find("then_branch"), std::string::npos) << report;
+}
+
 TEST(AlpakaOperatorSupport, TileFusionDataInputIndicesAreValidInputs)
 {
    ROperator_Tile<float> tile("repeats", "X", "Y");
