@@ -17,11 +17,27 @@ using Ext1D = alpaka::Vec<Dim, Idx>;
    defines, so the same test sources compile for every alpaka backend. */
 #if defined(ALPAKA_ACC_GPU_CUDA_ENABLED)
 using TestTag = alpaka::TagGpuCudaRt;
+#include <cuda_runtime.h>
+using TestStream = cudaStream_t;
+using TestRtError = cudaError_t;
+constexpr TestRtError TestRtSuccess = cudaSuccess;
+#define SOFIE_TEST_RT(call) cuda##call
 #elif defined(ALPAKA_ACC_GPU_HIP_ENABLED)
 using TestTag = alpaka::TagGpuHipRt;
+#include <hip/hip_runtime.h>
+using TestStream = hipStream_t;
+using TestRtError = hipError_t;
+constexpr TestRtError TestRtSuccess = hipSuccess;
+#define SOFIE_TEST_RT(call) hip##call
 #else
 #error "No alpaka backend enabled for the SOFIE tests"
 #endif
+
+#define TestRtMalloc SOFIE_TEST_RT(Malloc)
+#define TestRtFree SOFIE_TEST_RT(Free)
+#define TestRtStreamCreateNonBlocking(s) SOFIE_TEST_RT(StreamCreateWithFlags)(s, SOFIE_TEST_RT(StreamNonBlocking))
+#define TestRtStreamSynchronize SOFIE_TEST_RT(StreamSynchronize)
+#define TestRtStreamDestroy SOFIE_TEST_RT(StreamDestroy)
 
 using TestAcc = alpaka::TagToAcc<TestTag, Dim, Idx>;
 using TestDev = alpaka::Dev<TestAcc>;

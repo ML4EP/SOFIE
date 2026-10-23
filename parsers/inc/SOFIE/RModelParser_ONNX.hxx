@@ -114,6 +114,8 @@ public:
    // check the model for missing operators - return false in case some operator implementation is missing
    bool CheckModel(std::string filename, bool verbose = false);
 
+   bool CheckModelGPU(std::string filename, bool verbose = false);
+
    void SetExternalDataFile(const std::string & dataFileName) {
       fDataFileName = dataFileName;
    }

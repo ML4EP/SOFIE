@@ -738,6 +738,145 @@ private:
 };
 )SOFIE";
 
+constexpr const char *kCustomMemory = R"SOFIE(
+struct MemoryProvider {
+   std::function<void *(std::size_t)> alloc;
+   std::function<void *(std::size_t)> assign;
+   std::function<void(void *)> dealloc;
+};
+
+class PoolBlock {
+public:
+   PoolBlock() = default;
+   PoolBlock(PoolBlock const &) = delete;
+   PoolBlock &operator=(PoolBlock const &) = delete;
+   PoolBlock(PoolBlock &&other) noexcept : fPtr(other.fPtr), fFree(std::move(other.fFree)) { other.fPtr = nullptr; }
+   PoolBlock &operator=(PoolBlock &&other) noexcept
+   {
+      if (this != &other) {
+         Release();
+         fPtr = other.fPtr;
+         fFree = std::move(other.fFree);
+         other.fPtr = nullptr;
+      }
+      return *this;
+   }
+   ~PoolBlock() { Release(); }
+
+   void *Allocate(MemoryProvider const &provider, std::size_t bytes)
+   {
+      Release();
+      if (bytes == 0)
+         return nullptr;
+      if (!provider.alloc)
+         throw std::runtime_error("sofie: MemoryProvider::alloc is not set");
+      fPtr = provider.alloc(bytes);
+      if (!fPtr)
+         throw std::runtime_error("sofie: MemoryProvider::alloc returned a null pointer for " + std::to_string(bytes) +
+                                  " bytes");
+      fFree = provider.dealloc;
+      return fPtr;
+   }
+
+private:
+   void Release()
+   {
+      if (fPtr && fFree)
+         fFree(fPtr);
+      fPtr = nullptr;
+   }
+
+   void *fPtr = nullptr;
+   std::function<void(void *)> fFree;
+};
+
+inline void *PlaceTensor(MemoryProvider const &provider, void *block, std::size_t offset, std::size_t bytes)
+{
+   if (bytes == 0)
+      return nullptr;
+   if (!provider.assign)
+      return static_cast<unsigned char *>(block) + offset;
+   void *ptr = provider.assign(offset);
+   if (!ptr)
+      throw std::runtime_error("sofie: MemoryProvider::assign returned a null pointer for offset " + std::to_string(offset));
+   return ptr;
+}
+)SOFIE";
+
+constexpr const char *kDebugMemory = R"SOFIE(
+struct MemoryRegionInfo {
+   std::string name;
+   const void *ptr;
+   std::size_t offset;
+   std::size_t requestedBytes;
+   std::size_t reservedBytes;
+   int begin;
+   int end;
+   std::string origin;
+};
+
+inline std::string FormatMemoryReport(std::vector<MemoryRegionInfo> const &regions, std::size_t managedBytes)
+{
+   std::ostringstream out;
+   std::size_t requested = 0;
+   std::size_t reserved = 0;
+   out << "tensor  origin  offset  requested  reserved  alive\n";
+   for (auto const &r : regions) {
+      out << r.name << "  " << r.origin << "  " << r.offset << "  " << r.requestedBytes << "  " << r.reservedBytes << "  ["
+          << r.begin << ", " << r.end << ")\n";
+      requested += r.requestedBytes;
+      reserved += r.reservedBytes;
+   }
+   out << "pool or block managed by the session: " << managedBytes << " bytes, sum of the tensors: " << requested
+       << " bytes, reserved for them: " << reserved << " bytes, padding: " << reserved - requested << " bytes\n";
+   return out.str();
+}
+
+inline void ValidateMemoryRegions(std::vector<MemoryRegionInfo> const &regions, std::size_t alignment)
+{
+   for (auto const &r : regions) {
+      if (r.requestedBytes == 0)
+         continue;
+      if (!r.ptr)
+         throw std::runtime_error("sofie: tensor " + r.name + " has no memory");
+      if (r.origin == "block" && reinterpret_cast<std::uintptr_t>(r.ptr) % alignment != 0)
+         throw std::runtime_error("sofie: the memory of tensor " + r.name + " is not aligned to " + std::to_string(alignment) +
+                                  " bytes");
+      if (r.origin == "pool" && r.offset % alignment != 0)
+         throw std::runtime_error("sofie: tensor " + r.name + " is not placed at a multiple of " + std::to_string(alignment) +
+                                  " bytes in the pool");
+   }
+   for (std::size_t i = 0; i < regions.size(); ++i) {
+      for (std::size_t j = i + 1; j < regions.size(); ++j) {
+         auto const &a = regions[i];
+         auto const &b = regions[j];
+         if (a.requestedBytes == 0 || b.requestedBytes == 0)
+            continue;
+         const bool aliveTogether = a.begin < b.end && b.begin < a.end;
+         const auto pa = reinterpret_cast<std::uintptr_t>(a.ptr);
+         const auto pb = reinterpret_cast<std::uintptr_t>(b.ptr);
+         if (aliveTogether && pa < pb + b.requestedBytes && pb < pa + a.requestedBytes)
+            throw std::runtime_error("sofie: the memory of tensors " + a.name + " and " + b.name +
+                                     " overlaps, and they are alive at the same time");
+      }
+   }
+}
+)SOFIE";
+
+constexpr const char *kDebugLog = R"SOFIE(
+inline bool &DebugLogEnabled()
+{
+   static bool enabled = true;
+   return enabled;
+}
+
+inline void DebugLog(std::string const &message)
+{
+   if (DebugLogEnabled())
+      std::cout << "[SOFIE debug] " << message << std::endl;
+}
+)SOFIE";
+
 constexpr const char *kInputTensorDims = R"SOFIE(
 struct SingleDim {
    enum class Kind { Static, Symbolic };
@@ -790,7 +929,10 @@ HelperFunctionsCode GenerateHelperFunctionsCode(const std::set<std::string> &nee
    const bool safetensorsBlob = need("SafetensorsBlob");
    const bool readSafetensors = need("SafetensorsReader");
    const bool inputDims = need("InputTensorDims");
-   const bool dynMemory = need("DynamicMemory");
+   const bool customMemory = need("CustomMemory");
+   const bool debugMemory = need("DebugMemory");
+   const bool debugLog = need("DebugLog");
+   const bool dynMemory = need("DynamicMemory") || customMemory;
    const bool gnnData = need("GNN_Data");
 
    const bool im2colFamily = im2col || im2col3d || col2im || im2colStrided || im2col3dStrided;
@@ -819,6 +961,12 @@ HelperFunctionsCode GenerateHelperFunctionsCode(const std::set<std::string> &nee
       addStd({"array", "string_view", "cstddef"});
    if (dynMemory)
       addStd({"set", "unordered_map", "stdexcept", "iterator"});
+   if (customMemory)
+      addStd({"functional", "span", "string", "utility"});
+   if (debugMemory)
+      addStd({"cstddef", "cstdint", "sstream", "stdexcept", "string", "vector"});
+   if (debugLog)
+      addStd({"iostream", "string"});
 
    auto Block = [](const char *comment, const char *code) {
       return std::string("\n// ") + comment + "\n" + code;
@@ -875,6 +1023,12 @@ HelperFunctionsCode GenerateHelperFunctionsCode(const std::set<std::string> &nee
       defs += Block("shape and stride descriptor of the input tensors", kInputTensorDims);
    if (dynMemory)
       defs += Block("memory planner for the dynamic intermediate tensors", shared_code::kShared_MemoryPlanner);
+   if (customMemory)
+      defs += Block("user supplied allocation and placement of the intermediate tensor pool", kCustomMemory);
+   if (debugLog)
+      defs += Block("trace of the allocations and launches, switched off by DebugLogEnabled() = false", kDebugLog);
+   if (debugMemory)
+      defs += Block("diagnostics of the placement of the tensors in the device memory block", kDebugMemory);
    if (gnnData)
       defs += Block("data structure holding the nodes, edges and globals of a graph", kGNNData);
 

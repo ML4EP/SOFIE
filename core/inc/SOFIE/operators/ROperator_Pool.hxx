@@ -491,7 +491,7 @@ public:
       if (fShapeX.empty() || fShapeY.empty())
          throw std::runtime_error("SOFIE Pool called to Generate without being initialized first");
       if (fPoolMode != MaxPool && fPoolMode != AveragePool)
-         return "";
+         throw std::runtime_error("SOFIE Pool has no GPU implementation for the requested pooling mode");
 
       const bool isAvg = (fPoolMode == AveragePool);
       bool doPadding = false;
@@ -674,7 +674,7 @@ public:
       if (fShapeX.empty() || fShapeY.empty())
          throw std::runtime_error("SOFIE Pool called to Generate without being initialized first");
       if (fPoolMode != MaxPool && fPoolMode != AveragePool)
-         return "";
+         throw std::runtime_error("SOFIE Pool has no GPU implementation for the requested pooling mode");
 
       const bool isAvg = (fPoolMode == AveragePool);
       // Use fShapeYDim (the true, possibly-symbolic batch dim), not fShapeY (which

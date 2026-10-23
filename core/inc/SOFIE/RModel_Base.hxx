@@ -27,6 +27,9 @@ enum class Options {
    kKernelOnly = 0x80,
    kSafetensorsWeightFile = 0x100,
    kStridedInput = 0x200,
+   kExternalStream = 0x400,
+   kCustomMemory = 0x800,
+   kDebug = 0x1000,
 };
 
 // Optimization levels inspired by ONNXRuntime.
@@ -74,6 +77,9 @@ protected:
    bool fUseSession = true;
    bool fKernelOnly = false;
    bool fStridedInput = false;
+   bool fExternalStream = false;
+   bool fCustomMemory = false;
+   bool fDebug = false;
    bool fIsGNN = false;
    bool fIsGNNComponent = false;
 
@@ -166,6 +172,7 @@ public:
    void SetFilename(std::string filename) { fName = filename; }
    std::string GetFilename() { return fName; }
    const std::string & GetName() const { return fName;}
+   bool IsDebug() const { return fDebug; }
 };
 
 enum class GraphType { INVALID = 0, GNN = 1, GraphIndependent = 2 };
