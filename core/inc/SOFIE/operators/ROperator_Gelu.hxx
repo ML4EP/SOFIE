@@ -2,13 +2,13 @@
 #define SOFIE_ROPERATOR_GELU
 
 #include "SOFIE/utils/SOFIE_common.hxx"
-#include "SOFIE/operators/ROperator.hxx"
+#include "SOFIE/operators/ROperator_ALPAKA.hxx"
 #include "SOFIE/RModel.hxx"
 
 #include <sstream>
 namespace SOFIE{
 
-class ROperator_Gelu final : public ROperator
+class ROperator_Gelu final : public ROperator_ALPAKA
 {
 
 private:
@@ -71,6 +71,56 @@ public:
    }
 
    std::vector<std::string> GetStdLibs() override { return { std::string("cmath") };}
+
+   /* The output element as an expression of the input element `v`, in the form the
+      approximate attribute selects: the exact erf form or the tanh approximation. The
+      choice is made here, at generation time, so the kernel holds a single formula. */
+   std::string GpuExpr(const std::string &v) const {
+      if (fApproximate == "tanh")
+         return "T(0.5) * " + v + " * (T(1) + tanh(T(0.7978845608028654) * (" + v + " + T(0.044715) * " + v + " * " +
+                v + " * " + v + ")))";
+      return "T(0.5) * " + v + " * (T(1) + erf(" + v + " * T(0.7071067811865475)))";
+   }
+
+   std::string Generate_GPU_Kernel_ALPAKA(std::string /*opName*/) override {
+      if (fHasStridedInput)
+         return GenerateStridedUnaryKernel("GeluStridedKernel", "GELU", [this](const std::string &v) { return GpuExpr(v); });
+      std::string op;
+      op = "\n//------ GELU_KERNEL_ALPAKA\n";
+      op += "struct GeluKernel {\n";
+      op += "template<typename TAcc, typename T>\n";
+      op += "ALPAKA_FN_ACC void operator()(TAcc const& acc, T const* __restrict__ data, T* __restrict__ out, std::size_t numElements) const {\n";
+      op += "const auto idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
+      op += "if (idx < numElements) { T const x = data[idx]; out[idx] = " + GpuExpr("x") + "; }\n";
+      op += "}\n";
+      op += "};\n";
+      return op;
+   }
+
+   std::string Generate_GPU_Kernel_Definitions_ALPAKA(std::string /*opName*/) override {
+      if (fHasStridedInput)
+         return "GeluStridedKernel geluStridedKernel;\n";
+      return "GeluKernel geluKernel;\n";
+   }
+
+   std::string Generate_GPU_ALPAKA(std::string OpName) override {
+      OpName = "op_" + OpName;
+      if (fShape.empty()) {
+         throw std::runtime_error("SOFIE Gelu called to Generate_GPU_ALPAKA without being initialized");
+      }
+      std::stringstream out;
+      std::string length = std::to_string(ConvertShapeToLength(fShape));
+      out << "\n//------ GELU_GPU_ALPAKA\n";
+      if (fHasStridedInput)
+         return GenerateStridedUnaryLaunch(OpName, "geluStridedKernel", "GELU", fNX, fNY, ConvertShapeToDim(fShape));
+      out << "auto const elementsPerGrid_" << fNX << " = Vec::all(Idx{" << length << "});\n";
+      out << "auto const workDiv_" << fNX << " = sofie_workdiv(elementsPerGrid_" << fNX << ");\n";
+      out << "auto task_" << OpName << " = alpaka::createTaskKernel<Acc>(workDiv_" << fNX
+          << ", geluKernel, alpaka::getPtrNative(deviceBuf_" << fNX
+          << "), alpaka::getPtrNative(deviceBuf_" << fNY << "), static_cast<Idx>(" << length << "));\n";
+      out << "alpaka::enqueue(queue, task_" << OpName << ");\n";
+      return out.str();
+   }
 };
 
 }

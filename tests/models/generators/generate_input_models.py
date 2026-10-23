@@ -1775,6 +1775,23 @@ def make_Gelu():
     return _model(graph, opset=20, ir_version=13)
 
 
+def make_GeluTanh():
+    nodes = [
+        helper.make_node('Gelu', ['x'], ['y'], approximate='tanh'),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'GeluTanh',
+        inputs=[
+            _vi('x', FLOAT, [6]),
+        ],
+        outputs=[
+            _vi('y', FLOAT, [6]),
+        ],
+    )
+    return _model(graph, opset=20, ir_version=13)
+
+
 def make_Gemm_ConstantFolding():
     nodes = [
         helper.make_node('Gemm', ['A', 'B', 'C'], ['Y'], alpha=1.0, beta=1.0, transA=0, transB=0),
@@ -5947,6 +5964,7 @@ MODELS = {
     "GatherNegativeIndices": make_GatherNegativeIndices,
     "GatherRuntimeNegativeIndices": make_GatherRuntimeNegativeIndices,
     "Gelu": make_Gelu,
+    "GeluTanh": make_GeluTanh,
     "GemmDynBias": make_GemmDynBias,
     "Gemm_ConstantFolding": make_Gemm_ConstantFolding,
     "Gemm_ConstantFolding_Shared": make_Gemm_ConstantFolding_Shared,
@@ -6774,6 +6792,7 @@ TEST_INPUTS = {
     "GatherNegativeIndices": [f32(np.arange(0.0, 10.0), (10,))],
     "GatherRuntimeNegativeIndices": [f32(np.arange(0.0, 10.0), (5, 2)), i64([-1, 2, -5])],
     "Gelu": [f32([1.0, -2.0, 3.0, 0.5, -1.0, 2.0], (6,))],
+    "GeluTanh": [f32([1.0, -2.0, 3.0, 0.5, -1.0, 2.0], (6,))],
 
     "GemmDynBias": [rand_f32(36, (2, 3)), rand_f32(37, (2, 4))],
 
