@@ -1,0 +1,58 @@
+#include "SOFIE/RModel_Base.hxx"
+#include "SOFIE/RModel.hxx"
+#include "SOFIE/RModelParser_ONNX.hxx"
+
+#include <set>
+#include <string>
+
+namespace {
+
+const std::set<std::string> noSessionModels = {
+   "ConvWithPadding", "ConvWithoutPadding", "ConvWithAutopadSameLower", "ConvWithStridesPadding",
+   "ConvWithStridesNoPadding", "RNNBatchwise", "RNNBidirectional", "RNNBidirectionalBatchwise", "RNNDefaults",
+   "RNNSeqLength", "RNNSequence", "RNNSequenceBatchwise", "LSTMBatchwise", "LSTMBidirectional", "LSTMDefaults",
+   "LSTMInitialBias", "LSTMPeepholes", "GRUBatchwise", "GRUBidirectional", "GRUDefaults", "GRUInitialBias",
+   "GRUSeqLength"};
+
+const std::set<std::string> noWeightFileModels = {"LinearWithSelu", "LinearWithSigmoid"};
+
+}
+
+int EmitModel(std::string filename, std::string outname)
+{
+   using namespace SOFIE;
+
+   std::cout << "parsing file ..." << filename << std::endl;
+   {
+      RModelParser_ONNX parser;
+      RModel model = parser.Parse(filename);
+      model.Generate();
+      model.OutputGenerated(outname + "_FromONNX.hxx");
+   }
+   if (noSessionModels.count(outname)) {
+      RModelParser_ONNX parser;
+      RModel model = parser.Parse(filename);
+      model.SetFilename(outname + "_NoSession");
+      model.Generate(Options::kNoSession | Options::kNoWeightFile);
+      model.OutputGenerated(outname + "_NoSession_FromONNX.hxx");
+   }
+   if (noWeightFileModels.count(outname)) {
+      RModelParser_ONNX parser;
+      RModel model = parser.Parse(filename);
+      model.SetFilename(outname + "_NoWeightFile");
+      model.Generate(Options::kNoWeightFile);
+      model.OutputGenerated(outname + "_NoWeightFile_FromONNX.hxx");
+   }
+
+   return 0;
+}
+
+int main(int , char * [])
+{
+   int failures = 0;
+
+   @EMIT_CAPTURES@
+
+   std::cout << "[SUMMARY for generation from ONNX] Completed with " << failures << " failures" << std::endl;
+   return failures == 0 ? 0 : 1;
+}

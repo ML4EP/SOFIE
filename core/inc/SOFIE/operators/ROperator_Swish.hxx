@@ -1,0 +1,66 @@
+#ifndef SOFIE_ROPERATOR_Swish
+#define SOFIE_ROPERATOR_Swish
+
+#include "SOFIE/utils/SOFIE_common.hxx"
+#include "SOFIE/operators/ROperator.hxx"
+#include "SOFIE/RModel.hxx"
+
+#include <sstream>
+
+namespace SOFIE{
+
+class ROperator_Swish final : public ROperator
+{
+
+private:
+
+   std::string fNX;
+   std::string fNY;
+   std::vector<Dim> fShape;
+
+public:
+   ROperator_Swish(){}
+   ROperator_Swish(std::string nameX, std::string nameY):
+      fNX(UTILITY::Clean_name(nameX)), fNY(UTILITY::Clean_name(nameY)){
+         fInputTensorNames = { fNX };
+         fOutputTensorNames = { fNY };
+      }
+
+   void Initialize(RModel& model) override {
+      if (model.CheckIfTensorAlreadyExist(fNX) == false){   //input must be a graph input, or already initialized intermediate tensor
+         throw std::runtime_error("SOFIE Swish Op Input Tensor is not found in model");
+      }
+      fShape = model.GetDimTensorShape(fNX);
+      fHasStridedInput = model.IsStridedInputTensor(fNX) && !fShape.empty();
+      model.AddIntermediateTensor(fNY, model.GetTensorType(fNX), fShape);
+   }
+
+   bool SupportsStridedInput() const override { return true; }
+
+
+
+   std::string Generate(std::string OpName) override {
+      OpName = "op_" + OpName;
+      if (fShape.empty()){
+         throw std::runtime_error("SOFIE Operator Swish called to Generate without being initialized first");
+      }
+      std::stringstream out;
+      std::string length = ConvertDimShapeToLength(fShape);
+      if (fHasStridedInput) {
+         out << GenerateStridedUnaryLoop(OpName, fNX, fNY, fShape,
+                                         [](const std::string &v) { return v + " / (1 + std::exp( - " + v + "))"; });
+         return out.str();
+      }
+      out << "\t" << "for (int id = 0; id < " << length << " ; id++){\n";
+      out << "\t\t" << "tensor_" << fNY << "[id] = tensor_" << fNX <<"[id] / (1 + std::exp( - tensor_"  << fNX << "[id]));\n";
+      out << "\t}\n";
+      return out.str();
+   }
+
+   std::vector<std::string> GetStdLibs() override { return { std::string("cmath") };}
+};
+
+}//SOFIE
+
+
+#endif //SOFIE_ROPERATOR_Swish

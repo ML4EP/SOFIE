@@ -1,0 +1,252 @@
+#ifndef SOFIE_ROPERATOR_BASIC_UNARY
+#define SOFIE_ROPERATOR_BASIC_UNARY
+
+#include "SOFIE/operators/ROperator_ALPAKA.hxx"
+#include <SOFIE/RModel.hxx>
+#include <SOFIE/utils/SOFIE_common.hxx>
+
+
+namespace SOFIE {
+
+enum class EBasicUnaryOperator { kReciprocal, kSqrt , kNeg, kExp, kLog, kSin, kCos, kAbs, kSoftplus, kAtan, kFloor, kAsinh, kAcosh, kAtanh };
+
+template <typename T, EBasicUnaryOperator Op>
+struct UnaryOpTraits {
+};
+
+template <typename T>
+struct UnaryOpTraits<T, EBasicUnaryOperator::kReciprocal> {
+   static std::string Name() { return "Reciprocal"; }
+   static std::string Op(const std::string &X) { return "1/" + X; }
+};
+
+template <typename T>
+struct UnaryOpTraits<T, EBasicUnaryOperator::kSqrt> {
+   static std::string Name() { return "Sqrt"; }
+   static std::string Op(const std::string &X) { return "std::sqrt(" + X + ")"; }
+};
+
+template <typename T>
+struct UnaryOpTraits<T, EBasicUnaryOperator::kNeg> {
+   static std::string Name() { return "Neg"; }
+   static std::string Op(const std::string &X) { return "-" + X; }
+};
+
+template <typename T>
+struct UnaryOpTraits<T, EBasicUnaryOperator::kExp> {
+   static std::string Name() { return "Exp"; }
+   static std::string Op(const std::string &X) { return "std::exp(" + X + ")"; }
+};
+
+template <typename T>
+struct UnaryOpTraits<T, EBasicUnaryOperator::kLog> {
+   static std::string Name() { return "Log"; }
+   static std::string Op(const std::string &X) { return "std::log(" + X + ")"; }
+};
+
+template <typename T>
+struct UnaryOpTraits<T, EBasicUnaryOperator::kSin> {
+   static std::string Name() { return "Sin"; }
+   static std::string Op(const std::string &X) { return "std::sin(" + X + ")"; }
+};
+
+template <typename T>
+struct UnaryOpTraits<T, EBasicUnaryOperator::kCos> {
+   static std::string Name() { return "Cos"; }
+   static std::string Op(const std::string &X) { return "std::cos(" + X + ")"; }
+};
+
+template <typename T>
+struct UnaryOpTraits<T, EBasicUnaryOperator::kAbs> {
+   static std::string Name() { return "Abs"; }
+   static std::string Op(const std::string &X) { return "std::abs(" + X + ")"; }
+};
+
+template <typename T>
+struct UnaryOpTraits<T, EBasicUnaryOperator::kSoftplus> {
+   static std::string Name() { return "Softplus"; }
+   static std::string Op(const std::string &X)
+   {
+      return "((" + X + " >= 0x1.4000000000000p+4f) ? " + X + " : std::log1p(std::exp(" + X + ")))";
+   }
+};
+
+template <typename T>
+struct UnaryOpTraits<T, EBasicUnaryOperator::kAtan> {
+   static std::string Name() { return "Atan"; }
+   static std::string Op(const std::string &X) { return "std::atan(" + X + ")"; }
+};
+
+template <typename T>
+struct UnaryOpTraits<T, EBasicUnaryOperator::kFloor> {
+   static std::string Name() { return "Floor"; }
+   static std::string Op(const std::string &X) { return "std::floor(" + X + ")"; }
+};
+
+template <typename T>
+struct UnaryOpTraits<T, EBasicUnaryOperator::kAsinh> {
+   static std::string Name() { return "Asinh"; }
+   static std::string Op(const std::string &X) { return "std::asinh(" + X + ")"; }
+};
+
+template <typename T>
+struct UnaryOpTraits<T, EBasicUnaryOperator::kAcosh> {
+   static std::string Name() { return "Acosh"; }
+   static std::string Op(const std::string &X) { return "std::acosh(" + X + ")"; }
+};
+
+template <typename T>
+struct UnaryOpTraits<T, EBasicUnaryOperator::kAtanh> {
+   static std::string Name() { return "Atanh"; }
+   static std::string Op(const std::string &X) { return "std::atanh(" + X + ")"; }
+};
+
+template <typename T, EBasicUnaryOperator Op>
+class ROperator_BasicUnary final : public ROperator_ALPAKA {
+private:
+   std::string fNX;
+   std::string fNY;
+
+   std::vector<Dim> fShapeX;
+   std::vector<Dim> fShapeY;
+
+public:
+   ROperator_BasicUnary() {}
+
+   ROperator_BasicUnary(std::string nameX, std::string nameY)
+      : fNX(UTILITY::Clean_name(nameX)), fNY(UTILITY::Clean_name(nameY))
+   {
+
+         switch(Op) {
+            case EBasicUnaryOperator::kReciprocal:
+               fKind = OperatorKind::UNARY_RECIPROCAL;
+               break;
+            case EBasicUnaryOperator::kSqrt:
+               fKind = OperatorKind::UNARY_SQRT;
+               break;
+            case EBasicUnaryOperator::kNeg:
+               fKind = OperatorKind::UNARY_NEG;
+               break;
+            case EBasicUnaryOperator::kExp:
+               fKind = OperatorKind::UNARY_EXP;
+               break;
+            case EBasicUnaryOperator::kLog:
+               fKind = OperatorKind::UNARY_LOG;
+               break;
+            case EBasicUnaryOperator::kSin:
+               fKind = OperatorKind::UNARY_SIN;
+               break;
+            case EBasicUnaryOperator::kCos:
+               fKind = OperatorKind::UNARY_COS;
+               break;
+            case EBasicUnaryOperator::kAbs:
+               fKind = OperatorKind::UNARY_ABS;
+               break;
+            case EBasicUnaryOperator::kSoftplus:
+               fKind = OperatorKind::UNARY_SOFTPLUS;
+               break;
+            case EBasicUnaryOperator::kAtan:
+               fKind = OperatorKind::UNARY_ATAN;
+               break;
+            case EBasicUnaryOperator::kFloor:
+               fKind = OperatorKind::UNARY_FLOOR;
+               break;
+         }
+         fInputTensorNames =  { fNX };
+         fOutputTensorNames = { fNY };
+   }
+
+   void Initialize(RModel& model) override {
+      if (!model.CheckIfTensorAlreadyExist(fNX)) {
+         throw std::runtime_error("SOFIE - Tensor " + fNX + " not found.");
+      }
+      fShapeX = model.GetDimTensorShape(fNX);
+      fShapeY = fShapeX;
+      fHasStridedInput = model.IsStridedInputTensor(fNX) && !fShapeX.empty();
+      model.AddIntermediateTensor(fNY, model.GetTensorType(fNX), fShapeY);
+
+      model.AddNeededStdLib("cmath");
+   }
+
+   std::string Generate(std::string OpName) override
+   {
+      OpName = "op_" + OpName;
+      std::stringstream out;
+
+      out << "\n//---- Operator" << UnaryOpTraits<T, Op>::Name() << " " << OpName << "\n";
+      if (fHasStridedInput) {
+         out << GenerateStridedUnaryLoop(OpName, fNX, fNY, fShapeX,
+                                         [](const std::string &v) { return UnaryOpTraits<T, Op>::Op(v); });
+         return out.str();
+      }
+      auto length = ConvertDimShapeToLength(fShapeX);
+      out << "for (size_t i = 0; i < " << length << "; i++) {\n";
+      out << "tensor_" << fNY << "[i] = " << UnaryOpTraits<T, Op>::Op("tensor_" + fNX + "[i]") << ";\n";
+      out << "}\n";
+      return out.str();
+   }
+
+   bool SupportsStridedInput() const override { return true; }
+
+   std::string Generate_GPU_Kernel_ALPAKA(std::string /*OpName*/) override {
+      if (fIsOutputConstant)
+         return "";
+      if (fHasStridedInput)
+         return GenerateStridedUnaryKernel("Unary" + UnaryOpTraits<T, Op>::Name() + "StridedKernel",
+                                           UnaryOpTraits<T, Op>::Name(),
+                                           [](const std::string &v) { return UnaryOpTraits<T, Op>::Op(v); });
+
+      std::string op;
+      op = "\n//------ " + UnaryOpTraits<T, Op>::Name() + "_KERNEL_ALPAKA\n";
+      op += "struct Unary" + UnaryOpTraits<T, Op>::Name() + "Kernel{\n";
+      op += "template<typename TAcc, typename T>\n";
+      op += "ALPAKA_FN_ACC void operator()(TAcc const & acc, T const * data, T * output, std::size_t const length) const {\n";
+      op += "auto idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
+      op += "if (idx < length) {\n";
+      op += "output[idx] = " +UnaryOpTraits<T, Op>::Op("data[idx]") + ";\n";
+      op += "}\n";
+      op += "}\n};\n";
+      return op;
+   }
+
+   std::string Generate_GPU_Kernel_Definitions_ALPAKA(std::string /*OpName*/) override {
+      if (fHasStridedInput)
+         return "Unary" + UnaryOpTraits<T, Op>::Name() + "StridedKernel " + UnaryOpTraits<T, Op>::Name() +
+                "StridedKernel;\n";
+      return "Unary" + UnaryOpTraits<T, Op>::Name() + "Kernel " + UnaryOpTraits<T, Op>::Name() + "Kernel;\n";
+   }
+
+   std::string Generate_GPU_ALPAKA(std::string OpName) override {
+      OpName = "op_" + OpName;
+      if (fHasStridedInput)
+         return GenerateStridedUnaryLaunch(OpName, UnaryOpTraits<T, Op>::Name() + "StridedKernel",
+                                           UnaryOpTraits<T, Op>::Name(), fNX, fNY, fShapeX);
+      std::stringstream out;
+      std::string length = ConvertDimShapeToLength(fShapeX);
+      out << "\n//------ "+OpName+"_ALPAKA\n";
+      out << "auto const elementsPerThread_"<<fNY<<" = Vec::all(static_cast<Idx>(1));\n";
+      out << "auto const elementsPerGrid_"<<fNY<<" = Vec::all(Idx{"<< length << "});\n";
+      out << "auto const workDiv_" << fNY << " = sofie_workdiv(elementsPerGrid_" << fNY << ");\n";
+      out << "auto task_" << OpName << " = alpaka::createTaskKernel<Acc>(workDiv_" << fNY
+         << ", " << UnaryOpTraits<T, Op>::Name() << "Kernel, alpaka::getPtrNative(deviceBuf_" << fNX
+         << "), alpaka::getPtrNative(deviceBuf_" << fNY << "), " << length << ");\n";
+      out << "alpaka::enqueue(queue, task_" << OpName << ");\n";
+      return out.str();
+   }
+
+   std::vector<std::string> GetStdLibs() override {
+      if constexpr (Op == EBasicUnaryOperator::kReciprocal || Op == EBasicUnaryOperator::kNeg)
+         return {};
+
+      return {"cmath"};
+   }
+
+   bool IsElementwise() const override { return !fIsOutputConstant && !fHasStridedInput; }
+   std::string GetElementwiseExpr(const std::string& v) const override {
+      return UnaryOpTraits<T, Op>::Op(v);
+   }
+};
+
+} // namespace SOFIE
+
+#endif
