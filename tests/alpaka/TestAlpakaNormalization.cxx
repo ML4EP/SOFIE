@@ -10,6 +10,9 @@
 #include "DynamicBatchNorm4D_FromONNX_GPU_ALPAKA.hxx"
 #include "DynamicBatchNormDynSpatialRelu_FromONNX_GPU_ALPAKA.hxx"
 #include "DynamicBatchNorm2D_FromONNX_GPU_ALPAKA.hxx"
+#include "BatchNormEpsilon_FromONNX_GPU_ALPAKA.hxx"
+#include "BatchNorm3DBatched_FromONNX_GPU_ALPAKA.hxx"
+#include "BatchNormTwice_FromONNX_GPU_ALPAKA.hxx"
 #include "Softmax1d_FromONNX_GPU_ALPAKA.hxx"
 #include "Softmax2d_FromONNX_GPU_ALPAKA.hxx"
 #include "Softmax3d_FromONNX_GPU_ALPAKA.hxx"
@@ -18,6 +21,30 @@
 #include "models/onnx/references/Softmax2d.ref.hxx"
 #include "models/onnx/references/Softmax3d.ref.hxx"
 #include "models/onnx/references/Softmax4d.ref.hxx"
+
+namespace {
+
+// Inference-mode BatchNormalization of a contiguous [N, C, spatial] input
+std::vector<float> batchNormReference(std::vector<float> const &x, std::size_t C, std::size_t spatial,
+                                      std::vector<float> const &scale, std::vector<float> const &bias,
+                                      std::vector<float> const &mean, std::vector<float> const &var, float eps)
+{
+    std::vector<float> y(x.size());
+    for (std::size_t i = 0; i < x.size(); ++i) {
+        std::size_t c = (i / spatial) % C;
+        y[i] = (x[i] - mean[c]) * scale[c] / std::sqrt(var[c] + eps) + bias[c];
+    }
+    return y;
+}
+
+std::vector<float> batchNormTestInput(std::size_t n)
+{
+    std::vector<float> x(n);
+    for (std::size_t i = 0; i < n; ++i) x[i] = static_cast<float>(i % 7) - 3.0f;
+    return x;
+}
+
+} // namespace
 
 TEST_F(SofieAlpakaTest, BatchNormalization)
 {
@@ -209,6 +236,56 @@ TEST_F(SofieAlpakaTest, DynamicBatchNorm2D)
             EXPECT_LE(std::abs(res[i] - expected), TOLERANCE) << "i=" << i;
         }
     }
+}
+
+// X[1,3,2,2] with epsilon=1e-3: small variances, so a wrong epsilon changes the result
+TEST_F(SofieAlpakaTest, BatchNormEpsilon)
+{
+    const std::vector<float> input = batchNormTestInput(1 * 3 * 4);
+    auto input_d = makeDeviceBuf(host, device, queue, input.data(), input.size());
+
+    SOFIE_BatchNormEpsilon::Session<TestTag> session("BatchNormEpsilon_FromONNX_GPU_ALPAKA.dat");
+    auto result = session.infer(input_d);
+    auto output = toHost(host, queue, result, input.size());
+
+    auto expected = batchNormReference(input, 3, 4, {1.5f, 0.5f, 2.0f}, {0.1f, -0.2f, 0.3f}, {0.0f, 1.0f, -1.0f},
+                                       {0.1f, 0.2f, 0.05f}, 1e-3f);
+    for (std::size_t i = 0; i < input.size(); ++i)
+        EXPECT_NEAR(output[i], expected[i], DEFAULT_TOLERANCE) << "i=" << i;
+}
+
+// X[2,3,5] (BatchNorm1d layout): static batch of 2, per-channel parameters, a negative scale
+TEST_F(SofieAlpakaTest, BatchNorm3DBatched)
+{
+    const std::vector<float> input = batchNormTestInput(2 * 3 * 5);
+    auto input_d = makeDeviceBuf(host, device, queue, input.data(), input.size());
+
+    SOFIE_BatchNorm3DBatched::Session<TestTag> session("BatchNorm3DBatched_FromONNX_GPU_ALPAKA.dat");
+    auto result = session.infer(input_d);
+    auto output = toHost(host, queue, result, input.size());
+
+    auto expected = batchNormReference(input, 3, 5, {0.8f, -1.2f, 2.5f}, {0.5f, 0.0f, -0.3f}, {0.2f, -0.4f, 1.0f},
+                                       {0.5f, 2.0f, 1.5f}, 1e-5f);
+    for (std::size_t i = 0; i < input.size(); ++i)
+        EXPECT_NEAR(output[i], expected[i], DEFAULT_TOLERANCE) << "i=" << i;
+}
+
+// two BatchNormalization nodes in one model, X[2,3,4] -> bn_0 -> bn_1 (epsilon=1e-3)
+TEST_F(SofieAlpakaTest, BatchNormTwice)
+{
+    const std::vector<float> input = batchNormTestInput(2 * 3 * 4);
+    auto input_d = makeDeviceBuf(host, device, queue, input.data(), input.size());
+
+    SOFIE_BatchNormTwice::Session<TestTag> session("BatchNormTwice_FromONNX_GPU_ALPAKA.dat");
+    auto result = session.infer(input_d);
+    auto output = toHost(host, queue, result, input.size());
+
+    auto hidden = batchNormReference(input, 3, 4, {1.5f, 0.5f, 2.0f}, {0.1f, -0.2f, 0.3f}, {0.0f, 1.0f, -1.0f},
+                                     {1.0f, 4.0f, 0.25f}, 1e-5f);
+    auto expected = batchNormReference(hidden, 3, 4, {0.5f, 1.0f, -1.0f}, {0.0f, 0.5f, 0.0f}, {0.2f, 0.0f, 0.1f},
+                                       {2.0f, 1.0f, 0.5f}, 1e-3f);
+    for (std::size_t i = 0; i < input.size(); ++i)
+        EXPECT_NEAR(output[i], expected[i], DEFAULT_TOLERANCE) << "i=" << i;
 }
 
 TEST_F(SofieAlpakaTest, LayerNorm)
