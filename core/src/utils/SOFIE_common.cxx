@@ -509,6 +509,7 @@ std::pair<int, std::vector<Dim>> UTILITY::MultidirectionalBroadcastShape(std::ve
 std::string UTILITY::Clean_name(std::string input_tensor_name){
    std::string s (input_tensor_name);
    std::replace( s.begin(), s.end(), '-', '_');
+   std::replace( s.begin(), s.end(), '.', '_');
    // replace all non-alpohanumeric character except for "_"
    s.erase(std::remove_if(s.begin(), s.end(), []( char const& c ) -> bool { return !std::isalnum(static_cast<unsigned char>(c)) && c != '_'; } ), s.end());
    return s;
