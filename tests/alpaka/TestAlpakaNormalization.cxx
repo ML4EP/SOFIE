@@ -10,6 +10,9 @@
 #include "DynamicBatchNorm4D_FromONNX_GPU_ALPAKA.hxx"
 #include "DynamicBatchNormDynSpatialRelu_FromONNX_GPU_ALPAKA.hxx"
 #include "DynamicBatchNorm2D_FromONNX_GPU_ALPAKA.hxx"
+#include "BatchNormEpsilon_FromONNX_GPU_ALPAKA.hxx"
+#include "BatchNorm3DBatched_FromONNX_GPU_ALPAKA.hxx"
+#include "BatchNormTwice_FromONNX_GPU_ALPAKA.hxx"
 #include "Softmax1d_FromONNX_GPU_ALPAKA.hxx"
 #include "Softmax2d_FromONNX_GPU_ALPAKA.hxx"
 #include "Softmax3d_FromONNX_GPU_ALPAKA.hxx"
@@ -18,6 +21,12 @@
 #include "models/onnx/references/Softmax2d.ref.hxx"
 #include "models/onnx/references/Softmax3d.ref.hxx"
 #include "models/onnx/references/Softmax4d.ref.hxx"
+#include "models/onnx/references/BatchNormEpsilon.ref.hxx"
+#include "models/onnx/references/BatchNormEpsilon_input.ref.hxx"
+#include "models/onnx/references/BatchNorm3DBatched.ref.hxx"
+#include "models/onnx/references/BatchNorm3DBatched_input.ref.hxx"
+#include "models/onnx/references/BatchNormTwice.ref.hxx"
+#include "models/onnx/references/BatchNormTwice_input.ref.hxx"
 
 TEST_F(SofieAlpakaTest, BatchNormalization)
 {
@@ -209,6 +218,90 @@ TEST_F(SofieAlpakaTest, DynamicBatchNorm2D)
             EXPECT_LE(std::abs(res[i] - expected), TOLERANCE) << "i=" << i;
         }
     }
+}
+
+// X[1,3,2,2] with epsilon=1e-3: small variances, so a wrong epsilon changes the result
+TEST_F(SofieAlpakaTest, BatchNormEpsilon)
+{
+    constexpr float TOLERANCE = DEFAULT_TOLERANCE;
+
+    const float* input = BatchNormEpsilon_Input::data;
+    constexpr std::size_t inputSize  = 1 * 3 * 2 * 2;
+    constexpr std::size_t outputSize = inputSize;
+
+    auto input_d = makeDeviceBuf<float>(host, device, queue, input, inputSize);
+    auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{outputSize}));
+
+    {
+        SOFIE_BatchNormEpsilon::Session<TestTag> session("BatchNormEpsilon_FromONNX_GPU_ALPAKA.dat");
+        auto result = session.infer(input_d);
+        alpaka::wait(queue);
+        alpaka::memcpy(queue, result_h, result);
+        alpaka::wait(queue);
+    }
+
+    const float* res = reinterpret_cast<float*>(alpaka::getPtrNative(result_h));
+    const float* expected = BatchNormEpsilon_ExpectedOutput::outputs;
+
+    ASSERT_EQ(outputSize, sizeof(BatchNormEpsilon_ExpectedOutput::outputs) / sizeof(float));
+    for (std::size_t i = 0; i < outputSize; ++i)
+        EXPECT_LE(std::abs(res[i] - expected[i]), TOLERANCE) << "i=" << i;
+}
+
+// X[2,3,5] (BatchNorm1d layout): static batch of 2, per-channel parameters, a negative scale
+TEST_F(SofieAlpakaTest, BatchNorm3DBatched)
+{
+    constexpr float TOLERANCE = DEFAULT_TOLERANCE;
+
+    const float* input = BatchNorm3DBatched_Input::data;
+    constexpr std::size_t inputSize  = 2 * 3 * 5;
+    constexpr std::size_t outputSize = inputSize;
+
+    auto input_d = makeDeviceBuf<float>(host, device, queue, input, inputSize);
+    auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{outputSize}));
+
+    {
+        SOFIE_BatchNorm3DBatched::Session<TestTag> session("BatchNorm3DBatched_FromONNX_GPU_ALPAKA.dat");
+        auto result = session.infer(input_d);
+        alpaka::wait(queue);
+        alpaka::memcpy(queue, result_h, result);
+        alpaka::wait(queue);
+    }
+
+    const float* res = reinterpret_cast<float*>(alpaka::getPtrNative(result_h));
+    const float* expected = BatchNorm3DBatched_ExpectedOutput::outputs;
+
+    ASSERT_EQ(outputSize, sizeof(BatchNorm3DBatched_ExpectedOutput::outputs) / sizeof(float));
+    for (std::size_t i = 0; i < outputSize; ++i)
+        EXPECT_LE(std::abs(res[i] - expected[i]), TOLERANCE) << "i=" << i;
+}
+
+// two BatchNormalization nodes in one model, X[2,3,4] -> bn_0 -> bn_1 (epsilon=1e-3)
+TEST_F(SofieAlpakaTest, BatchNormTwice)
+{
+    constexpr float TOLERANCE = DEFAULT_TOLERANCE;
+
+    const float* input = BatchNormTwice_Input::data;
+    constexpr std::size_t inputSize  = 2 * 3 * 4;
+    constexpr std::size_t outputSize = inputSize;
+
+    auto input_d = makeDeviceBuf<float>(host, device, queue, input, inputSize);
+    auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{outputSize}));
+
+    {
+        SOFIE_BatchNormTwice::Session<TestTag> session("BatchNormTwice_FromONNX_GPU_ALPAKA.dat");
+        auto result = session.infer(input_d);
+        alpaka::wait(queue);
+        alpaka::memcpy(queue, result_h, result);
+        alpaka::wait(queue);
+    }
+
+    const float* res = reinterpret_cast<float*>(alpaka::getPtrNative(result_h));
+    const float* expected = BatchNormTwice_ExpectedOutput::outputs;
+
+    ASSERT_EQ(outputSize, sizeof(BatchNormTwice_ExpectedOutput::outputs) / sizeof(float));
+    for (std::size_t i = 0; i < outputSize; ++i)
+        EXPECT_LE(std::abs(res[i] - expected[i]), TOLERANCE) << "i=" << i;
 }
 
 TEST_F(SofieAlpakaTest, LayerNorm)
