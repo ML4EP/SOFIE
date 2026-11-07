@@ -118,21 +118,6 @@ set(CAPTURE_STR
 }\n\
 ")
 
-file(GLOB ONNX_FILES "${CHECKED_IN_MODELS_DIR}/*.onnx")
-
-set(ALL_CAPTURES "")
-foreach(onnx_file ${ONNX_FILES})
-    get_filename_component(fname ${onnx_file} NAME_WE)
-    string(REPLACE "@1" "${onnx_file}" cap "${CAPTURE_STR}")
-    string(REPLACE "@2" "${fname}" cap "${cap}")
-    string(APPEND ALL_CAPTURES "${cap}")
-endforeach()
-
-set(ALPAKA_CAPTURES "${ALL_CAPTURES}")
-
-set(EMIT_CAPTURES "${ALPAKA_CAPTURES}")
-configure_file(templates/EmitFromONNX_GPU_ALPAKA.cxx.in EmitFromONNX_GPU_ALPAKA_all.cxx @ONLY)
-
 SOFIE_GENERATE_EXECUTABLE(
   emitLowRankModels
   models/LowRankModelGenerator.cxx
@@ -238,6 +223,10 @@ if (ENABLE_ALPAKA_TESTS)
     message(FATAL_ERROR "Unsupported ALPAKA_BACKEND=${ALPAKA_BACKEND}")
   endif()
 
+  if (NOT SOFIE_ONNX_USABLE AND NOT USER_MODELS_DIR)
+    message(FATAL_ERROR "The alpaka tests need the generated ONNX models: install the onnx and numpy Python modules, or set ONNX_MODELS_DIR to a directory with pre-generated models.")
+  endif()
+
   FetchContent_Declare(
     sofieBLAS
     GIT_REPOSITORY https://github.com/ML4EP/sofieBLAS
@@ -270,7 +259,7 @@ SOFIE_GENERATE_EXECUTABLE(
   SOFIE_ADD_TEST(
     SofieCompileModels_ONNX_Alpaka
     COMMAND ${CMAKE_COMMAND} -E env ./emitFromONNXAlpaka
-    FIXTURES_REQUIRED sofie-compile-models-onnx-alpaka-build
+    FIXTURES_REQUIRED sofie-compile-models-onnx-alpaka-build;sofie-generate-models-onnx
     FIXTURES_SETUP sofie-compile-models-onnx-alpaka
   )
 
@@ -490,10 +479,14 @@ elseif (SOFIE_ONNX_USABLE)
     list(APPEND ONNX_MODEL_NAMES ${fname})
     list(APPEND ONNX_MODEL_PATHS ${TEST_MODELS_DIR}/${fname}.onnx)
   endforeach()
-  foreach(fname ScatterND_Ex1 ScatterND_Ex2 ScatterND_NegativeIndices ScatterND_2D)
-    if (EXISTS ${CHECKED_IN_MODELS_DIR}/${fname}.onnx AND NOT fname IN_LIST ONNX_MODEL_NAMES)
+  # Models still checked in under models/onnx that the generator does not
+  # know yet are taken from there.
+  file(GLOB _checked_in_onnx_files "${CHECKED_IN_MODELS_DIR}/*.onnx")
+  foreach(onnx_file ${_checked_in_onnx_files})
+    get_filename_component(fname ${onnx_file} NAME_WE)
+    if (NOT fname IN_LIST ONNX_MODEL_NAMES)
       list(APPEND ONNX_MODEL_NAMES ${fname})
-      list(APPEND ONNX_MODEL_PATHS ${CHECKED_IN_MODELS_DIR}/${fname}.onnx)
+      list(APPEND ONNX_MODEL_PATHS ${onnx_file})
     endif()
   endforeach()
 else()
@@ -512,6 +505,7 @@ if (ONNX_MODEL_NAMES)
     string(APPEND EMIT_CAPTURES "${cap}")
   endforeach()
   configure_file(templates/EmitFromONNX.cxx.in EmitFromONNX_all.cxx @ONLY)
+  configure_file(templates/EmitFromONNX_GPU_ALPAKA.cxx.in EmitFromONNX_GPU_ALPAKA_all.cxx @ONLY)
 
   SOFIE_GENERATE_EXECUTABLE(emitFromONNX ${CMAKE_CURRENT_BINARY_DIR}/EmitFromONNX_all.cxx
                                LIBRARIES SOFIE_core SOFIE_parsers

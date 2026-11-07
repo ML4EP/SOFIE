@@ -66,9 +66,7 @@
 #include "models/onnx/references/Slice_Default_Axis.ref.hxx"
 #include "models/onnx/references/Slice_Default_Steps.ref.hxx"
 #include "models/onnx/references/Slice_Neg.ref.hxx"
-#include "NonZero_FromONNX_GPU_ALPAKA.hxx"
-
-#include "NonZero_FromONNX_GPU_ALPAKA.hxx"
+#include "NonZero2D_FromONNX_GPU_ALPAKA.hxx"
 #include "DynamicNonZero_FromONNX_GPU_ALPAKA.hxx"
 
 #include "DynamicTranspose_FromONNX_GPU_ALPAKA.hxx"
@@ -1775,7 +1773,7 @@ TEST_F(SofieAlpakaTest, NonZero)
     auto result_h = alpaka::allocBuf<int64_t, Idx>(host, Ext1D::all(Idx{outputCapacity}));
 
     {
-        SOFIE_NonZero::Session<TestTag> session;
+        SOFIE_NonZero2D::Session<TestTag> session;
         auto result = session.infer(input_d);
 
         alpaka::wait(queue);

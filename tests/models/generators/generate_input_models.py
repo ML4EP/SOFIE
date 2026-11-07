@@ -5878,6 +5878,2284 @@ def make_IfTwoOutputs():
     return _model(graph, opset=21, ir_version=10, producer_name='onnx-example')
 
 
+# Models used by the alpaka tests.
+
+
+def make_AvgPoolCountIncludePad():
+    nodes = [
+        helper.make_node(
+            'AveragePool',
+            ['x'],
+            ['y'],
+            count_include_pad=1,
+            kernel_shape=[3, 3],
+            pads=[1, 1, 1, 1],
+            strides=[1, 1],
+        ),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'AvgPoolCountIncludePad',
+        inputs=[
+            _vi('x', FLOAT, [1, 1, 4, 4]),
+        ],
+        outputs=[
+            _vi('y', FLOAT, [1, 1, 4, 4]),
+        ],
+    )
+    return _model(graph, opset=14, ir_version=7, producer_name='python_script')
+
+
+def make_AvgPoolPad():
+    nodes = [
+        helper.make_node(
+            'AveragePool',
+            ['x'],
+            ['y'],
+            kernel_shape=[3, 3],
+            pads=[1, 1, 1, 1],
+            strides=[1, 1],
+        ),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'AvgPoolPad',
+        inputs=[
+            _vi('x', FLOAT, [1, 1, 4, 4]),
+        ],
+        outputs=[
+            _vi('y', FLOAT, [1, 1, 4, 4]),
+        ],
+    )
+    return _model(graph, opset=14, ir_version=7, producer_name='python_script')
+
+
+def make_BatchNorm():
+    nodes = [
+        helper.make_node(
+            'BatchNormalization',
+            ['X', 'scale', 'bias', 'mean', 'var'],
+            ['Y'],
+            name='BatchNorm',
+            epsilon=9.999999747378752e-06,
+            momentum=0.8999999761581421,
+        ),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'BatchNorm',
+        inputs=[
+            _vi('X', FLOAT, [1, 2, 2, 2]),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, [1, 2, 2, 2]),
+        ],
+        initializer=[
+            _tensor('scale', FLOAT, [2], [1.0] * 2),
+            _tensor('bias', FLOAT, [2], [0.0] * 2),
+            _tensor('mean', FLOAT, [2], [0.0] * 2),
+            _tensor('var', FLOAT, [2], [1.0] * 2),
+        ],
+    )
+    return _model(graph, opset=15, ir_version=8, producer_name='sofie-test')
+
+
+def make_BatchNormRelu():
+    nodes = [
+        helper.make_node(
+            'BatchNormalization',
+            ['X', 'scale', 'bias', 'mean', 'var'],
+            ['bn_out'],
+            name='BatchNorm',
+            epsilon=9.999999747378752e-06,
+            momentum=0.8999999761581421,
+        ),
+        helper.make_node('Relu', ['bn_out'], ['Y'], name='Relu'),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'BatchNormRelu',
+        inputs=[
+            _vi('X', FLOAT, [1, 2, 2, 2]),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, [1, 2, 2, 2]),
+        ],
+        initializer=[
+            _tensor('scale', FLOAT, [2], [1.0] * 2),
+            _tensor('bias', FLOAT, [2], [0.0] * 2),
+            _tensor('mean', FLOAT, [2], [0.0] * 2),
+            _tensor('var', FLOAT, [2], [1.0] * 2),
+        ],
+        value_info=[
+            _vi('bn_out', FLOAT, [1, 2, 2, 2]),
+        ],
+    )
+    return _model(graph, opset=15, ir_version=8, producer_name='sofie-test')
+
+
+def make_Conv1d():
+    nodes = [
+        helper.make_node(
+            'Conv',
+            ['x', 'W', 'B'],
+            ['y'],
+            kernel_shape=[3],
+            pads=[1, 1],
+            strides=[1],
+        ),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'Conv1d',
+        inputs=[
+            _vi('x', FLOAT, [1, 2, 7]),
+            _vi('W', FLOAT, [3, 2, 3]),
+            _vi('B', FLOAT, [3]),
+        ],
+        outputs=[
+            _vi('y', FLOAT, [1, 3, 7]),
+        ],
+        initializer=[
+            _tensor('W', FLOAT, [3, 2, 3], [
+                    0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0,
+                    15.0, 16.0, 17.0,
+            ]),
+            _tensor('B', FLOAT, [3], [1.0, 2.0, 3.0]),
+        ],
+    )
+    return _model(graph, opset=14, ir_version=7, producer_name='python_script')
+
+
+def make_Conv3d():
+    nodes = [
+        helper.make_node(
+            'Conv',
+            ['x', 'W', 'B'],
+            ['y'],
+            kernel_shape=[2, 3, 3],
+            pads=[0, 1, 1, 0, 1, 1],
+            strides=[1, 1, 1],
+        ),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'Conv3d',
+        inputs=[
+            _vi('x', FLOAT, [1, 1, 3, 4, 4]),
+            _vi('W', FLOAT, [2, 1, 2, 3, 3]),
+            _vi('B', FLOAT, [2]),
+        ],
+        outputs=[
+            _vi('y', FLOAT, [1, 2, 2, 4, 4]),
+        ],
+        initializer=[
+            _tensor('W', FLOAT, [2, 1, 2, 3, 3], [
+                    0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0,
+                    15.0, 16.0, 17.0, 18.0, 19.0, 20.0, 21.0, 22.0, 23.0, 24.0, 25.0, 26.0, 27.0,
+                    28.0, 29.0, 30.0, 31.0, 32.0, 33.0, 34.0, 35.0,
+            ]),
+            _tensor('B', FLOAT, [2], [5.0, 50.0]),
+        ],
+    )
+    return _model(graph, opset=14, ir_version=7, producer_name='python_script')
+
+
+def make_ConvBatch2():
+    nodes = [
+        helper.make_node('Conv', ['x', 'W'], ['y'], kernel_shape=[3, 3], pads=[1, 1, 1, 1]),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'ConvBatch2',
+        inputs=[
+            _vi('x', FLOAT, [2, 1, 5, 5]),
+        ],
+        outputs=[
+            _vi('y', FLOAT, [2, 1, 5, 5]),
+        ],
+        initializer=[
+            _tensor('W', FLOAT, [1, 1, 3, 3], [1.0] * 9),
+        ],
+    )
+    return _model(graph, opset=12, ir_version=7)
+
+
+def make_ConvBatch4():
+    nodes = [
+        helper.make_node('Conv', ['x', 'W'], ['y'], kernel_shape=[3, 3], pads=[1, 1, 1, 1]),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'ConvBatch4',
+        inputs=[
+            _vi('x', FLOAT, [4, 1, 5, 5]),
+        ],
+        outputs=[
+            _vi('y', FLOAT, [4, 1, 5, 5]),
+        ],
+        initializer=[
+            _tensor('W', FLOAT, [1, 1, 3, 3], [1.0] * 9),
+        ],
+    )
+    return _model(graph, opset=12, ir_version=7)
+
+
+def make_ConvBatch4Group2():
+    nodes = [
+        helper.make_node(
+            'Conv',
+            ['X', 'W'],
+            ['Y'],
+            group=2,
+            kernel_shape=[3, 3],
+            pads=[1, 1, 1, 1],
+            strides=[1, 1],
+        ),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'ConvBatch4Group2',
+        inputs=[
+            _vi('X', FLOAT, [4, 4, 5, 5]),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, [4, 4, 5, 5]),
+        ],
+        initializer=[
+            _tensor('W', FLOAT, [4, 2, 3, 3], [
+                    1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0,
+                    15.0, 16.0, 17.0, 18.0, 19.0, 20.0, 21.0, 22.0, 23.0, 24.0, 25.0, 26.0, 27.0,
+                    28.0, 29.0, 30.0, 31.0, 32.0, 33.0, 34.0, 35.0, 36.0, 37.0, 38.0, 39.0, 40.0,
+                    41.0, 42.0, 43.0, 44.0, 45.0, 46.0, 47.0, 48.0, 49.0, 50.0, 51.0, 52.0, 53.0,
+                    54.0, 55.0, 56.0, 57.0, 58.0, 59.0, 60.0, 61.0, 62.0, 63.0, 64.0, 65.0, 66.0,
+                    67.0, 68.0, 69.0, 70.0, 71.0, 72.0,
+            ]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=13, producer_name='SOFIE-ConvGroupGen')
+
+
+def make_ConvBatch8():
+    nodes = [
+        helper.make_node('Conv', ['x', 'W'], ['y'], kernel_shape=[3, 3], pads=[1, 1, 1, 1]),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'ConvBatch8',
+        inputs=[
+            _vi('x', FLOAT, [8, 1, 5, 5]),
+        ],
+        outputs=[
+            _vi('y', FLOAT, [8, 1, 5, 5]),
+        ],
+        initializer=[
+            _tensor('W', FLOAT, [1, 1, 3, 3], [1.0] * 9),
+        ],
+    )
+    return _model(graph, opset=12, ir_version=7)
+
+
+def make_ConvGroup2():
+    nodes = [
+        helper.make_node(
+            'Conv',
+            ['X', 'W'],
+            ['Y'],
+            group=2,
+            kernel_shape=[3, 3],
+            pads=[1, 1, 1, 1],
+            strides=[1, 1],
+        ),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'ConvGroup2',
+        inputs=[
+            _vi('X', FLOAT, [1, 4, 5, 5]),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, [1, 4, 5, 5]),
+        ],
+        initializer=[
+            _tensor('W', FLOAT, [4, 2, 3, 3], [
+                    1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0,
+                    15.0, 16.0, 17.0, 18.0, 19.0, 20.0, 21.0, 22.0, 23.0, 24.0, 25.0, 26.0, 27.0,
+                    28.0, 29.0, 30.0, 31.0, 32.0, 33.0, 34.0, 35.0, 36.0, 37.0, 38.0, 39.0, 40.0,
+                    41.0, 42.0, 43.0, 44.0, 45.0, 46.0, 47.0, 48.0, 49.0, 50.0, 51.0, 52.0, 53.0,
+                    54.0, 55.0, 56.0, 57.0, 58.0, 59.0, 60.0, 61.0, 62.0, 63.0, 64.0, 65.0, 66.0,
+                    67.0, 68.0, 69.0, 70.0, 71.0, 72.0,
+            ]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=13, producer_name='SOFIE-ConvGroupGen')
+
+
+def make_ConvGroup4():
+    nodes = [
+        helper.make_node(
+            'Conv',
+            ['X', 'W'],
+            ['Y'],
+            group=4,
+            kernel_shape=[3, 3],
+            pads=[1, 1, 1, 1],
+            strides=[1, 1],
+        ),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'ConvGroup4',
+        inputs=[
+            _vi('X', FLOAT, [1, 4, 5, 5]),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, [1, 4, 5, 5]),
+        ],
+        initializer=[
+            _tensor('W', FLOAT, [4, 1, 3, 3], [
+                    1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0,
+                    15.0, 16.0, 17.0, 18.0, 19.0, 20.0, 21.0, 22.0, 23.0, 24.0, 25.0, 26.0, 27.0,
+                    28.0, 29.0, 30.0, 31.0, 32.0, 33.0, 34.0, 35.0, 36.0,
+            ]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=13, producer_name='SOFIE-ConvGroupGen')
+
+
+def make_ConvGroupBatch():
+    nodes = [
+        helper.make_node(
+            'Conv',
+            ['input', 'W', 'B'],
+            ['output'],
+            dilations=[1, 1],
+            group=2,
+            kernel_shape=[3, 3],
+            pads=[1, 1, 1, 1],
+            strides=[1, 1],
+        ),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'ConvGroupBatch',
+        inputs=[
+            _vi('input', FLOAT, [4, 4, 5, 5]),
+        ],
+        outputs=[
+            _vi('output', FLOAT, [4, 4, 5, 5]),
+        ],
+        initializer=[
+            _tensor('W', FLOAT, [4, 2, 3, 3], [
+                    -0.31888553500175476, -0.11987500637769699, 0.0010487399995326996,
+                    0.00939611904323101, -0.09001309424638748, 0.12456998974084854,
+                    -0.21352408826351166, -0.028475897386670113, 0.024059126153588295,
+                    0.10288776457309723, 0.14232297241687775, -0.22492842376232147,
+                    -0.30682283639907837, 0.255535364151001, 0.06646279990673065,
+                    -0.14969730377197266, 0.31023040413856506, 0.023134926334023476,
+                    0.2358594387769699, 0.013503695838153362, 0.412149578332901,
+                    0.3510681688785553, -0.049792829900979996, 0.19431419670581818,
+                    0.12907518446445465, 0.27372631430625916, -0.1929846853017807,
+                    0.13721029460430145, 0.21168489754199982, -0.35174790024757385,
+                    -0.2366517037153244, -0.4078464210033417, -0.053881365805864334,
+                    0.1435084491968155, 0.3004714250564575, 0.014818956144154072,
+                    0.3257231116294861, -0.2760202884674072, -0.340676486492157,
+                    -0.011109540238976479, 0.07681308686733246, -0.006538949441164732,
+                    -0.4134884178638458, -0.01782400719821453, -0.26089391112327576,
+                    0.13393451273441315, 0.07331965118646622, -0.1879759579896927,
+                    -0.10277338325977325, -0.21184270083904266, -0.0125358197838068,
+                    0.19102846086025238, -0.19714520871639252, 0.10080930590629578,
+                    -0.10605152696371078, -0.15857456624507904, -0.02140607126057148,
+                    -0.2070484608411789, -0.11072985827922821, -0.2395755797624588,
+                    0.3929450213909149, 0.0070527102798223495, -0.1399451047182083,
+                    0.04279598221182823, -0.02246560901403427, -0.044193919748067856,
+                    0.12283334136009216, 0.15150153636932373, -0.10610023140907288,
+                    -0.1151636466383934, -0.055010341107845306, -0.46038421988487244,
+            ]),
+            _tensor('B', FLOAT, [4], [
+                    -0.15151910483837128, 0.13668742775917053, 0.1644967645406723,
+                    -0.02490360476076603,
+            ]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=8)
+
+
+def make_ConvWithBias():
+    nodes = [
+        helper.make_node('Conv', ['x', 'W', 'B'], ['y'], kernel_shape=[3, 3], pads=[1, 1, 1, 1]),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'ConvWithBias',
+        inputs=[
+            _vi('x', FLOAT, [1, 1, 5, 5]),
+            _vi('W', FLOAT, [2, 1, 3, 3]),
+            _vi('B', FLOAT, [2]),
+        ],
+        outputs=[
+            _vi('y', FLOAT, [1, 2, 5, 5]),
+        ],
+        initializer=[
+            _tensor('W', FLOAT, [2, 1, 3, 3], [1.0] * 18),
+            _tensor('B', FLOAT, [2], [10.0, 100.0]),
+        ],
+    )
+    return _model(graph, opset=14, ir_version=7, producer_name='python_script')
+
+
+def make_CumSum():
+    nodes = [
+        helper.make_node('CumSum', ['X', 'axis'], ['Y'], exclusive=0, reverse=0),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'CumSum',
+        inputs=[
+            _vi('X', FLOAT, [2, 5]),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, [2, 5]),
+        ],
+        initializer=[
+            _tensor('axis', INT64, [], [1]),
+        ],
+    )
+    return _model(graph, opset=14, ir_version=7)
+
+
+def make_CumSumExclusive():
+    nodes = [
+        helper.make_node('CumSum', ['X', 'axis'], ['Y'], exclusive=1, reverse=0),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'CumSumExclusive',
+        inputs=[
+            _vi('X', FLOAT, [2, 5]),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, [2, 5]),
+        ],
+        initializer=[
+            _tensor('axis', INT64, [], [1]),
+        ],
+    )
+    return _model(graph, opset=14, ir_version=7)
+
+
+def make_DynamicAddBroadcast():
+    nodes = [
+        helper.make_node('Add', ['X', 'bias'], ['Y']),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'DynamicAddBroadcast',
+        inputs=[
+            _vi('X', FLOAT, ['N', 4, 'n_pf']),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, ['N', 4, 'n_pf']),
+        ],
+        initializer=[
+            _tensor('bias', FLOAT, [4, 1], [0.5, -1.0, 0.25, 2.0]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=8)
+
+
+def make_DynamicBatchNorm2D():
+    nodes = [
+        helper.make_node(
+            'BatchNormalization',
+            ['X', 'bn_scale', 'bn_bias', 'bn_mean', 'bn_var'],
+            ['Y'],
+            epsilon=9.999999747378752e-06,
+        ),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'DynamicBatchNorm2D',
+        inputs=[
+            _vi('X', FLOAT, ['N', 4]),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, ['N', 4]),
+        ],
+        initializer=[
+            _tensor('bn_scale', FLOAT, [4], [1.0, 2.0, 0.5, 1.5]),
+            _tensor('bn_bias', FLOAT, [4], [0.10000000149011612, -0.20000000298023224, 0.30000001192092896, 0.0]),
+            _tensor('bn_mean', FLOAT, [4], [0.5, 1.0, -0.5, 2.0]),
+            _tensor('bn_var', FLOAT, [4], [1.0, 4.0, 0.25, 2.0]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=8)
+
+
+def make_DynamicBatchNorm4D():
+    nodes = [
+        helper.make_node(
+            'BatchNormalization',
+            ['X', 'bn_scale', 'bn_bias', 'bn_mean', 'bn_var'],
+            ['Y'],
+            epsilon=9.999999747378752e-06,
+        ),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'DynamicBatchNorm4D',
+        inputs=[
+            _vi('X', FLOAT, ['N', 4, 2, 3]),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, ['N', 4, 2, 3]),
+        ],
+        initializer=[
+            _tensor('bn_scale', FLOAT, [4], [1.0, 2.0, 0.5, 1.5]),
+            _tensor('bn_bias', FLOAT, [4], [0.10000000149011612, -0.20000000298023224, 0.30000001192092896, 0.0]),
+            _tensor('bn_mean', FLOAT, [4], [0.5, 1.0, -0.5, 2.0]),
+            _tensor('bn_var', FLOAT, [4], [1.0, 4.0, 0.25, 2.0]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=8)
+
+
+def make_DynamicBatchNormDynSpatialRelu():
+    nodes = [
+        helper.make_node(
+            'BatchNormalization',
+            ['X', 'bn_scale', 'bn_bias', 'bn_mean', 'bn_var'],
+            ['bn_out'],
+            epsilon=9.999999747378752e-06,
+        ),
+        helper.make_node('Relu', ['bn_out'], ['Y']),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'DynamicBatchNormDynSpatialRelu',
+        inputs=[
+            _vi('X', FLOAT, ['N', 4, 'n_pf']),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, ['N', 4, 'n_pf']),
+        ],
+        initializer=[
+            _tensor('bn_scale', FLOAT, [4], [1.0, 2.0, 0.5, 1.5]),
+            _tensor('bn_bias', FLOAT, [4], [0.10000000149011612, -0.20000000298023224, 0.30000001192092896, 0.0]),
+            _tensor('bn_mean', FLOAT, [4], [0.5, 1.0, -0.5, 2.0]),
+            _tensor('bn_var', FLOAT, [4], [1.0, 4.0, 0.25, 2.0]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=8)
+
+
+def make_DynamicConcat():
+    nodes = [
+        helper.make_node('Concat', ['A', 'B'], ['Y'], axis=1),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'DynamicConcat',
+        inputs=[
+            _vi('A', FLOAT, ['N', 2, 'n_pf']),
+            _vi('B', FLOAT, ['N', 3, 'n_pf']),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, ['N', 5, 'n_pf']),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=8)
+
+
+def make_DynamicConstantOfShape():
+    nodes = [
+        helper.make_node('Shape', ['X'], ['shp']),
+        helper.make_node(
+            'ConstantOfShape',
+            ['shp'],
+            ['Y'],
+            value=_tensor('value', FLOAT, [1], [7.0]),
+        ),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'DynamicConstantOfShape',
+        inputs=[
+            _vi('X', FLOAT, ['N', 3]),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, ['N', 3]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=8)
+
+
+def make_DynamicConv1D():
+    nodes = [
+        helper.make_node(
+            'Conv',
+            ['X', 'W', 'B'],
+            ['Y'],
+            dilations=[1],
+            group=1,
+            kernel_shape=[3],
+            pads=[1, 1],
+            strides=[1],
+        ),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'DynamicConv1D',
+        inputs=[
+            _vi('X', FLOAT, ['N', 2, 'n_pf']),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, ['N', 3, 'n_pf']),
+        ],
+        initializer=[
+            _tensor('W', FLOAT, [3, 2, 3], [
+                    0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0,
+                    15.0, 16.0, 17.0,
+            ]),
+            _tensor('B', FLOAT, [3], [0.5, -0.5, 1.0]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=8)
+
+
+def make_DynamicConv1DNoBias():
+    nodes = [
+        helper.make_node('Conv', ['X', 'W'], ['Y'], kernel_shape=[1], pads=[0, 0], strides=[1]),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'DynamicConv1DNoBias',
+        inputs=[
+            _vi('X', FLOAT, ['N', 2, 'n_pf']),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, ['N', 3, 'n_pf']),
+        ],
+        initializer=[
+            _tensor('W', FLOAT, [3, 2, 1], [0.5, -1.0, 0.25, 0.75, -0.5, 1.5]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=8)
+
+
+def make_DynamicConv2DNoBias():
+    nodes = [
+        helper.make_node(
+            'Conv',
+            ['X', 'W'],
+            ['Y'],
+            kernel_shape=[1, 1],
+            pads=[0, 0, 0, 0],
+            strides=[1, 1],
+        ),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'DynamicConv2DNoBias',
+        inputs=[
+            _vi('X', FLOAT, ['N', 2, 'n_pf', 4]),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, ['N', 3, 'n_pf', 4]),
+        ],
+        initializer=[
+            _tensor('W', FLOAT, [3, 2, 1, 1], [0.5, -1.0, 0.25, 0.75, -0.5, 1.5]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=8)
+
+
+def make_DynamicCumSum():
+    nodes = [
+        helper.make_node('CumSum', ['X', 'axis'], ['Y']),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'DynamicCumSum',
+        inputs=[
+            _vi('X', FLOAT, ['N', 5]),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, ['N', 5]),
+        ],
+        initializer=[
+            _tensor('axis', INT64, [], [1]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=8)
+
+
+def make_DynamicEqual():
+    nodes = [
+        helper.make_node('Equal', ['X1', 'X2'], ['Y']),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'DynamicEqual',
+        inputs=[
+            _vi('X1', FLOAT, ['N', 3]),
+            _vi('X2', FLOAT, ['N', 3]),
+        ],
+        outputs=[
+            _vi('Y', BOOL, ['', 3]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=8)
+
+
+def make_DynamicExpand():
+    nodes = [
+        helper.make_node('Expand', ['X', 'shape'], ['Y']),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'DynamicExpand',
+        inputs=[
+            _vi('X', FLOAT, ['N', 1]),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, ['N', 4]),
+        ],
+        initializer=[
+            _tensor('shape', INT64, [2], [1, 4]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=8)
+
+
+def make_DynamicGather():
+    nodes = [
+        helper.make_node('Gather', ['X', 'indices'], ['Y'], axis=1),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'DynamicGather',
+        inputs=[
+            _vi('X', FLOAT, ['N', 3, 'n_pf']),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, ['N', 2, 'n_pf']),
+        ],
+        initializer=[
+            _tensor('indices', INT64, [2], [2, 0]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=8)
+
+
+def make_DynamicGatherND():
+    nodes = [
+        helper.make_node('GatherND', ['Data', 'indices'], ['Y'], batch_dims=0),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'DynamicGatherND',
+        inputs=[
+            _vi('Data', FLOAT, ['N', 3]),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, [2, 3]),
+        ],
+        initializer=[
+            _tensor('indices', INT64, [2, 1], [-1, 0]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=8)
+
+
+def make_DynamicLinear():
+    nodes = [
+        helper.make_node('Gemm', ['X', 'W', 'B'], ['H'], alpha=1.0, beta=1.0),
+        helper.make_node('Relu', ['H'], ['Y']),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'DynamicLinear',
+        inputs=[
+            _vi('X', FLOAT, ['N', 4]),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, ['N', 3]),
+        ],
+        initializer=[
+            _tensor('W', FLOAT, [4, 3], [0.5, -1.0, 0.25, 0.75, 0.5, -0.5, -0.25, 1.0, 0.75, 1.5, -0.75, 0.5]),
+            _tensor('B', FLOAT, [3], [0.5, -0.5, 0.25]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=8)
+
+
+def make_DynamicMatMulBatched():
+    nodes = [
+        helper.make_node('MatMul', ['A', 'B'], ['Y']),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'DynamicMatMulBatched',
+        inputs=[
+            _vi('A', FLOAT, ['N', 4, 8]),
+            _vi('B', FLOAT, ['N', 8, 6]),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, ['N', 4, 6]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=8)
+
+
+def make_DynamicMaxPool():
+    nodes = [
+        helper.make_node('MaxPool', ['X'], ['Y'], kernel_shape=[2, 2], strides=[2, 2]),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'DynamicMaxPool',
+        inputs=[
+            _vi('X', FLOAT, ['N', 1, 4, 4]),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, ['N', 1, 2, 2]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=8)
+
+
+def make_DynamicNegRelu():
+    nodes = [
+        helper.make_node('Neg', ['X'], ['neg_out']),
+        helper.make_node('Relu', ['neg_out'], ['Y']),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'DynamicNegRelu',
+        inputs=[
+            _vi('X', FLOAT, ['N', 3, 'n_pf']),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, ['N', 3, 'n_pf']),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=8)
+
+
+def make_DynamicNonZero():
+    nodes = [
+        helper.make_node('NonZero', ['input'], ['output']),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'DynamicNonZero',
+        inputs=[
+            _vi('input', FLOAT, ['N', 3]),
+        ],
+        outputs=[
+            _vi('output', INT64, [2, 'num_nonzero']),
+        ],
+    )
+    return _model(graph, opset=18, ir_version=8, producer_name='SOFIE')
+
+
+def make_DynamicPad():
+    nodes = [
+        helper.make_node('Pad', ['X', 'pads', 'const_value'], ['Y'], name='pad0', mode='constant'),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'DynamicPad',
+        inputs=[
+            _vi('X', FLOAT, ['N', 3, 'n_pf']),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, ['N_out', 3, 'n_pf_out']),
+        ],
+        initializer=[
+            _tensor('pads', INT64, [6], [1, 0, 2, 1, 0, 3]),
+            _tensor('const_value', FLOAT, [1], [-1.0]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=8, producer_name='sofie-test')
+
+
+def make_DynamicRange():
+    nodes = [
+        helper.make_node('Shape', ['X'], ['shape0']),
+        helper.make_node('Gather', ['shape0', 'gather_idx'], ['limit'], axis=0),
+        helper.make_node('Range', ['range_start', 'limit', 'range_delta'], ['Y']),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'DynamicRange',
+        inputs=[
+            _vi('X', FLOAT, ['N', 'K']),
+        ],
+        outputs=[
+            _vi('Y', INT64, ['K']),
+        ],
+        initializer=[
+            _tensor('range_start', INT64, [], [0]),
+            _tensor('range_delta', INT64, [], [1]),
+            _tensor('gather_idx', INT64, [], [1]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=9)
+
+
+def make_DynamicRangeMul():
+    nodes = [
+        helper.make_node('Shape', ['X'], ['shape0']),
+        helper.make_node('Gather', ['shape0', 'idx0'], ['dimN'], axis=0),
+        helper.make_node('Gather', ['shape0', 'idx1'], ['dimK'], axis=0),
+        helper.make_node('Range', ['range_start', 'dimK', 'range_delta'], ['arange']),
+        helper.make_node('Mul', ['arange', 'dimN'], ['Y']),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'DynamicRangeMul',
+        inputs=[
+            _vi('X', FLOAT, ['N', 'K']),
+        ],
+        outputs=[
+            _vi('Y', INT64, ['K']),
+        ],
+        initializer=[
+            _tensor('range_start', INT64, [], [0]),
+            _tensor('range_delta', INT64, [], [1]),
+            _tensor('idx0', INT64, [], [0]),
+            _tensor('idx1', INT64, [], [1]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=9)
+
+
+def make_DynamicReduceMaxFirst():
+    nodes = [
+        helper.make_node('ReduceMax', ['X'], ['Y'], axes=[0], keepdims=0),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'DynamicReduceMaxFirst',
+        inputs=[
+            _vi('X', FLOAT, ['N', 4]),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, [4]),
+        ],
+    )
+    return _model(graph, opset=11, ir_version=8)
+
+
+def make_DynamicReduceMeanMid():
+    nodes = [
+        helper.make_node('ReduceMean', ['X'], ['Y'], axes=[1], keepdims=1),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'DynamicReduceMeanMid',
+        inputs=[
+            _vi('X', FLOAT, ['N', 4, 'M']),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, ['N', 1, 'M']),
+        ],
+    )
+    return _model(graph, opset=11, ir_version=8)
+
+
+def make_DynamicReduceSumLast():
+    nodes = [
+        helper.make_node('ReduceSum', ['X'], ['Y'], axes=[-1], keepdims=0),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'DynamicReduceSumLast',
+        inputs=[
+            _vi('X', FLOAT, ['N', 4]),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, ['N']),
+        ],
+    )
+    return _model(graph, opset=11, ir_version=8)
+
+
+def make_DynamicReduceSumMulti():
+    nodes = [
+        helper.make_node('ReduceSum', ['X'], ['Y'], axes=[1, 2], keepdims=0),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'DynamicReduceSumMulti',
+        inputs=[
+            _vi('X', FLOAT, ['N', 3, 2]),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, ['N']),
+        ],
+    )
+    return _model(graph, opset=11, ir_version=8)
+
+
+def make_DynamicRMSNorm():
+    nodes = [
+        helper.make_node('RMSNorm', ['X', 'Scale'], ['Y'], axis=-1, epsilon=9.999999747378752e-06),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'DynamicRMSNorm',
+        inputs=[
+            _vi('X', FLOAT, ['N', 4]),
+            _vi('Scale', FLOAT, [4]),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, ['N', 4]),
+        ],
+    )
+    return _model(graph, opset=17, ir_version=8)
+
+
+def make_DynamicScatterElements():
+    nodes = [
+        helper.make_node('ScatterElements', ['X', 'Indices', 'Updates'], ['Y'], axis=1),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'DynamicScatterElements',
+        inputs=[
+            _vi('X', FLOAT, ['N', 4]),
+            _vi('Indices', INT64, ['N', 4]),
+            _vi('Updates', FLOAT, ['N', 4]),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, ['N', 4]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=8)
+
+
+def make_DynamicScatterND():
+    nodes = [
+        helper.make_node('ScatterND', ['Data', 'indices', 'Updates'], ['Y']),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'DynamicScatterND',
+        inputs=[
+            _vi('Data', FLOAT, ['N', 3]),
+            _vi('Updates', FLOAT, [2, 3]),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, ['N', 3]),
+        ],
+        initializer=[
+            _tensor('indices', INT64, [2, 1], [-1, 0]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=8)
+
+
+def make_DynamicSlice():
+    nodes = [
+        helper.make_node('Slice', ['X', 'starts', 'ends', 'axes'], ['Y']),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'DynamicSlice',
+        inputs=[
+            _vi('X', FLOAT, ['N', 4, 'n_pf']),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, ['N', 2, 'n_pf']),
+        ],
+        initializer=[
+            _tensor('starts', INT64, [1], [1]),
+            _tensor('ends', INT64, [1], [3]),
+            _tensor('axes', INT64, [1], [1]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=8)
+
+
+def make_DynamicSplit():
+    nodes = [
+        helper.make_node('Split', ['X', 'split'], ['Y1', 'Y2'], axis=1),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'DynamicSplit',
+        inputs=[
+            _vi('X', FLOAT, ['N', 6]),
+        ],
+        outputs=[
+            _vi('Y1', FLOAT, ['N', 2]),
+            _vi('Y2', FLOAT, ['N', 4]),
+        ],
+        initializer=[
+            _tensor('split', INT64, [2], [2, 4]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=8)
+
+
+def make_DynamicTile():
+    nodes = [
+        helper.make_node('Tile', ['X', 'repeats'], ['Y']),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'DynamicTile',
+        inputs=[
+            _vi('X', FLOAT, ['N', 2]),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, ['', 6]),
+        ],
+        initializer=[
+            _tensor('repeats', INT64, [2], [2, 3]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=8)
+
+
+def make_DynamicTopK():
+    nodes = [
+        helper.make_node('TopK', ['X', 'K'], ['Values', 'Indices'], axis=-1, largest=1, sorted=1),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'DynamicTopK',
+        inputs=[
+            _vi('X', FLOAT, ['N', 'D']),
+        ],
+        outputs=[
+            _vi('Values', FLOAT, ['N', 5]),
+            _vi('Indices', INT64, ['N', 5]),
+        ],
+        initializer=[
+            _tensor('K', INT64, [1], [5]),
+        ],
+    )
+    return _model(graph, opset=17, ir_version=8)
+
+
+def make_DynamicTranspose():
+    nodes = [
+        helper.make_node('Transpose', ['X'], ['Y'], perm=[0, 2, 1]),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'DynamicTranspose',
+        inputs=[
+            _vi('X', FLOAT, ['N', 3, 'n_pf']),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, ['N', 'n_pf', 3]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=8)
+
+
+def make_DynamicTrilu():
+    nodes = [
+        helper.make_node('Trilu', ['X', 'k'], ['Y'], upper=1),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'DynamicTrilu',
+        inputs=[
+            _vi('X', FLOAT, ['N', 4, 4]),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, ['N', 4, 4]),
+        ],
+        initializer=[
+            _tensor('k', INT64, [], [0]),
+        ],
+    )
+    return _model(graph, opset=14, ir_version=8)
+
+
+def make_DynamicWhere():
+    nodes = [
+        helper.make_node('Where', ['C', 'X', 'Y'], ['Z']),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'DynamicWhere',
+        inputs=[
+            _vi('C', BOOL, ['N', 5]),
+            _vi('X', FLOAT, ['N', 5]),
+            _vi('Y', FLOAT, ['N', 5]),
+        ],
+        outputs=[
+            _vi('Z', FLOAT, ['N', 5]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=8)
+
+
+def make_GatherND_Batch():
+    nodes = [
+        helper.make_node('GatherND', ['data', 'indices'], ['output'], batch_dims=0),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'GatherND_Batch',
+        inputs=[
+            _vi('data', FLOAT, [2, 3, 4]),
+        ],
+        outputs=[
+            _vi('output', FLOAT, [2, 4]),
+        ],
+        initializer=[
+            _tensor('indices', INT64, [2, 2], [0, 1, 1, 2]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=7)
+
+
+def make_GatherND_Ex1():
+    nodes = [
+        helper.make_node('GatherND', ['data', 'indices'], ['output'], batch_dims=0),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'GatherND_Ex1',
+        inputs=[
+            _vi('data', FLOAT, [2, 2]),
+        ],
+        outputs=[
+            _vi('output', FLOAT, [2]),
+        ],
+        initializer=[
+            _tensor('indices', INT64, [2, 2], [0, 0, 1, 1]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=7)
+
+
+def make_GatherND_Ex2():
+    nodes = [
+        helper.make_node('GatherND', ['data', 'indices'], ['output'], batch_dims=0),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'GatherND_Ex2',
+        inputs=[
+            _vi('data', FLOAT, [2, 2]),
+        ],
+        outputs=[
+            _vi('output', FLOAT, [2, 2]),
+        ],
+        initializer=[
+            _tensor('indices', INT64, [2, 1], [1, 0]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=7)
+
+
+def make_GatherND_Ex3():
+    nodes = [
+        helper.make_node('GatherND', ['data', 'indices'], ['output'], batch_dims=0),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'GatherND_Ex3',
+        inputs=[
+            _vi('data', FLOAT, [2, 2, 2]),
+        ],
+        outputs=[
+            _vi('output', FLOAT, [2, 2]),
+        ],
+        initializer=[
+            _tensor('indices', INT64, [2, 2], [0, 1, 1, 0]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=7)
+
+
+def make_GatherND_Ex4():
+    nodes = [
+        helper.make_node('GatherND', ['data', 'indices'], ['output'], batch_dims=0),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'GatherND_Ex4',
+        inputs=[
+            _vi('data', FLOAT, [2, 2, 2]),
+        ],
+        outputs=[
+            _vi('output', FLOAT, [2, 1, 2]),
+        ],
+        initializer=[
+            _tensor('indices', INT64, [2, 1, 2], [0, 1, 1, 0]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=7)
+
+
+def make_GatherND_Ex5():
+    nodes = [
+        helper.make_node('GatherND', ['data', 'indices'], ['output'], batch_dims=1),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'GatherND_Ex5',
+        inputs=[
+            _vi('data', FLOAT, [2, 2, 2]),
+        ],
+        outputs=[
+            _vi('output', FLOAT, [2, 2]),
+        ],
+        initializer=[
+            _tensor('indices', INT64, [2, 1], [1, 0]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=7)
+
+
+def make_GatherND_NegativeIndices():
+    nodes = [
+        helper.make_node('GatherND', ['data', 'indices'], ['output'], batch_dims=0),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'GatherND_NegativeIndices',
+        inputs=[
+            _vi('data', FLOAT, [3, 3]),
+        ],
+        outputs=[
+            _vi('output', FLOAT, [3]),
+        ],
+        initializer=[
+            _tensor('indices', INT64, [3, 2], [-1, 0, 0, -1, -2, 1]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=7)
+
+
+def make_GlobalAvgPool2d():
+    nodes = [
+        helper.make_node('GlobalAveragePool', ['x'], ['y']),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'GlobalAvgPool2d',
+        inputs=[
+            _vi('x', FLOAT, [1, 2, 3, 3]),
+        ],
+        outputs=[
+            _vi('y', FLOAT, [1, 2, 1, 1]),
+        ],
+    )
+    return _model(graph, opset=14, ir_version=7, producer_name='python_script')
+
+
+def make_GriffinRGLRU():
+    nodes = [
+        helper.make_node('GriffinRGLRU', ['x', 'a'], ['y'], domain='com.sofie'),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'GriffinRGLRU',
+        inputs=[
+            _vi('x', FLOAT, [1, 4, 8]),
+            _vi('a', FLOAT, [1, 4, 8]),
+        ],
+        outputs=[
+            _vi('y', FLOAT, [1, 4, 8]),
+        ],
+    )
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid('', 18), helper.make_opsetid('com.sofie', 1)])
+    model.ir_version = 8
+    return model
+
+
+def make_GroupNorm():
+    nodes = [
+        helper.make_node(
+            'GroupNormalization',
+            ['X', 'scale', 'bias'],
+            ['Y'],
+            epsilon=9.999999747378752e-06,
+            num_groups=2,
+        ),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'GroupNorm',
+        inputs=[
+            _vi('X', FLOAT, [1, 4, 2]),
+            _vi('scale', FLOAT, [4]),
+            _vi('bias', FLOAT, [4]),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, [1, 4, 2]),
+        ],
+        initializer=[
+            _tensor('scale', FLOAT, [4], [1.0] * 4),
+            _tensor('bias', FLOAT, [4], [0.0] * 4),
+        ],
+    )
+    return _model(graph, opset=18, ir_version=8)
+
+
+def make_GroupNormBig():
+    nodes = [
+        helper.make_node(
+            'GroupNormalization',
+            ['X', 'Scale', 'Bias'],
+            ['Y'],
+            epsilon=9.999999747378752e-06,
+            num_groups=2,
+        ),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'GroupNormBig',
+        inputs=[
+            _vi('X', FLOAT, [2, 4, 20, 20]),
+            _vi('Scale', FLOAT, [4]),
+            _vi('Bias', FLOAT, [4]),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, [2, 4, 20, 20]),
+        ],
+    )
+    return _model(graph, opset=21, ir_version=9)
+
+
+def make_IsNaN():
+    nodes = [
+        helper.make_node('IsNaN', ['input'], ['output']),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'isnan_test',
+        inputs=[
+            _vi('input', FLOAT, [8]),
+        ],
+        outputs=[
+            _vi('output', BOOL, [8]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=8)
+
+
+def make_LayerNorm():
+    nodes = [
+        helper.make_node(
+            'LayerNormalization',
+            ['X', 'scale', 'bias'],
+            ['Y'],
+            name='LayerNorm',
+            axis=-1,
+            epsilon=9.999999747378752e-06,
+            stash_type=1,
+        ),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'LayerNorm',
+        inputs=[
+            _vi('X', FLOAT, [2, 4]),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, [2, 4]),
+        ],
+        initializer=[
+            _tensor('scale', FLOAT, [4], [1.0] * 4),
+            _tensor('bias', FLOAT, [4], [0.0] * 4),
+        ],
+    )
+    return _model(graph, opset=17, ir_version=8, producer_name='sofie-test')
+
+
+def make_LayerNorm3D():
+    nodes = [
+        helper.make_node(
+            'LayerNormalization',
+            ['X', 'scale', 'bias'],
+            ['Y'],
+            name='LayerNorm',
+            axis=1,
+            epsilon=9.999999747378752e-06,
+            stash_type=1,
+        ),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'LayerNorm3D',
+        inputs=[
+            _vi('X', FLOAT, [2, 3, 4]),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, [2, 3, 4]),
+        ],
+        initializer=[
+            _tensor('scale', FLOAT, [3, 4], [1.0] * 12),
+            _tensor('bias', FLOAT, [3, 4], [0.0] * 12),
+        ],
+    )
+    return _model(graph, opset=17, ir_version=8, producer_name='sofie-test')
+
+
+def make_LayerNormBig():
+    nodes = [
+        helper.make_node(
+            'LayerNormalization',
+            ['X', 'scale', 'bias'],
+            ['Y'],
+            axis=-1,
+            epsilon=9.999999747378752e-06,
+        ),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'LayerNormBig',
+        inputs=[
+            _vi('X', FLOAT, [3, 2050]),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, [3, 2050]),
+        ],
+        initializer=[
+            _tensor('scale', FLOAT, [2050], [1.0] * 2050),
+            _tensor('bias', FLOAT, [2050], [0.0] * 2050),
+        ],
+    )
+    return _model(graph, opset=17, ir_version=8)
+
+
+def make_LayerNormScaleBias():
+    nodes = [
+        helper.make_node(
+            'LayerNormalization',
+            ['X', 'scale', 'bias'],
+            ['Y'],
+            name='LayerNorm',
+            axis=-1,
+            epsilon=9.999999747378752e-06,
+            stash_type=1,
+        ),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'LayerNormScaleBias',
+        inputs=[
+            _vi('X', FLOAT, [2, 4]),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, [2, 4]),
+        ],
+        initializer=[
+            _tensor('scale', FLOAT, [4], [2.0] * 4),
+            _tensor('bias', FLOAT, [4], [1.0] * 4),
+        ],
+    )
+    return _model(graph, opset=17, ir_version=8, producer_name='sofie-test')
+
+
+def make_Logic_And():
+    nodes = [
+        helper.make_node('And', ['input_a', 'input_b'], ['output']),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'Logic_And',
+        inputs=[
+            _vi('input_a', BOOL, [4, 4]),
+            _vi('input_b', BOOL, [4, 4]),
+        ],
+        outputs=[
+            _vi('output', BOOL, [4, 4]),
+        ],
+    )
+    return _model(graph, opset=18, ir_version=7)
+
+
+def make_Logic_BitwiseAnd():
+    nodes = [
+        helper.make_node('BitwiseAnd', ['input_a', 'input_b'], ['output']),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'Logic_BitwiseAnd',
+        inputs=[
+            _vi('input_a', INT32, [3, 5]),
+            _vi('input_b', INT32, [3, 5]),
+        ],
+        outputs=[
+            _vi('output', INT32, [3, 5]),
+        ],
+    )
+    return _model(graph, opset=18, ir_version=7)
+
+
+def make_Logic_BitwiseNot():
+    nodes = [
+        helper.make_node('BitwiseNot', ['input'], ['output']),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'Logic_BitwiseNot',
+        inputs=[
+            _vi('input', INT32, [2, 3, 4]),
+        ],
+        outputs=[
+            _vi('output', INT32, [2, 3, 4]),
+        ],
+    )
+    return _model(graph, opset=18, ir_version=7)
+
+
+def make_Logic_BitwiseOr():
+    nodes = [
+        helper.make_node('BitwiseOr', ['input_a', 'input_b'], ['output']),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'Logic_BitwiseOr',
+        inputs=[
+            _vi('input_a', INT32, [3, 5]),
+            _vi('input_b', INT32, [3, 5]),
+        ],
+        outputs=[
+            _vi('output', INT32, [3, 5]),
+        ],
+    )
+    return _model(graph, opset=18, ir_version=7)
+
+
+def make_Logic_BitwiseXor():
+    nodes = [
+        helper.make_node('BitwiseXor', ['input_a', 'input_b'], ['output']),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'Logic_BitwiseXor',
+        inputs=[
+            _vi('input_a', INT32, [3, 5]),
+            _vi('input_b', INT32, [3, 5]),
+        ],
+        outputs=[
+            _vi('output', INT32, [3, 5]),
+        ],
+    )
+    return _model(graph, opset=18, ir_version=7)
+
+
+def make_Logic_Or():
+    nodes = [
+        helper.make_node('Or', ['input_a', 'input_b'], ['output']),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'Logic_Or',
+        inputs=[
+            _vi('input_a', BOOL, [4, 4]),
+            _vi('input_b', BOOL, [4, 4]),
+        ],
+        outputs=[
+            _vi('output', BOOL, [4, 4]),
+        ],
+    )
+    return _model(graph, opset=18, ir_version=7)
+
+
+def make_Logic_Xor():
+    nodes = [
+        helper.make_node('Xor', ['input_a', 'input_b'], ['output']),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'Logic_Xor',
+        inputs=[
+            _vi('input_a', BOOL, [4, 4]),
+            _vi('input_b', BOOL, [4, 4]),
+        ],
+        outputs=[
+            _vi('output', BOOL, [4, 4]),
+        ],
+    )
+    return _model(graph, opset=18, ir_version=7)
+
+
+def make_MambaScan():
+    nodes = [
+        helper.make_node(
+            'MambaScan',
+            ['u', 'delta', 'A', 'B', 'C', 'D_bias'],
+            ['y'],
+            domain='com.sofie',
+        ),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'MambaScan',
+        inputs=[
+            _vi('u', FLOAT, [1, 4, 8]),
+            _vi('delta', FLOAT, [1, 4, 8]),
+            _vi('B', FLOAT, [1, 4, 8]),
+            _vi('C', FLOAT, [1, 4, 8]),
+        ],
+        outputs=[
+            _vi('y', FLOAT, [1, 4, 8]),
+        ],
+        initializer=[
+            _tensor('A', FLOAT, [4, 4], [
+                    -0.5793015956878662, -0.19619597494602203, -0.89876389503479,
+                    -1.1452219486236572, -1.3235278129577637, -0.7946423888206482,
+                    -0.646903395652771, -1.9924198389053345, -0.4631698727607727,
+                    -0.09728692471981049, -1.2570149898529053, -0.6894038915634155,
+                    -0.3272134065628052, -0.36857590079307556, -0.2501954138278961,
+                    -1.5235294103622437,
+            ]),
+            _tensor('D_bias', FLOAT, [4], [-0.6260731220245361, -1.277725100517273, 1.2570693492889404, -0.15408757328987122]),
+        ],
+    )
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid('', 18), helper.make_opsetid('com.sofie', 1)])
+    model.ir_version = 8
+    return model
+
+
+def make_Not():
+    nodes = [
+        helper.make_node('Not', ['input'], ['output']),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'not_test',
+        inputs=[
+            _vi('input', BOOL, [8]),
+        ],
+        outputs=[
+            _vi('output', BOOL, [8]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=8)
+
+
+def make_ReduceL2():
+    nodes = [
+        helper.make_node('ReduceL2', ['input'], ['output'], axes=[1], keepdims=0),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'ReduceL2_graph',
+        inputs=[
+            _vi('input', FLOAT, [1, 2, 3]),
+        ],
+        outputs=[
+            _vi('output', FLOAT, [1, 3]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=7)
+
+
+def make_ReduceL2Large():
+    nodes = [
+        helper.make_node('ReduceL2', ['input'], ['output'], axes=[1], keepdims=0),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'ReduceL2Large_graph',
+        inputs=[
+            _vi('input', FLOAT, [4, 512]),
+        ],
+        outputs=[
+            _vi('output', FLOAT, [4]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=7)
+
+
+def make_ReduceMax_axis0():
+    nodes = [
+        helper.make_node('ReduceMax', ['input'], ['output'], axes=[0], keepdims=0),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'ReduceMax_axis0',
+        inputs=[
+            _vi('input', FLOAT, [3, 4]),
+        ],
+        outputs=[
+            _vi('output', FLOAT, [4]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=7)
+
+
+def make_ReduceMax_mid():
+    nodes = [
+        helper.make_node('ReduceMax', ['input'], ['output'], axes=[1], keepdims=0),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'ReduceMax_mid',
+        inputs=[
+            _vi('input', FLOAT, [2, 3, 4]),
+        ],
+        outputs=[
+            _vi('output', FLOAT, [2, 4]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=7)
+
+
+def make_RMSNorm():
+    nodes = [
+        helper.make_node('RMSNorm', ['X', 'scale'], ['Y'], axis=-1, epsilon=9.999999747378752e-06),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'RMSNorm',
+        inputs=[
+            _vi('X', FLOAT, [2, 4]),
+            _vi('scale', FLOAT, [4]),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, [2, 4]),
+        ],
+        initializer=[
+            _tensor('scale', FLOAT, [4], [1.0] * 4),
+        ],
+    )
+    return _model(graph, opset=17, ir_version=7)
+
+
+def make_RWKV_WKV6():
+    nodes = [
+        helper.make_node('RWKV_WKV6', ['r', 'k', 'v', 'w', 'u'], ['y'], domain='com.sofie'),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'RWKV_WKV6',
+        inputs=[
+            _vi('r', FLOAT, [1, 2, 4, 4]),
+            _vi('k', FLOAT, [1, 2, 4, 4]),
+            _vi('v', FLOAT, [1, 2, 4, 4]),
+            _vi('w', FLOAT, [1, 2, 4, 4]),
+        ],
+        outputs=[
+            _vi('y', FLOAT, [1, 2, 4, 4]),
+        ],
+        initializer=[
+            _tensor('u', FLOAT, [2, 4], [
+                    0.37867605686187744, -2.6135594844818115, 0.25039801001548767,
+                    -0.06134407967329025, 0.08321735262870789, -1.0768749713897705,
+                    -0.26934704184532166, -0.1782587617635727,
+            ]),
+        ],
+    )
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid('', 18), helper.make_opsetid('com.sofie', 1)])
+    model.ir_version = 8
+    return model
+
+
+def make_ScatterND_2D():
+    nodes = [
+        helper.make_node('ScatterND', ['data', 'indices', 'updates'], ['output']),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'ScatterND_2D',
+        inputs=[
+            _vi('data', FLOAT, [3, 3]),
+            _vi('indices', INT64, [3, 2]),
+            _vi('updates', FLOAT, [3]),
+        ],
+        outputs=[
+            _vi('output', FLOAT, [3, 3]),
+        ],
+    )
+    return _model(graph, opset=16, ir_version=8)
+
+
+def make_ScatterND_Ex1():
+    nodes = [
+        helper.make_node('ScatterND', ['data', 'indices', 'updates'], ['output']),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'ScatterND_Ex1',
+        inputs=[
+            _vi('data', FLOAT, [8]),
+            _vi('indices', INT64, [4, 1]),
+            _vi('updates', FLOAT, [4]),
+        ],
+        outputs=[
+            _vi('output', FLOAT, [8]),
+        ],
+    )
+    return _model(graph, opset=16, ir_version=8)
+
+
+def make_ScatterND_Ex2():
+    nodes = [
+        helper.make_node('ScatterND', ['data', 'indices', 'updates'], ['output']),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'ScatterND_Ex2',
+        inputs=[
+            _vi('data', FLOAT, [4, 4, 4]),
+            _vi('indices', INT64, [2, 1]),
+            _vi('updates', FLOAT, [2, 4, 4]),
+        ],
+        outputs=[
+            _vi('output', FLOAT, [4, 4, 4]),
+        ],
+    )
+    return _model(graph, opset=16, ir_version=8)
+
+
+def make_ScatterND_NegativeIndices():
+    nodes = [
+        helper.make_node('ScatterND', ['data', 'indices', 'updates'], ['output']),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'ScatterND_NegativeIndices',
+        inputs=[
+            _vi('data', FLOAT, [5]),
+            _vi('indices', INT64, [2, 1]),
+            _vi('updates', FLOAT, [2]),
+        ],
+        outputs=[
+            _vi('output', FLOAT, [5]),
+        ],
+    )
+    return _model(graph, opset=16, ir_version=8)
+
+
+def make_SDPA():
+    nodes = [
+        helper.make_node('ScaledDotProductAttention', ['Q', 'K', 'V'], ['Y']),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'SDPA',
+        inputs=[
+            _vi('Q', FLOAT, [1, 2, 4, 8]),
+            _vi('K', FLOAT, [1, 2, 4, 8]),
+            _vi('V', FLOAT, [1, 2, 4, 8]),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, [1, 2, 4, 8]),
+        ],
+    )
+    return _model(graph, opset=22, ir_version=10)
+
+
+def make_SDPABig():
+    nodes = [
+        helper.make_node('ScaledDotProductAttention', ['Q', 'K', 'V', 'Mask'], ['Y']),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'SDPABig',
+        inputs=[
+            _vi('Q', FLOAT, [1, 2, 16, 8]),
+            _vi('K', FLOAT, [1, 2, 16, 8]),
+            _vi('V', FLOAT, [1, 2, 16, 8]),
+            _vi('Mask', FLOAT, [1, 2, 16, 16]),
+        ],
+        outputs=[
+            _vi('Y', FLOAT, [1, 2, 16, 8]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=8)
+
+
+def make_SeluNonDefaultCoeffs():
+    nodes = [
+        helper.make_node('Selu', ['input'], ['output'], alpha=2.0, gamma=3.0),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'Selu',
+        inputs=[
+            _vi('input', FLOAT, [2, 3]),
+        ],
+        outputs=[
+            _vi('output', FLOAT, [2, 3]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=8)
+
+
+def make_TopKBig():
+    nodes = [
+        helper.make_node('TopK', ['X', 'K'], ['Values', 'Indices'], axis=-1, largest=1, sorted=1),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'TopKBig',
+        inputs=[
+            _vi('X', FLOAT, [4, 10007]),
+        ],
+        outputs=[
+            _vi('Values', FLOAT, [4, 13]),
+            _vi('Indices', INT64, [4, 13]),
+        ],
+        initializer=[
+            _tensor('K', INT64, [1], [13]),
+        ],
+    )
+    return _model(graph, opset=17, ir_version=8)
+
+
+def make_TopKTies():
+    nodes = [
+        helper.make_node('TopK', ['X', 'K'], ['Values', 'Indices'], axis=-1, largest=1, sorted=1),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'TopKTies',
+        inputs=[
+            _vi('X', FLOAT, [2, 40]),
+        ],
+        outputs=[
+            _vi('Values', FLOAT, [2, 6]),
+            _vi('Indices', INT64, [2, 6]),
+        ],
+        initializer=[
+            _tensor('K', INT64, [1], [6]),
+        ],
+    )
+    return _model(graph, opset=17, ir_version=8)
+
+
+def make_Transpose():
+    nodes = [
+        helper.make_node('Transpose', ['input'], ['output'], perm=[0, 2, 3, 1]),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'TransposeGraph',
+        inputs=[
+            _vi('input', FLOAT, [2, 1, 3, 4]),
+        ],
+        outputs=[
+            _vi('output', FLOAT, [2, 3, 4, 1]),
+        ],
+    )
+    return _model(graph, opset=24, ir_version=12, producer_name='transpose-model')
+
+
+def make_Trilu_3D():
+    nodes = [
+        helper.make_node('Constant', [], ['k_const'], value=_tensor('k_const', INT64, [], [0])),
+        helper.make_node('Trilu', ['input', 'k_const'], ['output'], upper=1),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'Trilu_3D',
+        inputs=[
+            _vi('input', FLOAT, [2, 3, 4]),
+        ],
+        outputs=[
+            _vi('output', FLOAT, [2, 3, 4]),
+        ],
+    )
+    return _model(graph, opset=14, ir_version=7)
+
+
+def make_Trilu_k2():
+    nodes = [
+        helper.make_node('Constant', [], ['k_const'], value=_tensor('k_const', INT64, [], [2])),
+        helper.make_node('Trilu', ['input', 'k_const'], ['output'], upper=1),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'Trilu_k2',
+        inputs=[
+            _vi('input', FLOAT, [3, 5]),
+        ],
+        outputs=[
+            _vi('output', FLOAT, [3, 5]),
+        ],
+    )
+    return _model(graph, opset=14, ir_version=7)
+
+
+def make_Trilu_kn1():
+    nodes = [
+        helper.make_node('Constant', [], ['k_const'], value=_tensor('k_const', INT64, [], [-1])),
+        helper.make_node('Trilu', ['input', 'k_const'], ['output'], upper=0),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'Trilu_kn1',
+        inputs=[
+            _vi('input', FLOAT, [3, 5]),
+        ],
+        outputs=[
+            _vi('output', FLOAT, [3, 5]),
+        ],
+    )
+    return _model(graph, opset=14, ir_version=7)
+
+
+def make_Trilu_lower():
+    nodes = [
+        helper.make_node('Constant', [], ['k_const'], value=_tensor('k_const', INT64, [], [0])),
+        helper.make_node('Trilu', ['input', 'k_const'], ['output'], upper=0),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'Trilu_lower',
+        inputs=[
+            _vi('input', FLOAT, [4, 4]),
+        ],
+        outputs=[
+            _vi('output', FLOAT, [4, 4]),
+        ],
+    )
+    return _model(graph, opset=14, ir_version=7)
+
+
+def make_Trilu_upper():
+    nodes = [
+        helper.make_node('Constant', [], ['k_const'], value=_tensor('k_const', INT64, [], [0])),
+        helper.make_node('Trilu', ['input', 'k_const'], ['output'], upper=1),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'Trilu_upper',
+        inputs=[
+            _vi('input', FLOAT, [4, 4]),
+        ],
+        outputs=[
+            _vi('output', FLOAT, [4, 4]),
+        ],
+    )
+    return _model(graph, opset=14, ir_version=7)
+
+
+# Static-shape variants used by the alpaka tests.
+
+def make_Clip1D():
+    nodes = [
+        helper.make_node('Clip', ['input', 'clip_min', 'clip_max'], ['output']),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'clip_test',
+        inputs=[
+            _vi('input', FLOAT, [12]),
+        ],
+        outputs=[
+            _vi('output', FLOAT, [12]),
+        ],
+        initializer=[
+            _tensor('clip_min', FLOAT, [], [-1.0]),
+            _tensor('clip_max', FLOAT, [], [1.0]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=8)
+
+
+def make_IsInf1D():
+    nodes = [
+        helper.make_node('IsInf', ['input'], ['output']),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'isinf_test',
+        inputs=[
+            _vi('input', FLOAT, [8]),
+        ],
+        outputs=[
+            _vi('output', BOOL, [8]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=8)
+
+
+def make_NonZero2D():
+    nodes = [
+        helper.make_node('NonZero', ['input'], ['output']),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'NonZero',
+        inputs=[
+            _vi('input', FLOAT, [2, 3]),
+        ],
+        outputs=[
+            _vi('output', INT64, [2, 'num_nonzero']),
+        ],
+    )
+    return _model(graph, opset=18, ir_version=8, producer_name='SOFIE')
+
+
+def make_ConvWithAutopadSameUpperStride2():
+    nodes = [
+        helper.make_node(
+            'Conv',
+            ['x', 'W'],
+            ['y'],
+            auto_pad='SAME_UPPER',
+            kernel_shape=[3, 3],
+            strides=[2, 2],
+        ),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'ConvWithAutopadSameUpper',
+        inputs=[
+            _vi('x', FLOAT, [1, 1, 4, 4]),
+            _vi('W', FLOAT, [1, 1, 3, 3]),
+        ],
+        outputs=[
+            _vi('y', FLOAT, [1, 1, 2, 2]),
+        ],
+        initializer=[
+            _tensor('W', FLOAT, [1, 1, 3, 3], [1.0] * 9),
+        ],
+    )
+    return _model(graph, opset=14, ir_version=7, producer_name='python_script')
+
+
+def make_ConvWithDilation2Ch():
+    nodes = [
+        helper.make_node(
+            'Conv',
+            ['x', 'W'],
+            ['y'],
+            dilations=[2, 2],
+            kernel_shape=[3, 3],
+            pads=[0, 0, 0, 0],
+            strides=[1, 1],
+        ),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'ConvWithDilation',
+        inputs=[
+            _vi('x', FLOAT, [1, 1, 7, 7]),
+            _vi('W', FLOAT, [2, 1, 3, 3]),
+        ],
+        outputs=[
+            _vi('y', FLOAT, [1, 2, 3, 3]),
+        ],
+        initializer=[
+            _tensor('W', FLOAT, [2, 1, 3, 3], [
+                    0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0,
+                    15.0, 16.0, 17.0,
+            ]),
+        ],
+    )
+    return _model(graph, opset=14, ir_version=7, producer_name='python_script')
+
+
 MODELS = {
     "Abs": make_Abs,
     "Acosh": make_Acosh,
@@ -6092,6 +8370,109 @@ MODELS = {
     "WhereMultidirectionalBroadcast": make_WhereMultidirectionalBroadcast,
     "WhereBroadcastHighRankCond": make_WhereBroadcastHighRankCond,
     "WhereBroadcastEqualElementCount": make_WhereBroadcastEqualElementCount,
+    "AvgPoolCountIncludePad": make_AvgPoolCountIncludePad,
+    "AvgPoolPad": make_AvgPoolPad,
+    "BatchNorm": make_BatchNorm,
+    "BatchNormRelu": make_BatchNormRelu,
+    "Conv1d": make_Conv1d,
+    "Conv3d": make_Conv3d,
+    "ConvBatch2": make_ConvBatch2,
+    "ConvBatch4": make_ConvBatch4,
+    "ConvBatch4Group2": make_ConvBatch4Group2,
+    "ConvBatch8": make_ConvBatch8,
+    "ConvGroup2": make_ConvGroup2,
+    "ConvGroup4": make_ConvGroup4,
+    "ConvGroupBatch": make_ConvGroupBatch,
+    "ConvWithBias": make_ConvWithBias,
+    "CumSum": make_CumSum,
+    "CumSumExclusive": make_CumSumExclusive,
+    "DynamicAddBroadcast": make_DynamicAddBroadcast,
+    "DynamicBatchNorm2D": make_DynamicBatchNorm2D,
+    "DynamicBatchNorm4D": make_DynamicBatchNorm4D,
+    "DynamicBatchNormDynSpatialRelu": make_DynamicBatchNormDynSpatialRelu,
+    "DynamicConcat": make_DynamicConcat,
+    "DynamicConstantOfShape": make_DynamicConstantOfShape,
+    "DynamicConv1D": make_DynamicConv1D,
+    "DynamicConv1DNoBias": make_DynamicConv1DNoBias,
+    "DynamicConv2DNoBias": make_DynamicConv2DNoBias,
+    "DynamicCumSum": make_DynamicCumSum,
+    "DynamicEqual": make_DynamicEqual,
+    "DynamicExpand": make_DynamicExpand,
+    "DynamicGather": make_DynamicGather,
+    "DynamicGatherND": make_DynamicGatherND,
+    "DynamicLinear": make_DynamicLinear,
+    "DynamicMatMulBatched": make_DynamicMatMulBatched,
+    "DynamicMaxPool": make_DynamicMaxPool,
+    "DynamicNegRelu": make_DynamicNegRelu,
+    "DynamicNonZero": make_DynamicNonZero,
+    "DynamicPad": make_DynamicPad,
+    "DynamicRange": make_DynamicRange,
+    "DynamicRangeMul": make_DynamicRangeMul,
+    "DynamicReduceMaxFirst": make_DynamicReduceMaxFirst,
+    "DynamicReduceMeanMid": make_DynamicReduceMeanMid,
+    "DynamicReduceSumLast": make_DynamicReduceSumLast,
+    "DynamicReduceSumMulti": make_DynamicReduceSumMulti,
+    "DynamicRMSNorm": make_DynamicRMSNorm,
+    "DynamicScatterElements": make_DynamicScatterElements,
+    "DynamicScatterND": make_DynamicScatterND,
+    "DynamicSlice": make_DynamicSlice,
+    "DynamicSplit": make_DynamicSplit,
+    "DynamicTile": make_DynamicTile,
+    "DynamicTopK": make_DynamicTopK,
+    "DynamicTranspose": make_DynamicTranspose,
+    "DynamicTrilu": make_DynamicTrilu,
+    "DynamicWhere": make_DynamicWhere,
+    "GatherND_Batch": make_GatherND_Batch,
+    "GatherND_Ex1": make_GatherND_Ex1,
+    "GatherND_Ex2": make_GatherND_Ex2,
+    "GatherND_Ex3": make_GatherND_Ex3,
+    "GatherND_Ex4": make_GatherND_Ex4,
+    "GatherND_Ex5": make_GatherND_Ex5,
+    "GatherND_NegativeIndices": make_GatherND_NegativeIndices,
+    "GlobalAvgPool2d": make_GlobalAvgPool2d,
+    "GriffinRGLRU": make_GriffinRGLRU,
+    "GroupNorm": make_GroupNorm,
+    "GroupNormBig": make_GroupNormBig,
+    "IsNaN": make_IsNaN,
+    "LayerNorm": make_LayerNorm,
+    "LayerNorm3D": make_LayerNorm3D,
+    "LayerNormBig": make_LayerNormBig,
+    "LayerNormScaleBias": make_LayerNormScaleBias,
+    "Logic_And": make_Logic_And,
+    "Logic_BitwiseAnd": make_Logic_BitwiseAnd,
+    "Logic_BitwiseNot": make_Logic_BitwiseNot,
+    "Logic_BitwiseOr": make_Logic_BitwiseOr,
+    "Logic_BitwiseXor": make_Logic_BitwiseXor,
+    "Logic_Or": make_Logic_Or,
+    "Logic_Xor": make_Logic_Xor,
+    "MambaScan": make_MambaScan,
+    "Not": make_Not,
+    "ReduceL2": make_ReduceL2,
+    "ReduceL2Large": make_ReduceL2Large,
+    "ReduceMax_axis0": make_ReduceMax_axis0,
+    "ReduceMax_mid": make_ReduceMax_mid,
+    "RMSNorm": make_RMSNorm,
+    "RWKV_WKV6": make_RWKV_WKV6,
+    "ScatterND_2D": make_ScatterND_2D,
+    "ScatterND_Ex1": make_ScatterND_Ex1,
+    "ScatterND_Ex2": make_ScatterND_Ex2,
+    "ScatterND_NegativeIndices": make_ScatterND_NegativeIndices,
+    "SDPA": make_SDPA,
+    "SDPABig": make_SDPABig,
+    "SeluNonDefaultCoeffs": make_SeluNonDefaultCoeffs,
+    "TopKBig": make_TopKBig,
+    "TopKTies": make_TopKTies,
+    "Transpose": make_Transpose,
+    "Trilu_3D": make_Trilu_3D,
+    "Trilu_k2": make_Trilu_k2,
+    "Trilu_kn1": make_Trilu_kn1,
+    "Trilu_lower": make_Trilu_lower,
+    "Trilu_upper": make_Trilu_upper,
+    "Clip1D": make_Clip1D,
+    "IsInf1D": make_IsInf1D,
+    "NonZero2D": make_NonZero2D,
+    "ConvWithAutopadSameUpperStride2": make_ConvWithAutopadSameUpperStride2,
+    "ConvWithDilation2Ch": make_ConvWithDilation2Ch,
 }
 
 

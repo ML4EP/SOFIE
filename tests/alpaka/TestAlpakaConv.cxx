@@ -6,8 +6,8 @@
 #include "models/onnx/references/ConvWithoutPadding.ref.hxx"
 #include "ConvWithAutopadSameLower_FromONNX_GPU_ALPAKA.hxx"
 #include "models/onnx/references/ConvWithAutopadSameLower.ref.hxx"
-#include "ConvWithAutopadSameUpper_FromONNX_GPU_ALPAKA.hxx"
-#include "models/onnx/references/ConvWithAutopadSameUpper.ref.hxx"
+#include "ConvWithAutopadSameUpperStride2_FromONNX_GPU_ALPAKA.hxx"
+#include "models/onnx/references/ConvWithAutopadSameUpperStride2.ref.hxx"
 #include "ConvWithStridesPadding_FromONNX_GPU_ALPAKA.hxx"
 #include "models/onnx/references/ConvWithStridesPadding.ref.hxx"
 #include "ConvWithStridesNoPadding_FromONNX_GPU_ALPAKA.hxx"
@@ -35,8 +35,8 @@
 #include "models/onnx/references/Conv1d.ref.hxx"
 #include "Conv3d_FromONNX_GPU_ALPAKA.hxx"
 #include "models/onnx/references/Conv3d.ref.hxx"
-#include "ConvWithDilation_FromONNX_GPU_ALPAKA.hxx"
-#include "models/onnx/references/ConvWithDilation.ref.hxx"
+#include "ConvWithDilation2Ch_FromONNX_GPU_ALPAKA.hxx"
+#include "models/onnx/references/ConvWithDilation2Ch.ref.hxx"
 #include "DynamicConv1D_FromONNX_GPU_ALPAKA.hxx"
 #include "DynamicConv1DNoBias_FromONNX_GPU_ALPAKA.hxx"
 #include "DynamicConv2DNoBias_FromONNX_GPU_ALPAKA.hxx"
@@ -166,10 +166,10 @@ TEST_F(SofieAlpakaTest, ConvWithAutopadSameUpper)
    alpaka::memcpy(queue, input_d, input_h);
    alpaka::wait(queue);
 
-   auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{sizeof(ConvWithAutopadSameUpper_ExpectedOutput::all_ones) / sizeof(float)}));
+   auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{sizeof(ConvWithAutopadSameUpperStride2_ExpectedOutput::all_ones) / sizeof(float)}));
 
    {
-        SOFIE_ConvWithAutopadSameUpper::Session<TestTag> session("ConvWithAutopadSameUpper_FromONNX_GPU_ALPAKA.dat");
+        SOFIE_ConvWithAutopadSameUpperStride2::Session<TestTag> session("ConvWithAutopadSameUpperStride2_FromONNX_GPU_ALPAKA.dat");
         auto result = session.infer(input_d);
         alpaka::wait(queue);
         alpaka::memcpy(queue, result_h, result);
@@ -177,8 +177,8 @@ TEST_F(SofieAlpakaTest, ConvWithAutopadSameUpper)
    }
 
    float* res_ptr = reinterpret_cast<float*>(alpaka::getPtrNative(result_h));
-   float *correct = ConvWithAutopadSameUpper_ExpectedOutput::all_ones;
-   constexpr size_t nOut_sameUpper = sizeof(ConvWithAutopadSameUpper_ExpectedOutput::all_ones) / sizeof(float);
+   float *correct = ConvWithAutopadSameUpperStride2_ExpectedOutput::all_ones;
+   constexpr size_t nOut_sameUpper = sizeof(ConvWithAutopadSameUpperStride2_ExpectedOutput::all_ones) / sizeof(float);
 
    for (size_t i = 0; i < nOut_sameUpper; ++i) {
       EXPECT_LE(std::abs(res_ptr[i] - correct[i]), TOLERANCE) << "i=" << i;
@@ -647,10 +647,10 @@ TEST_F(SofieAlpakaTest, ConvWithDilation)
    alpaka::memcpy(queue, input_d, input_h);
    alpaka::wait(queue);
 
-   auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{sizeof(ConvWithDilation_ExpectedOutput::all_ones) / sizeof(float)}));
+   auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{sizeof(ConvWithDilation2Ch_ExpectedOutput::all_ones) / sizeof(float)}));
 
    {
-        SOFIE_ConvWithDilation::Session<TestTag> session("ConvWithDilation_FromONNX_GPU_ALPAKA.dat");
+        SOFIE_ConvWithDilation2Ch::Session<TestTag> session("ConvWithDilation2Ch_FromONNX_GPU_ALPAKA.dat");
         auto result = session.infer(input_d);
         alpaka::wait(queue);
         alpaka::memcpy(queue, result_h, result);
@@ -658,8 +658,8 @@ TEST_F(SofieAlpakaTest, ConvWithDilation)
    }
 
    float* res_ptr = reinterpret_cast<float*>(alpaka::getPtrNative(result_h));
-   float *correct = ConvWithDilation_ExpectedOutput::all_ones;
-   constexpr size_t nOut_dilation = sizeof(ConvWithDilation_ExpectedOutput::all_ones) / sizeof(float);
+   float *correct = ConvWithDilation2Ch_ExpectedOutput::all_ones;
+   constexpr size_t nOut_dilation = sizeof(ConvWithDilation2Ch_ExpectedOutput::all_ones) / sizeof(float);
 
    for (size_t i = 0; i < nOut_dilation; ++i) {
       EXPECT_LE(std::abs(res_ptr[i] - correct[i]), TOLERANCE) << "i=" << i;
