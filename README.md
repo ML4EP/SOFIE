@@ -79,8 +79,10 @@ ctest --output-on-failure
 
 The test executable is `TestCustomModelsFromONNXForAlpakaCuda` with
 `-DALPAKA_BACKEND=cuda` (the default), or `TestCustomModelsFromONNXForAlpakaHip`
-with `-DALPAKA_BACKEND=hip`.  ONNX model files
-used as test inputs are located in `tests/models/onnx/`.  Models with symbolic
+with `-DALPAKA_BACKEND=hip`.  The ONNX models used as test inputs are built by
+`tests/models/generators/generate_input_models.py` into the build tree when the
+tests run (the `onnx` and `numpy` Python modules are required); add a
+`make_<Name>()` function there for a new test model.  Models with symbolic
 (dynamic) input dimensions are specialised by the emitter before testing.
 
 ---

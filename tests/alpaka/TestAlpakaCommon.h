@@ -7,7 +7,7 @@
 #include <alpaka/alpaka.hpp>
 #include "gtest/gtest.h"
 
-constexpr float DEFAULT_TOLERANCE = 1e-3f;
+#include "common/test_helpers.h"
 
 using Idx = std::size_t;
 using Dim = alpaka::DimInt<1>;
