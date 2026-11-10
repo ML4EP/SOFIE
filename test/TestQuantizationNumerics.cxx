@@ -1,5 +1,6 @@
-// Bit-exact numerics of the quantized fixture sessions on the Alpaka CUDA backend; the
-// generated-text assertions on the same fixtures live in TestQuantizationEliminationLadder.cxx.
+// Checks bit-exact numerics of the quantized fixture sessions on the Alpaka CUDA backend.
+// Sessions take and return the types the ONNX graph declares: float for QONNX models and
+// float-boundary Q/DQ models, int8 codes for Q/DQ graphs with code inputs/outputs.
 
 #include <algorithm>
 #include <cmath>
@@ -16,6 +17,8 @@
 #include "QONNX_QuantMatMul_Padded_FromONNX_GPU_ALPAKA.hxx"
 #include "QONNX_QuantMatMul_Add_FromONNX_GPU_ALPAKA.hxx"
 #include "ONNX_QDQ_QuantGemm_FromONNX_GPU_ALPAKA.hxx"
+#include "ONNX_QDQ_QuantGemm_Unaligned_FromONNX_GPU_ALPAKA.hxx"
+#include "ONNX_QDQ_QuantConv_Unaligned_FromONNX_GPU_ALPAKA.hxx"
 #include "ONNX_QDQ_QuantMatMul_FromONNX_GPU_ALPAKA.hxx"
 #include "ONNX_QDQ_QuantGemm_PerChannelWeight_FromONNX_GPU_ALPAKA.hxx"
 #include "ONNX_QDQ_QuantMatMul_PerChannelWeight_FromONNX_GPU_ALPAKA.hxx"
@@ -44,21 +47,24 @@
 #include "gtest/gtest.h"
 
 
+// The QONNX dense fixtures quantize a float input on 1/32 and their output on 1/64.
+constexpr float kQonnxInputScale = 0.03125f, kQonnxOutputScale = 0.015625f;
+
 TEST_F(QuantizationAlpakaTest, DenseLinear)
 {
    {
       SCOPED_TRACE("QONNX biased Gemm");
          // Biased Gemm: Yq = QY(SX * SW_j * sum_k Xq_ik * Wq_jk + SX * SW_j * Bq_j).
-         RunQuantizedLinearInt8<SOFIE_QONNX_QuantGemm::Session<alpaka::TagGpuCudaRt>>(
+         RunQuantizedLinearFloat<SOFIE_QONNX_QuantGemm::Session<alpaka::TagGpuCudaRt>>(
             "QONNX_QuantGemm_Binary_FromONNX_GPU_ALPAKA.bin",
-            QuantizedLinearTest{512, 64, 32, false, true, true});
+            QuantizedLinearTest{512, 64, 32, false, true, true}, kQonnxInputScale, kQonnxOutputScale);
    }
    {
       SCOPED_TRACE("QONNX and Q/DQ Gemm equivalence");
-         // QONNX Quant and standard Q/DQ encode the same no-bias Gemm semantics.
-         RunQuantizedLinearInt8<SOFIE_QONNX_QuantGemm_NoBias::Session<alpaka::TagGpuCudaRt>>(
+         // Checks that QONNX Quant and standard Q/DQ encode the same no-bias Gemm.
+         RunQuantizedLinearFloat<SOFIE_QONNX_QuantGemm_NoBias::Session<alpaka::TagGpuCudaRt>>(
             "QONNX_QuantGemm_NoBias_FromONNX_GPU_ALPAKA.dat",
-            QuantizedLinearTest{256, 64, 64, false, false, false});
+            QuantizedLinearTest{256, 64, 64, false, false, false}, kQonnxInputScale, kQonnxOutputScale);
          RunQuantizedLinearInt8<SOFIE_ONNX_QDQ_QuantGemm::Session<alpaka::TagGpuCudaRt>>(
             "ONNX_QDQ_QuantGemm_FromONNX_GPU_ALPAKA.dat",
             QuantizedLinearTest{256, 64, 64, false, false, false});
@@ -76,11 +82,11 @@ TEST_F(QuantizationAlpakaTest, DenseLinear)
    {
       SCOPED_TRACE("QONNX, Q/DQ and rank-N MatMul");
          // MatMul uses W as [K,N]: Yq = QY(SX * SW_j * sum_k Xq_ik * Wq_kj).
-         RunQuantizedLinearInt8<SOFIE_QONNX_QuantMatMul::Session<alpaka::TagGpuCudaRt>>(
+         RunQuantizedLinearFloat<SOFIE_QONNX_QuantMatMul::Session<alpaka::TagGpuCudaRt>>(
             "QONNX_QuantMatMul_FromONNX_GPU_ALPAKA.dat",
-            QuantizedLinearTest{512, 64, 32, true, false, true});
+            QuantizedLinearTest{512, 64, 32, true, false, true}, kQonnxInputScale, kQonnxOutputScale);
 
-         // Standard Q/DQ example currently uses the smaller shared 256x64 input.
+         // The standard Q/DQ model uses the shared 256x64 input.
          RunQuantizedLinearInt8<SOFIE_ONNX_QDQ_QuantMatMul::Session<alpaka::TagGpuCudaRt>>(
             "ONNX_QDQ_QuantMatMul_FromONNX_GPU_ALPAKA.dat",
             QuantizedLinearTest{256, 64, 64, true, false, false});
@@ -90,95 +96,111 @@ TEST_F(QuantizationAlpakaTest, DenseLinear)
    }
    {
       SCOPED_TRACE("padded MatMul");
-         // Padded MatMul has logical M=511; the backend may pad physical storage but returns logical Y.
-         RunQuantizedLinearInt8<SOFIE_QONNX_QuantMatMul_Padded::Session<alpaka::TagGpuCudaRt>>(
+         // Logical M is 511; Y has the logical shape whatever the physical padding.
+         RunQuantizedLinearFloat<SOFIE_QONNX_QuantMatMul_Padded::Session<alpaka::TagGpuCudaRt>>(
             "QONNX_QuantMatMul_Padded_FromONNX_GPU_ALPAKA.dat",
-            QuantizedLinearTest{511, 64, 80, true, false, true});
+            QuantizedLinearTest{511, 64, 80, true, false, true}, kQonnxInputScale, kQonnxOutputScale);
    }
    {
       SCOPED_TRACE("MatMul with fused Add");
          // Projection bias: Yq = QY(SX * SW_j * sum_k Xq_ik * Wq_kj + bias_j).
-         RunQuantizedLinearInt8<SOFIE_QONNX_QuantMatMul_Add::Session<alpaka::TagGpuCudaRt>>(
+         RunQuantizedLinearFloat<SOFIE_QONNX_QuantMatMul_Add::Session<alpaka::TagGpuCudaRt>>(
             "QONNX_QuantMatMul_Add_FromONNX_GPU_ALPAKA.dat",
-            QuantizedLinearTest{256, 64, 64, true, true, false});
+            QuantizedLinearTest{256, 64, 64, true, true, false}, kQonnxInputScale, kQonnxOutputScale);
          RunQuantizedLinearInt8<SOFIE_ONNX_QDQ_QuantMatMul_RankNProjection_Add::Session<alpaka::TagGpuCudaRt>>(
             "ONNX_QDQ_QuantMatMul_RankNProjection_Add_FromONNX_GPU_ALPAKA.dat",
             QuantizedLinearTest{256, 64, 64, true, true, false});
    }
 }
 
-// Runs a generated multi-layer quantized Session on the GPU. The DenseLinear cases above
-// check one GEMM's numerics; this covers the multi-layer carrier plumbing.
-TEST_F(QuantizationAlpakaTest, MultiLayerMlpRuns)
+// Checks that shapes the vendor int8 kernels reject (K and N not multiples of 4, an output plane
+// not a multiple of 4) still lower and stay exact; sofieBLAS runs them on its fallback path.
+TEST_F(QuantizationAlpakaTest, UnalignedShapesStayExact)
 {
-   // QONNX_QuantMLP.onnx: input[32,256] -> Quant -> Gemm(256) -> Relu -> Gemm(256) -> Quant, signed int8.
-   constexpr Idx kM = 32, kK = 256, kN = 256;
-   std::vector<std::int8_t> input(static_cast<std::size_t>(kM) * kK);
-   for (std::size_t i = 0; i < input.size(); ++i)
-      input[i] = static_cast<std::int8_t>((static_cast<int>(i * 7 + 3) % 15) - 7);
-
-   auto input_d = CopyQuantizedInputToDevice(input);
-   SOFIE_QONNX_QuantMLP::Session<alpaka::TagGpuCudaRt> model("QONNX_QuantMLP_FromONNX_GPU_ALPAKA.dat");
-
-   const Idx outputSize = static_cast<Idx>(kM) * kN;
-   auto result = model.infer(input_d);
-   alpaka::wait(queue);
-   cudaDeviceSynchronize();
-
-   auto result_h = alpaka::allocBuf<std::int8_t, Idx>(host, Ext1D::all(outputSize));
-   alpaka::memcpy(queue, result_h, result);
-   alpaka::wait(queue);
-   const auto *res_ptr = reinterpret_cast<const std::int8_t *>(alpaka::getPtrNative(result_h));
-
-   // Non-degenerate output: both GEMMs ran, and the result is not a constant fill.
-   int nonZero = 0;
-   std::int8_t minv = 127, maxv = -128;
-   for (Idx i = 0; i < outputSize; ++i) {
-      nonZero += (res_ptr[i] != 0);
-      minv = std::min(minv, res_ptr[i]);
-      maxv = std::max(maxv, res_ptr[i]);
+   {
+      SCOPED_TRACE("Gemm M=7 K=30 N=18");
+      RunQuantizedLinearInt8<SOFIE_ONNX_QDQ_QuantGemm_Unaligned::Session<alpaka::TagGpuCudaRt>>(
+         "ONNX_QDQ_QuantGemm_Unaligned_FromONNX_GPU_ALPAKA.dat", QuantizedLinearTest{7, 30, 18, false, false, false});
    }
-   EXPECT_GT(nonZero, 0) << "multi-layer quantized MLP produced an all-zero output";
-   EXPECT_NE(static_cast<int>(minv), static_cast<int>(maxv)) << "output is a constant fill";
+   {
+      SCOPED_TRACE("Conv1D [1,5,13] * [6,5,3]");
+      constexpr int C = 5, W = 13, OC = 6, KW = 3, OW = W - KW + 1;
+      std::vector<std::int8_t> input(C * W);
+      for (std::size_t i = 0; i < input.size(); ++i)
+         input[i] = static_cast<std::int8_t>(((i * 7 + i / 3) % 13) - 6);
+      // Mirrors the weight and scales of ONNX_QDQ_QuantConv_Unaligned (alpha = 0.125 * 0.0625 / 0.25 = 1 / 32).
+      std::vector<std::int8_t> expected(OC * OW);
+      for (int oc = 0; oc < OC; ++oc)
+         for (int ow = 0; ow < OW; ++ow) {
+            std::int32_t acc = 0;
+            for (int c = 0; c < C; ++c)
+               for (int k = 0; k < KW; ++k) {
+                  const int wi = (oc * C + c) * KW + k;
+                  const int weight = ((wi * 5 + wi / 7 + 2) % 17) - 8;
+                  acc += static_cast<std::int32_t>(input[c * W + ow + k]) * weight;
+               }
+         const auto q = static_cast<long>(std::nearbyint(static_cast<double>(acc) / 32.0));
+         expected[oc * OW + ow] = static_cast<std::int8_t>(std::clamp(q, -128L, 127L));
+         }
+      auto input_d = CopyQuantizedInputToDevice(input);
+      SOFIE_ONNX_QDQ_QuantConv_Unaligned::Session<alpaka::TagGpuCudaRt> model(
+         "ONNX_QDQ_QuantConv_Unaligned_FromONNX_GPU_ALPAKA.dat");
+      ExpectQuantizedLinearInt8Output(model, expected, input_d);
+   }
 }
 
-// The same network in standard ONNX Q/DQ, which lowers to the same kernels. Its terminal
-// DequantizeLinear makes the graph output float rather than int8.
-TEST_F(QuantizationAlpakaTest, MultiLayerQdqMlpRuns)
+// Runs a generated multi-layer quantized Session on the GPU and checks the carrier plumbing
+// between layers; DenseLinear covers single-GEMM numerics. Both MLP fixtures declare float I/O:
+// input[32,256] -> Quant -> Gemm(256) -> Relu -> Gemm(256) -> Quant.
+template <typename TModel>
+void ExpectMlpRunsNonDegenerate(const alpaka::DevCpu &host, const alpaka::DevCudaRt &device,
+                                alpaka::Queue<alpaka::DevCudaRt, alpaka::NonBlocking> &queue, const char *weightFile)
 {
    constexpr Idx kM = 32, kK = 256, kN = 256;
-   std::vector<std::int8_t> input(static_cast<std::size_t>(kM) * kK);
-   for (std::size_t i = 0; i < input.size(); ++i)
-      input[i] = static_cast<std::int8_t>((static_cast<int>(i * 7 + 3) % 15) - 7);
+   auto input_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(kM * kK));
+   for (Idx i = 0; i < kM * kK; ++i)
+      alpaka::getPtrNative(input_h)[i] = static_cast<float>((static_cast<int>(i * 7 + 3) % 15) - 7) * 0.03125f;
+   auto input_d = alpaka::allocBuf<float, Idx>(device, Ext1D::all(kM * kK));
+   alpaka::memcpy(queue, input_d, input_h);
+   alpaka::wait(queue);
 
-   auto input_d = CopyQuantizedInputToDevice(input);
-   SOFIE_ONNX_QDQ_QuantMLP::Session<alpaka::TagGpuCudaRt> model("ONNX_QDQ_QuantMLP_FromONNX_GPU_ALPAKA.dat");
-
-   const Idx outputSize = static_cast<Idx>(kM) * kN;
+   TModel model(weightFile);
    auto result = model.infer(input_d);
    alpaka::wait(queue);
-   cudaDeviceSynchronize();
-
-   auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(outputSize));
+   auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(kM * kN));
    alpaka::memcpy(queue, result_h, result);
    alpaka::wait(queue);
-   const auto *res_ptr = reinterpret_cast<const float *>(alpaka::getPtrNative(result_h));
+   const float *res = alpaka::getPtrNative(result_h);
 
+   // Checks that the output is non-degenerate: both GEMMs ran and the result is not a constant fill.
    int nonZero = 0;
    float minv = std::numeric_limits<float>::infinity();
    float maxv = -std::numeric_limits<float>::infinity();
-   for (Idx i = 0; i < outputSize; ++i) {
-      nonZero += (res_ptr[i] != 0.0f);
-      minv = std::min(minv, res_ptr[i]);
-      maxv = std::max(maxv, res_ptr[i]);
-      ASSERT_TRUE(std::isfinite(res_ptr[i])) << "non-finite output at i=" << i;
+   for (Idx i = 0; i < kM * kN; ++i) {
+      ASSERT_TRUE(std::isfinite(res[i])) << "non-finite output at i=" << i;
+      nonZero += (res[i] != 0.0f);
+      minv = std::min(minv, res[i]);
+      maxv = std::max(maxv, res[i]);
    }
-   EXPECT_GT(nonZero, 0) << "Q/DQ multi-layer MLP produced an all-zero output";
+   EXPECT_GT(nonZero, 0) << "multi-layer quantized MLP produced an all-zero output";
    EXPECT_NE(minv, maxv) << "output is a constant fill";
 }
 
-// A rank-3 dense layer folded to rank-2, whose input source is a float tensor behind an
-// absorbed Q/DQ pair. Values must match exactly.
+TEST_F(QuantizationAlpakaTest, MultiLayerMlpRuns)
+{
+   ExpectMlpRunsNonDegenerate<SOFIE_QONNX_QuantMLP::Session<alpaka::TagGpuCudaRt>>(
+      host, device, queue, "QONNX_QuantMLP_FromONNX_GPU_ALPAKA.dat");
+}
+
+// Runs the same network in standard ONNX Q/DQ, which lowers to the same kernels.
+TEST_F(QuantizationAlpakaTest, MultiLayerQdqMlpRuns)
+{
+   ExpectMlpRunsNonDegenerate<SOFIE_ONNX_QDQ_QuantMLP::Session<alpaka::TagGpuCudaRt>>(
+      host, device, queue, "ONNX_QDQ_QuantMLP_FromONNX_GPU_ALPAKA.dat");
+}
+
+// Checks that a rank-3 dense layer folded to rank 2, fed by a float tensor behind an absorbed
+// Q/DQ pair, matches the exact host reference.
 TEST_F(QuantizationAlpakaTest, QdqReshapeGemmMatchesExactReference)
 {
    constexpr Idx kB = 8, kT = 32, kK = 128, kN = 128;
@@ -197,8 +219,8 @@ TEST_F(QuantizationAlpakaTest, QdqReshapeGemmMatchesExactReference)
    for (std::size_t i = 0; i < input.size(); ++i)
       input[i] = static_cast<float>((static_cast<int>(i * 13 + 5) % 97) - 48) * 0.03125f;
 
-   // Host reference: quantize the input, accumulate in int32, rescale, clip on the output
-   // grid, re-quantize, dequantize, which is exactly what the graph spells out.
+   // Host reference: quantizes the input, accumulates in int32, rescales, clips on the output
+   // grid, re-quantizes and dequantizes, as the graph specifies.
    auto clampTo = [](double v, double lo, double hi) { return v < lo ? lo : (v > hi ? hi : v); };
    std::vector<std::int8_t> inputQ(input.size());
    for (std::size_t i = 0; i < input.size(); ++i)
@@ -246,8 +268,8 @@ TEST_F(QuantizationAlpakaTest, QdqReshapeGemmMatchesExactReference)
    EXPECT_EQ(mismatches, 0) << "quantized Reshape->Gemm region diverged from the exact reference";
 }
 
-// A quantized dense region feeding a quantized residual Add, where both families must
-// agree on which carrier materialises on the tensor they share.
+// Checks a quantized dense region feeding a quantized residual Add against the exact host
+// reference. Both lowerings agree on the carrier materialised on the shared tensor.
 TEST_F(QuantizationAlpakaTest, QdqResidualAddMatchesExactReference)
 {
    constexpr Idx kB = 8, kT = 32, kK = 128, kN = 128;
@@ -318,16 +340,16 @@ TEST_F(QuantizationAlpakaTest, QdqResidualAddMatchesExactReference)
    EXPECT_EQ(mismatches, 0) << "quantized dense -> residual Add diverged from the exact reference";
 }
 
-// Batched activation x activation, both operands runtime tensors, B through a Transpose,
-// a scalar Mul folding into epilogue alpha. Mirrors make_qdq_batched_matmul_fixture.py.
+// Batched activation x activation MatMul: both operands are runtime tensors, B passes through a
+// Transpose, and a scalar Mul folds into the epilogue alpha. Mirrors make_qdq_batched_matmul_fixture.py.
 namespace {
 
 constexpr Idx kBmmB = 32, kBmmH = 8, kBmmT = 32, kBmmD = 16;
 constexpr double kBmmScaleA = 0.0078125, kBmmScaleB = 0.00390625, kBmmScaleOut = 0.00048828125;
 constexpr double kBmmAlpha = 0.25;
 
-// Operand values in grid units, small enough that quantization never clamps, so the
-// accumulator is exactly the integer dot product of these.
+// Operand values in grid units, small enough that quantization never clamps; the
+// accumulator is the exact integer dot product.
 int BatchedMatMulAValue(std::size_t i)
 {
    return static_cast<int>((i * 13 + 5) % 97) - 48;
@@ -346,8 +368,8 @@ std::size_t BatchedMatMulIndex(std::size_t b, std::size_t h, std::size_t t, std:
 
 class QuantizedBatchedMatMulTest : public QuantizationAlpakaTest {
 protected:
-   // QuantizeLinear is elementwise, so quantizing before or after the transpose agrees;
-   // the accumulator indexes B by [.., n, d] off the untransposed values.
+   // Reference output. QuantizeLinear is elementwise, so quantizing before or after the
+   // transpose agrees; the accumulator indexes B as [.., n, d] on the untransposed values.
    std::vector<float> Reference(int clipLoQ, int clipHiQ) const
    {
       auto clampTo = [](double v, double lo, double hi) { return v < lo ? lo : (v > hi ? hi : v); };
@@ -424,7 +446,7 @@ TEST_F(QuantizedBatchedMatMulTest, MatchesExactReference)
    ExpectExact(result, Reference(-128, 127), "batched activation x activation MatMul");
 }
 
-// An output Clip narrower than the int8 grid, which the region folds into outputClamp.
+// Checks an output Clip narrower than the int8 grid, which the region folds into outputClamp.
 TEST_F(QuantizedBatchedMatMulTest, NarrowOutputClipMatchesExactReference)
 {
    auto q_d = MakeOperand(&BatchedMatMulAValue, kBmmScaleA);
@@ -439,15 +461,15 @@ TEST_F(QuantizedBatchedMatMulTest, NarrowOutputClipMatchesExactReference)
    ExpectExact(result, Reference(-64, 63), "batched MatMul with a narrow output clip");
 }
 
-// A Transpose on the output chain: the boundary behind it defines the grid, but the
-// Transpose must not be absorbed, since that would drop the permutation.
+// Checks a Transpose on the output chain: the boundary behind it defines the grid, and the
+// Transpose stays unabsorbed so the permutation is kept.
 TEST_F(QuantizedBatchedMatMulTest, TransposedOutputChainMatchesExactReference)
 {
    constexpr double kOutScaleT = 0.001953125;  // 2^-9; no alpha here, so the product is 4x larger
    auto clampTo = [](double v, double lo, double hi) { return v < lo ? lo : (v > hi ? hi : v); };
 
    // The graph permutes [B, H, T, T] -> [B, T, H, T] and flattens the tail, so the value
-   // computed at (b, h, m, n) must land at [(b*T + m)*H*T + h*T + n].
+   // computed at (b, h, m, n) lands at [(b*T + m)*H*T + h*T + n].
    std::vector<float> expected(kBmmB * kBmmH * kBmmT * kBmmT);
    for (std::size_t b = 0; b < kBmmB; ++b) {
       for (std::size_t h = 0; h < kBmmH; ++h) {
@@ -479,7 +501,7 @@ TEST_F(QuantizedBatchedMatMulTest, TransposedOutputChainMatchesExactReference)
    ExpectExact(result, expected, "batched MatMul with a Transpose on its output chain");
 }
 
-// Two fake-quant boundaries on one grid split by a Reshape, where the region reads the
+// Checks two fake-quant boundaries on one grid split by a Reshape, with the region reading the
 // existing int8 carrier. Mirrors make_qdq_carrier_handoff_fixture.py.
 TEST_F(QuantizationAlpakaTest, QdqCarrierHandoffMatchesExactReference)
 {
@@ -546,8 +568,8 @@ TEST_F(QuantizationAlpakaTest, QdqCarrierHandoffMatchesExactReference)
    EXPECT_EQ(mismatches, 0) << "int8 carrier handoff diverged from the exact reference";
 }
 
-// A Q/DQ exporter emits one DequantizeLinear per consumer; canonicalization keeps one
-// and turns the rest into views. Same carrier, same grid, so this compares bit-for-bit.
+// Checks that per-consumer DequantizeLinear copies from a Q/DQ exporter collapse to one decode
+// plus views. Same carrier and grid, so the comparison is bit-for-bit.
 TEST_F(QuantizationAlpakaTest, DuplicateDecodesCollapseWithoutChangingValues)
 {
    constexpr Idx kN = 16;
@@ -595,8 +617,8 @@ TEST_F(QuantizationAlpakaTest, DuplicateDecodesCollapseWithoutChangingValues)
    EXPECT_EQ(mismatches, 0) << "collapsing duplicate decodes changed the values";
 }
 
-// Movement runs rewire onto the carrier and the bracketing pairs are deleted; the fixture's
-// grid makes quantizing the identity, so this compares bit-for-bit.
+// Checks that movement runs rewire onto the carrier and the bracketing Q/DQ pairs are removed.
+// The fixture's grid makes quantization the identity, so the comparison is bit-for-bit.
 TEST_F(QuantizationAlpakaTest, MovementCarrierPropagationMatchesExactReference)
 {
    // Mirrors emit_movement_carrier in QuantizedModelGenerator.py; keep the two in sync.
@@ -615,8 +637,7 @@ TEST_F(QuantizationAlpakaTest, MovementCarrierPropagationMatchesExactReference)
    for (std::size_t i = 0; i < input.size(); ++i)
       input[i] = static_cast<float>(xValue(i));
 
-   // The reshape and transpose are pure data movement, so the reference indexes the input
-   // directly rather than re-deriving what the graph does.
+   // The reshape and transpose are pure data movement; the reference indexes the input directly.
    std::vector<float> expected(static_cast<std::size_t>(kCols) * kN);
    for (std::size_t c = 0; c < kCols; ++c) {
       for (std::size_t n = 0; n < kN; ++n) {
@@ -656,8 +677,8 @@ TEST_F(QuantizationAlpakaTest, MovementCarrierPropagationMatchesExactReference)
    EXPECT_EQ(mismatches, 0) << "carrier propagated through Reshape/Transpose changed the values";
 }
 
-// Native-FP8 MatMul executed on the GPU. Values are small integers, exact in E4M3 and in
-// the float32 accumulation, so the comparison is exact. Mirrors make_fp8_matmul_fixture.py.
+// Native-FP8 MatMul on the GPU. Values are small integers, exact in E4M3 and in float32
+// accumulation, so the comparison is exact. Mirrors make_fp8_matmul_fixture.py.
 namespace {
 
 float FP8MatMulXValue(std::size_t i) { return static_cast<float>((i * 7 + 3) % 13) - 6.0f; }
@@ -667,8 +688,8 @@ float FP8BatchedQValue(std::size_t i) { return static_cast<float>((i * 13 + 5) %
 
 } // namespace
 
-// Exporter-shaped FP8 (activations Q/DQ, weight DQ-only) with non-unit scales, which are
-// what program cuBLASLt's scales. Values are exact multiples, so the comparison is bit-exact.
+// Exporter-shaped FP8 (activations Q/DQ, weight DQ-only) with non-unit scales, which exercise
+// the GEMM scale arguments. Values are exact multiples, so the comparison is bit-exact.
 constexpr float kFP8QdqInputScale = 0.25f;
 constexpr float kFP8QdqWeightScale = 0.125f;
 float FP8QdqXValue(std::size_t i) { return (static_cast<float>((i * 7 + 3) % 13) - 6.0f) * kFP8QdqInputScale; }
@@ -712,8 +733,8 @@ TEST_F(QuantizationAlpakaTest, ScaledFP8QdqMatMulAddMatchesExactReference)
       EXPECT_EQ(res_ptr[i], expected[i]) << "i=" << i;
 }
 
-// The same graph on non-power-of-two scales, where scale handling cannot hide behind
-// exact shifts; values are integer multiples, so the comparison stays bit-exact.
+// Runs the same graph on non-power-of-two scales, which exact shifts cannot mask. Values are
+// integer multiples, so the comparison is bit-exact.
 TEST_F(QuantizationAlpakaTest, OddScaleFP8QdqMatMulAddMatchesExactReference)
 {
    constexpr Idx kM = 8, kK = 16, kN = 8;
@@ -806,8 +827,8 @@ TEST_F(QuantizationAlpakaTest, NativeFP8BatchedMatMulMatchesExactReference)
    for (std::size_t i = 0; i < input.size(); ++i)
       input[i] = FP8BatchedQValue(i);
 
-   // scores[b,h,i,j] = sum_d q[b,h,i,d] * q[b,h,j,d], the q @ k^T the fixture spells with
-   // a Transpose the batched-operand canonicalisation folds away.
+   // scores[b,h,i,j] = sum_d q[b,h,i,d] * q[b,h,j,d]: the fixture's q @ k^T, whose Transpose
+   // the batched-operand canonicalisation folds away.
    std::vector<float> expected(static_cast<std::size_t>(kB) * kH * kT * kT);
    for (Idx b = 0; b < kB; ++b) {
       for (Idx h = 0; h < kH; ++h) {
@@ -843,8 +864,8 @@ TEST_F(QuantizationAlpakaTest, NativeFP8BatchedMatMulMatchesExactReference)
       EXPECT_EQ(res_ptr[i], expected[i]) << "i=" << i;
 }
 
-// The adopted run's numbers. The Transpose permutes codes rather than floats, so a wrong index
-// maps one code onto another element and the scores diverge.
+// Checks the attention chain against the exact host reference. The Transpose permutes codes, not
+// floats, so a wrong index maps a code onto another element and the scores diverge.
 TEST_F(QuantizationAlpakaTest, QdqAttentionChainMatchesExactReference)
 {
    constexpr Idx kB = 8, kT = 64, kD = 128, kHeads = 4, kHeadDim = 32;
@@ -868,8 +889,8 @@ TEST_F(QuantizationAlpakaTest, QdqAttentionChainMatchesExactReference)
    for (std::size_t i = 0; i < input.size(); ++i)
       inputQ[i] = encode(input[i], kAct);
 
-   // Both projections, each clipped onto its output grid and encoded, which is what the
-   // region's epilogue writes into the head of the run.
+   // Both projections, each clipped onto its output grid and encoded, as the region's epilogue
+   // writes them into the head of the run.
    auto project = [&](int salt, int biasMod, double biasOffset) {
       std::vector<int> codes(static_cast<std::size_t>(kM) * kD);
       for (std::size_t m = 0; m < kM; ++m) {
@@ -941,8 +962,8 @@ TEST_F(QuantizationAlpakaTest, QdqAttentionChainMatchesExactReference)
    EXPECT_EQ(mismatches, 0) << "the adopted run's codes reached the score MatMul permuted wrongly";
 }
 
-// The absorbed decode's numbers. One kernel now spans the coarse grid's decode and the fine
-// grid's round trip, so a wrong scale on either side shifts every element of that branch.
+// Checks the absorbed decode against the exact host reference. One kernel spans the coarse grid's
+// decode and the fine grid's round trip, so a wrong scale on either side shifts that whole branch.
 TEST_F(QuantizationAlpakaTest, QdqDecodeAbsorbMatchesExactReference)
 {
    constexpr Idx kM = 64, kD = 128;
@@ -1009,6 +1030,6 @@ TEST_F(QuantizationAlpakaTest, QdqDecodeAbsorbMatchesExactReference)
       EXPECT_EQ(mismatches, 0) << what;
    };
    compare(fine, expectedFine, "the branch whose decode the round trip absorbed");
-   // The branch that keeps the coarse carrier alive, which the absorption must not disturb.
+   // The branch that keeps the coarse carrier alive; the absorption leaves it unchanged.
    compare(chained, expectedChained, "the branch reading the coarse carrier natively");
 }

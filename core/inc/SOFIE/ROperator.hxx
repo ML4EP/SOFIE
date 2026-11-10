@@ -13,10 +13,8 @@
 namespace SOFIE{
 
 class RModel;
-// Forward-declared: including RQuantization.hxx here creates an include cycle, and a
-// const reference in a declaration needs no definition.
+// Forward declaration; including RQuantization.hxx here creates an include cycle.
 struct QuantizationGrid;
-struct QuantizedEpilogueSpecialization;
 
 enum class OperatorKind {
    GEMM = 0,
@@ -84,27 +82,13 @@ inline const char* toString(OperatorKind kind) {
 
 inline std::set<OperatorKind> FusableKinds = { OperatorKind::RELU, OperatorKind::LAYERNORM, OperatorKind::BATCHNORM};
 
-// What an operator can do with a low-precision carrier on its input and output.
-// The default is RequiresFloat, so an unaudited operator keeps its float behavior.
-enum class ELowPrecisionCarrierSupport {
-   // Needs a real value: the arithmetic is not defined on codes, or changes the grid in a
-   // way no scale can express (LayerNorm and Softmax accumulate; Erf is transcendental).
-   RequiresFloat,
-   // Moves or relabels elements without reading them (a Transpose permutes, a Reshape
-   // reinterprets), so it is exact on codes and leaves the grid unchanged.
-   ValuePreserving,
-   // Computes on codes, but the result lands on a different grid than the operands, so it
-   // needs a scale contract rather than a retyping. Elementwise and dense linear are here.
-   Arithmetic
-};
-
-// How a producer absorbs a downstream quantization boundary into its own store.
+// Mode in which a producer absorbs a downstream quantization boundary into its store.
 enum class EQuantizedOutputEmit {
-   // Encode onto the grid and write the boundary's low-precision code tensor: changes the
-   // tensor's type, so it needs the reader's agreement via the handoff plumbing.
+   // Encodes onto the grid and writes the low-precision code tensor. Changes the tensor
+   // type, so the consumer must accept the carrier.
    Carrier,
-   // Apply the grid's snap, an encode followed by a decode, and write a float the
-   // consumer cannot tell apart: no carrier, no type change, no consumer agreement.
+   // Encodes and decodes on the grid and writes the snapped float. Keeps the tensor type;
+   // the consumer is unaffected.
    Snap
 };
 
@@ -144,7 +128,7 @@ public:
    }
    virtual void UpdateFusableTensorName(std::string, const std::function<void(const std::string&)>& removal_func){ return;};
 
-   // Semantic graph-analysis hooks
+   // Quantization graph-analysis hooks.
    virtual bool IsQuantizationBoundary() const { return false; }
    virtual std::string GetQuantizationSourceTensor() const
    {
@@ -153,15 +137,8 @@ public:
       return std::string(fInputTensorNames.front());
    }
 
-   // What this operator can do with a low-precision carrier. See the enum for the contract;
-   // the default keeps an unaudited operator behaving as it does today.
-   virtual ELowPrecisionCarrierSupport CarrierSupport() const
-   {
-      return ELowPrecisionCarrierSupport::RequiresFloat;
-   }
-
-   // Repoints this operator at carrier tensors, replacing the float ones it was initialized
-   // with. An operator that claims ValuePreserving must override this.
+   // Rewires this operator to read and write code tensors in place of its float tensors.
+   // Overridden by operators that move codes unchanged (Reshape, Transpose).
    virtual void RewireLowPrecisionCarrier(const std::string & /*nameInput*/,
                                           const std::string & /*nameOutput*/)
    {
@@ -170,16 +147,15 @@ public:
          " reports it can carry low precision but does not implement RewireLowPrecisionCarrier");
    }
 
-   // Whether the device form writes its output into the input's storage (a Reshape view)
-   // rather than its own buffer, so the pooled carrier arena can extend the source's lifetime.
+   // Returns whether the device output aliases the input storage (a Reshape view), so the
+   // pooled carrier arena extends the source's lifetime.
    virtual bool CarrierOutputAliasesInput() const { return false; }
 
-   // Whether this operator can absorb a boundary on its output in the given mode. Independent
-   // of CarrierSupport: RequiresFloat may still encode outbound.
+   // Returns whether this operator can absorb a boundary on its output in the given mode.
    virtual bool CanFuseOutputOnGrid(EQuantizedOutputEmit /*mode*/) const { return false; }
 
-   // Redirects this operator to write `output` on `grid`, as a carrier code or a snapped
-   // float per `mode`, in place of its usual result. Only called when CanFuseOutputOnGrid.
+   // Rewires this operator to write `output` on `grid` as a carrier code or a snapped float,
+   // per `mode`. Precondition: CanFuseOutputOnGrid(mode) returns true.
    virtual void FuseOutputOnGrid(const std::string & /*output*/, const QuantizationGrid & /*grid*/,
                                  EQuantizedOutputEmit /*mode*/)
    {
@@ -188,75 +164,32 @@ public:
          " reports it can fuse its output onto a grid but does not implement FuseOutputOnGrid");
    }
 
-   // The consumer-side twin of CanFuseOutputOnGrid: an operator that can decode a carrier
-   // operand at the load declares it, and the dequantize feeding it stops emitting.
+   // Returns whether this operator decodes a carrier operand at the load, which removes the
+   // feeding dequantize. Consumer-side counterpart of CanFuseOutputOnGrid.
    virtual bool CanFuseDequantizedInput() const { return false; }
 
-   // Rebinds the input named `from` to read `carrier`, decoding on `grid` at the load.
-   // Returns whether an input matched; a false return leaves the dequantize in place.
+   // Rebinds the input `from` to read `carrier`, decoding on `grid` at the load. Returns
+   // whether an input matched; on false the dequantize stays in place.
    virtual bool FuseDequantizedInput(const std::string & /*from*/, const std::string & /*carrier*/,
                                      const QuantizationGrid & /*grid*/)
    {
       return false;
    }
 
-   // Consumer-side twin of CanFuseOutputOnGrid: reads a quantized GEMM's raw int32 accumulator
-   // and applies the producer's float epilogue at its own load, so the producer emits none.
-   // Unlike CanFuseDequantizedInput, the buffer read is scratch the producer never wrote out.
-   virtual bool CanAcceptInt32Accumulator() const { return false; }
-
-   // Redirects this operator to `stateName`'s deferred accumulator. batch/rows/cols are the
-   // producer's logical extents; returns false unless this traversal maps onto them elementwise,
-   // and declining always leaves the epilogue in place. `spec` is the shape to specialize on.
-   virtual bool AcceptInt32Accumulator(const std::string & /*stateName*/, std::size_t /*batch*/,
-                                       std::size_t /*rows*/, std::size_t /*cols*/,
-                                       const QuantizedEpilogueSpecialization & /*spec*/)
-   {
-      return false;
-   }
-
-   // Value-preserving graph-analysis hook used by first-class quantization metadata.
+   // Returns whether this operator preserves values, so quantization metadata passes through.
    virtual bool PropagatesQuantizationMetadata() const { return false; }
-   virtual std::string GetQuantizationMetadataSourceTensor() const
-   {
-      if (fInputTensorNames.empty())
-         return {};
-      return std::string(fInputTensorNames.front());
-   }
-   virtual std::vector<std::string> GetQuantizationMetadataSourceTensors() const
-   {
-      auto source = GetQuantizationMetadataSourceTensor();
-      if (source.empty())
-         return {};
-      return {source};
-   }
-   virtual std::string GetQuantizationMetadataTargetTensor() const
-   {
-      if (fOutputTensorNames.empty())
-         return {};
-      return std::string(fOutputTensorNames.front());
-   }
-   virtual std::vector<std::string> GetQuantizationMetadataTargetTensors() const
-   {
-      std::vector<std::string> targets;
-      targets.reserve(fOutputTensorNames.size());
-      for (const auto &target : fOutputTensorNames)
-         targets.emplace_back(target);
-      return targets;
-   }
    virtual std::vector<int_t> GetQuantizationMetadataPermutation(std::size_t /*rank*/) const
    {
       return {};
    }
-   // Maps each output axis to its source input axis. A -1 entry denotes an
-   // inserted or value-selected axis that cannot carry source per-axis metadata.
+   // Maps each output axis to its source input axis. A -1 entry marks an inserted or
+   // value-selected axis that carries no per-axis metadata.
    virtual std::vector<int_t> GetQuantizationMetadataAxisMap(
       const std::vector<std::size_t> &sourceShape,
       const std::vector<std::size_t> & /*targetShape*/) const
    {
       return GetQuantizationMetadataPermutation(sourceShape.size());
    }
-   virtual bool RequiresCompatibleQuantizationMetadataInputs() const { return false; }
 
    // Elementwise kernel fusion interface
    virtual bool IsElementwise() const { return false; }

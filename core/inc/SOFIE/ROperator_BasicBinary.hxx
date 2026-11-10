@@ -74,14 +74,6 @@ struct BinaryOperatorTrait<T, FMod> {
 template <typename T, EBasicBinaryOperator Op>
 class ROperator_BasicBinary final : public ROperator {
 public:
-   // Add and Mul have quantized elementwise kernels and compute on codes; the rest keep
-   // the conservative float default.
-   ELowPrecisionCarrierSupport CarrierSupport() const override
-   {
-      return (Op == EBasicBinaryOperator::Add || Op == EBasicBinaryOperator::Mul)
-                ? ELowPrecisionCarrierSupport::Arithmetic
-                : ELowPrecisionCarrierSupport::RequiresFloat;
-   }
 
 private:
    int fBroadcastFlag = 0;
@@ -99,10 +91,10 @@ private:
    std::vector<Dim> fDimShapeB;
    std::vector<Dim> fDimShapeY;
 
-   // Grid of an absorbed downstream fake-quant boundary: the kernel applies the boundary's
-   // snap at its store and keeps writing float, so consumers are unaffected.
+   // Grid of an absorbed downstream fake-quant boundary; the store applies its snap and
+   // writes float.
    std::optional<QuantizationGrid> fFakeQuantGrid;
-   // Grids of carrier operands adopted at the load; an unset operand reads plain values.
+   // Grids of carrier operands decoded at the load; unset for a plain float operand.
    std::optional<QuantizationGrid> fInputGridA;
    std::optional<QuantizationGrid> fInputGridB;
 
@@ -115,15 +107,14 @@ public:
       fOutputTensorNames = {fNY};
    }
 
-   // Absorbs a downstream fake-quant boundary: the snap runs at this kernel's single store
-   // and the boundary stops emitting. A constant-folded output emits no kernel, so it cannot.
+   // Returns whether a downstream fake-quant boundary can snap at this kernel's store.
+   // False for a constant-folded output, which emits no kernel.
    bool CanFuseOutputOnGrid(EQuantizedOutputEmit mode) const override
    {
       return mode == EQuantizedOutputEmit::Snap && !fIsOutputConstant;
    }
 
-   // Adopts the boundary's output tensor; the previous output is left for dead-code
-   // elimination.
+   // Adopts the boundary's output tensor; dead-code elimination removes the previous output.
    void FuseOutputOnGrid(const std::string &output, const QuantizationGrid &grid,
                          EQuantizedOutputEmit mode) override
    {
@@ -133,15 +124,14 @@ public:
       fFakeQuantGrid = grid;
    }
 
-   // Reads a carrier operand directly, decoding at the load with the pair's own scale --
-   // the same arithmetic the dequantize kernel emits, one memory round trip earlier.
+   // Returns whether a carrier operand can decode at the load with the pair's scale, using
+   // the dequantize kernel's arithmetic without its memory round trip.
    bool CanFuseDequantizedInput() const override { return !fIsOutputConstant; }
 
    bool FuseDequantizedInput(const std::string &from, const std::string &carrier,
                              const QuantizationGrid &grid) override
    {
-      // Only the E4M3 decode has an inline spelling here; an affine grid also carries a
-      // zero point, and E5M2 would need its own decode.
+      // Accepts per-tensor E4M3 only: an affine grid adds a zero point, and E5M2 has its own decode.
       if (!IsPerTensorE4M3(grid))
          return false;
       if (fNA == from && !fInputGridA) {
@@ -588,15 +578,15 @@ public:
       const auto flattened_index_B =
          makeFlattenedIndex(fShapeB, stridesB, isBScalar, isBContiguous);
 
-      // A carrier operand decodes at the load with the pair's own scale. In one kernel the
-      // compiler keeps this wider than the two-kernel spelling, within one code step.
+      // Decodes a carrier operand at the load with the pair's scale. The fused kernel may hold
+      // the value at wider precision than the two-kernel path; results agree within one code step.
       std::string decodes;
       auto operandExpr = [&decodes](const std::string &load, const char *name,
                                     const std::optional<QuantizationGrid> &grid) {
          if (!grid)
             return load;
-         decodes += "T const " + std::string(name) + "_decoded = static_cast<T>(SOFIE::DecodeFP8E4M3(" +
-                    load + ") * " + ExactDoubleLiteral(grid->scale) + "f);\n";
+         decodes += "T const " + std::string(name) + "_decoded = static_cast<T>(SOFIE::QuantCodec::DecodeE4M3("
+                    "static_cast<std::uint8_t>(" + load + ")) * " + ExactDoubleLiteral(grid->scale) + ");\n";
          return std::string(name) + "_decoded";
       };
       const auto value =
@@ -604,8 +594,7 @@ public:
                                         operandExpr("B["+flattened_index_B+"]", "b", fInputGridB));
       op += decodes;
       if (fFakeQuantGrid) {
-         // The absorbed boundary's snap, applied at the store instead of in a separate kernel
-         // over the same tensor: same arithmetic, one memory round trip earlier.
+         // Applies the absorbed boundary's snap at the store, replacing its separate kernel.
          op += "T const out_val = " + value + ";\n";
          op += FakeQuantRoundTripStatements("out_snapped", "out_val", *fFakeQuantGrid, "");
          op += "C[idx] = static_cast<T>(out_snapped);\n";

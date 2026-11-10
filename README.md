@@ -93,14 +93,15 @@ used as test inputs are located in `test/input_models/`.  Models with symbolic
 
 ## Quantization
 
-SOFIE lowers quantized ONNX graphs to integer and low-precision float kernels. It recognises
-`QuantizeLinear`/`DequantizeLinear` pairs and QONNX `Quant` nodes, proves which regions can
-run on codes rather than floats, and replaces those regions with kernels that keep the carrier
-in int8 or FP8 across as much of the graph as the operators allow.
+SOFIE lowers quantized ONNX graphs to integer and low-precision float kernels. It reads
+ONNX `QuantizeLinear`/`DequantizeLinear`, QONNX `Quant` and native `FLOAT8E4M3FN` tensors,
+brings them to one canonical encode/decode graph, and lets per-operator handlers decide which
+tensors stay as int8 or E4M3 codes. Dense layers, convolutions, elementwise Add/Mul and table
+Gathers then run on codes, with every BLAS call going through
+[sofieBLAS](https://github.com/ML4EP/sofieBLAS).
 
 The pipeline builds as its own library, `SOFIE_quantization`, which links `SOFIE_core` one
-way. Base SOFIE does not reference it, so a build that never links it generates ordinary
-float code.
+way.
 
 ### Building
 
@@ -113,7 +114,12 @@ cmake --build . --target install -j$(nproc)
 
 This produces `libSOFIE_core`, `libSOFIE_quantization` and `libSOFIE_parsers`.
 
-### Using it
+Quantization is optional. `-DSOFIE_WITH_QUANTIZATION=OFF` leaves out `libSOFIE_quantization`, the
+Q/DQ and QONNX parsers and the quantized tests; a quantized ONNX file then fails at parse time with
+a message naming the option. Quantized models are supported by the Alpaka generator only: the plain
+C++ generator (`RModel::Generate`) refuses them. Float models are unaffected.
+
+### Usage
 
 Link the target. `find_package(SOFIE)` exports it, and linking the parser is enough because
 the parser depends on it:
@@ -156,8 +162,9 @@ fixtures are found by relative path:
 cd build/test && ./TestQuantizationFromONNXForAlpakaCuda
 ```
 
-Its fixtures are the quantized models in `test/input_models/` (`*_QDQ_*`, `*_QONNX_*`,
-`FP8_*`), and `qonnx_samples/` holds the scripts that export them.
+Its fixtures are the quantized models in `test/input_models/quantized/`, exported by
+`test/QuantizedModelGenerator.py`. Until the sofieBLAS `quantized-gemm` branch is merged,
+point the build at a checkout of it with `-DFETCHCONTENT_SOURCE_DIR_SOFIEBLAS=<path>`.
 
 ---
 
@@ -236,7 +243,7 @@ architectures:
 ```
 SOFIE/
 ├── core/           # Core SOFIE library (RModel, operators, code generators)
-│                   # and the quantization pipeline (RQuantization_*, RModel_Quantization)
+│                   # and the quantization library (quantization/<module>/)
 ├── test/           # Unit/integration tests and their ONNX fixtures
 ├── parsers/        # ONNX → RModel parser
 ├── benchmark/      # Latency / throughput benchmark toolkit

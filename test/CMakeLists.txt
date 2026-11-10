@@ -51,7 +51,14 @@ set(CAPTURE_STR
 }\n\
 ")
 
-file(GLOB ONNX_FILES "${ONNX_MODELS_DIR}/*.onnx" "${ONNX_MODELS_DIR}/quantized/*.onnx")
+file(GLOB ONNX_FILES "${ONNX_MODELS_DIR}/*.onnx")
+if(SOFIE_WITH_QUANTIZATION)
+  file(GLOB QUANTIZED_ONNX_FILES "${ONNX_MODELS_DIR}/quantized/*.onnx")
+  list(APPEND ONNX_FILES ${QUANTIZED_ONNX_FILES})
+  set(SOFIE_TEST_RUNTIME_LIB SOFIE_quantization)
+else()
+  set(SOFIE_TEST_RUNTIME_LIB SOFIE_core)
+endif()
 
 set(ALL_CAPTURES "")
 foreach(onnx_file ${ONNX_FILES})
@@ -131,7 +138,7 @@ if (ENABLE_ALPAKA_TESTS)
   ROOTTEST_GENERATE_EXECUTABLE(
     emitFromONNXAlpaka
     EmitFromONNX_GPU_ALPAKA_all.cxx
-    LIBRARIES protobuf::libprotobuf SOFIE_quantization SOFIE_parsers
+    LIBRARIES protobuf::libprotobuf ${SOFIE_TEST_RUNTIME_LIB} SOFIE_parsers
     FIXTURES_SETUP sofie-compile-models-onnx-alpaka-build
   )
 
@@ -147,13 +154,6 @@ if (ENABLE_ALPAKA_TESTS)
     FIXTURES_SETUP sofie-compile-models-onnx-alpaka
   )
 
-  ROOTTEST_ADD_TEST(
-    SofieQuantizedStorageExternalized_ONNX_Alpaka
-    COMMAND ${CMAKE_COMMAND}
-            -DGENERATED_DIR=${CMAKE_CURRENT_BINARY_DIR}
-            -P ${CMAKE_CURRENT_SOURCE_DIR}/CheckQuantizedStorageExternalized.cmake
-    FIXTURES_REQUIRED sofie-compile-models-onnx-alpaka
-  )
 
   ##########################################################################
   # CUDA backend
@@ -165,10 +165,10 @@ if (ENABLE_ALPAKA_TESTS)
     enable_language(CUDA)
     find_package(CUDAToolkit REQUIRED)
 
-    set(_alpaka_cuda_test_targets
-      TestCustomModelsFromONNXForAlpakaCuda
-      TestQuantizationFromONNXForAlpakaCuda
-    )
+    set(_alpaka_cuda_test_targets TestCustomModelsFromONNXForAlpakaCuda)
+    if(SOFIE_WITH_QUANTIZATION)
+      list(APPEND _alpaka_cuda_test_targets TestQuantizationFromONNXForAlpakaCuda)
+    endif()
 
     set(ALPAKA_CUDA_TEST_SOURCES
       alpaka/TestAlpakaLinear.cxx
@@ -195,18 +195,20 @@ if (ENABLE_ALPAKA_TESTS)
     ROOTTEST_GENERATE_EXECUTABLE(
       TestCustomModelsFromONNXForAlpakaCuda
       ${ALPAKA_CUDA_TEST_SOURCES}
-      LIBRARIES SOFIE_quantization GTest::gtest GTest::gtest_main
+      LIBRARIES ${SOFIE_TEST_RUNTIME_LIB} GTest::gtest GTest::gtest_main
       FIXTURES_REQUIRED sofie-compile-models-onnx-alpaka;sofie-lowrank-emit
       FIXTURES_SETUP sofie-test-models-onnx-alpaka-build
     )
 
-    ROOTTEST_GENERATE_EXECUTABLE(
-      TestQuantizationFromONNXForAlpakaCuda
-      TestQuantizationFromONNXForAlpakaCuda.cxx
-      LIBRARIES SOFIE_quantization GTest::gtest GTest::gtest_main
-      FIXTURES_REQUIRED sofie-compile-models-onnx-alpaka
-      FIXTURES_SETUP sofie-quantization-models-onnx-alpaka-build
-    )
+    if(SOFIE_WITH_QUANTIZATION)
+      ROOTTEST_GENERATE_EXECUTABLE(
+        TestQuantizationFromONNXForAlpakaCuda
+        TestQuantizationFromONNXForAlpakaCuda.cxx
+        LIBRARIES SOFIE_quantization GTest::gtest GTest::gtest_main
+        FIXTURES_REQUIRED sofie-compile-models-onnx-alpaka
+        FIXTURES_SETUP sofie-quantization-models-onnx-alpaka-build
+      )
+    endif()
 
     foreach(_alpaka_cuda_test_target IN LISTS _alpaka_cuda_test_targets)
       target_include_directories(
@@ -231,7 +233,6 @@ if (ENABLE_ALPAKA_TESTS)
         ${_alpaka_cuda_test_target} PRIVATE
         ALPAKA_ACC_GPU_CUDA_ENABLED
         ALPAKA_HAS_STD_ATOMIC_REF
-        SOFIE_USE_CUBLASLT
       )
 
       target_compile_options(
@@ -271,11 +272,13 @@ if (ENABLE_ALPAKA_TESTS)
       FIXTURES_REQUIRED sofie-compile-models-onnx-alpaka;sofie-lowrank-emit;sofie-test-models-onnx-alpaka-build
     )
 
-    ROOTTEST_ADD_TEST(
-      TestQuantizationFromONNXForAlpakaCuda
-      EXEC ./TestQuantizationFromONNXForAlpakaCuda
-      FIXTURES_REQUIRED sofie-compile-models-onnx-alpaka
-    )
+    if(SOFIE_WITH_QUANTIZATION)
+      ROOTTEST_ADD_TEST(
+        TestQuantizationFromONNXForAlpakaCuda
+        EXEC ./TestQuantizationFromONNXForAlpakaCuda
+        FIXTURES_REQUIRED sofie-compile-models-onnx-alpaka
+      )
+    endif()
 
   elseif (_alpaka_backend STREQUAL "hip")
     message(FATAL_ERROR

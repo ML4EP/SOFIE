@@ -48,10 +48,6 @@
 
          bool PropagatesQuantizationMetadata() const override { return fnewAxis == 0; }
 
-         std::vector<std::string> GetQuantizationMetadataSourceTensors() const override { return fInputs; }
-
-         bool RequiresCompatibleQuantizationMetadataInputs() const override { return true; }
-
          std::vector<int_t> GetQuantizationMetadataAxisMap(
             const std::vector<std::size_t> &sourceShape,
             const std::vector<std::size_t> &targetShape) const override

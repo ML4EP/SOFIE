@@ -1,7 +1,7 @@
 #include "SOFIE/RModelParser_ONNX.hxx"
-#include "SOFIE/RQuantization.hxx"
-#include "SOFIE/quantization/RQuantization_Pipeline.hxx"
-#include "SOFIE/quantization/RQuantization_Lowering.hxx"
+#ifdef SOFIE_WITH_QUANTIZATION
+#include "SOFIE/quantization/integration/RQuantization_Workflow.hxx"
+#endif
 #include "onnx_proto3.pb.h"
 
 #include <stdexcept>
@@ -76,9 +76,23 @@ extern ParserFuncSignature ParseLeakyRelu;
 extern ParserFuncSignature ParseSelu;
 extern ParserFuncSignature ParseSigmoid;
 extern ParserFuncSignature ParseGemm;
+#ifdef SOFIE_WITH_QUANTIZATION
 extern ParserFuncSignature ParseQONNXQuant;
 extern ParserFuncSignature ParseQuantizeLinear;
 extern ParserFuncSignature ParseDequantizeLinear;
+#else
+// Built with SOFIE_WITH_QUANTIZATION=OFF: the quantization operators are still named, so a
+// quantized model fails with the reason instead of an unknown operator.
+static ParserFuncSignature ParseQuantizationUnavailable =
+   [](RModelParser_ONNX &, const onnx::NodeProto &nodeproto) -> std::unique_ptr<ROperator> {
+   throw std::runtime_error("SOFIE ONNX operator " + nodeproto.op_type() +
+                            " needs quantization support, but SOFIE was built with "
+                            "SOFIE_WITH_QUANTIZATION=OFF");
+};
+static ParserFuncSignature &ParseQONNXQuant = ParseQuantizationUnavailable;
+static ParserFuncSignature &ParseQuantizeLinear = ParseQuantizationUnavailable;
+static ParserFuncSignature &ParseDequantizeLinear = ParseQuantizationUnavailable;
+#endif
 extern ParserFuncSignature ParseRNN;
 extern ParserFuncSignature ParseLSTM;
 extern ParserFuncSignature ParsePool;
@@ -145,33 +159,6 @@ std::string FormatQualifiedOperatorName(const std::string &domain, const std::st
    const std::string normalizedDomain = NormalizeONNXDomain(domain);
    return normalizedDomain.empty() ? opType : normalizedDomain + "::" + opType;
 }
-
-std::optional<ELowPrecisionCarrier> LowPrecisionCarrierFromONNXTensorType(ETensorType type)
-{
-   switch (type) {
-   case ETensorType::FLOAT8E4M3FN:
-   case ETensorType::FLOAT8E4M3FNUZ:
-      return ELowPrecisionCarrier::FP8E4M3;
-   case ETensorType::FLOAT8E5M2:
-   case ETensorType::FLOAT8E5M2FNUZ:
-      return ELowPrecisionCarrier::FP8E5M2;
-   default:
-      return std::nullopt;
-   }
-}
-
-void RegisterLowPrecisionTensorInfoFromONNXType(RModel &model,
-                                                const std::string &tensorName,
-                                                ETensorType tensorType,
-                                                const std::string &reason)
-{
-   auto carrier = LowPrecisionCarrierFromONNXTensorType(tensorType);
-   if (!carrier)
-      return;
-   model.AddLowPrecisionTensorInfo(tensorName,
-      LowPrecisionTensorInfoFromFP8Carrier(*carrier, UTILITY::Clean_name(tensorName), reason));
-}
-
 
 void PopulateOpsetVersionMap(const onnx::ModelProto &model, std::unordered_map<std::string, int> &opsetVersionMap)
 {
@@ -569,9 +556,11 @@ RModel RModelParser_ONNX::Parse(std::string filename, bool verbose)
 {
    fVerbose = verbose;
 
+#ifdef SOFIE_WITH_QUANTIZATION
    // The parser writes quantization metadata onto a model, so it is what makes code
    // generation read it. Naming the entry point also keeps the linker from dropping it.
    InstallQuantizationCodegenPass();
+#endif
 
    fTensorTypeMap.clear();
    fOpsetVersionMap.clear();
@@ -721,7 +710,6 @@ void RModelParser_ONNX::ParseONNXGraph(RModel & rmodel, const onnx::GraphProto &
       std::string input_name = valueinfoproto.name();
 
       ETensorType type = static_cast<ETensorType>(valueinfoproto.type().tensor_type().elem_type());
-      RegisterLowPrecisionTensorInfoFromONNXType(rmodel, input_name, type, "native ONNX FP8 graph input");
 
       std::vector<Dim> fShape;
       bool existParam = false;
@@ -793,7 +781,6 @@ void RModelParser_ONNX::ParseONNXGraph(RModel & rmodel, const onnx::GraphProto &
       // register also the initialized tensors
       auto tensor_type = static_cast<ETensorType>(graph.initializer(i).data_type());
       RegisterTensorType(input_name, tensor_type);
-      RegisterLowPrecisionTensorInfoFromONNXType(rmodel, input_name, tensor_type, "native ONNX FP8 initializer");
 
       switch (tensor_type) {
       case ETensorType::FLOAT: {
@@ -1066,18 +1053,6 @@ void RModelParser_ONNX::ParseONNXGraph(RModel & rmodel, const onnx::GraphProto &
    // Restore the parent graph's fFusedOperators (may have been saved as empty
    // for the top-level call, which is fine — we're done with the loop).
    fFusedOperators = std::move(savedFusedOperators);
-
-   // FP8 graph inputs and initializers are registered while their declarations
-   // are parsed. Register the same canonical carrier contract for explicitly
-   // typed intermediate values, including Cast-produced activation carriers.
-   for (const auto &node : graph.node()) {
-      for (const auto &output : node.output()) {
-         if (!output.empty() && IsRegisteredTensorType(output)) {
-            RegisterLowPrecisionTensorInfoFromONNXType(
-               rmodel, output, GetTensorType(output), "native ONNX FP8 intermediate tensor");
-         }
-      }
-   }
 
    std::vector<std::string> outputnames;
    if (verbose)

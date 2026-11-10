@@ -11,15 +11,6 @@
 
 namespace SOFIE {
 
-// Declared by the quantization pass library. Named here only in declarations, so this
-// header stays parseable without the pass library's types.
-struct QuantizationInfo;
-struct LowPrecisionTensorInfo;
-struct QuantizedTensorStorage;
-struct QuantizationModelState;
-struct QuantizationPipelineReport;
-struct CarrierFrontierViolation;
-
 class RModel final : public RModel_Base {
 
    friend class RModelProfiler;
@@ -96,9 +87,8 @@ private:
    /// GPU-only pass: fuse GEMM→LeakyReLU (and GEMM→ReLU where not already
    /// handled by the ONNX parser) into a single in-place kernel sequence.
    void FuseGemmActivations_GPU();
-   // The lowered-view passes, declared in RQuantization_Pipeline.hxx. They rewrite this
-   // model's operators and reach its internals through this one declaration.
-   friend struct QuantizationPipeline;
+   // The quantization workflow's single accessor to this model's operator list and tensors.
+   friend class QuantModelAccess;
    // Stops emitting operators whose outputs nobody reads. Not quantization specific.
    void EliminateDeadOperators();
    // Puts a batched MatMul's B operand in [.., N, K] by re-permuting the Transpose that
@@ -125,32 +115,10 @@ public:
 
    int Verbose() const { return fVerbose;}
 
-   // Surviving Q/DQ boundaries that no adjacent operator asked for; populated by the
-   // last stage of the lowered-view build.
-   const std::vector<CarrierFrontierViolation> &GetCarrierFrontierViolations() const;
-
    std::vector<size_t> GetTensorShape(const std::string & name) const;
    std::vector<Dim> GetDimTensorShape(const std::string & name) const;
    ETensorType GetTensorType(std::string name) const;
    std::vector<Dim> GetDynamicTensorShape(const std::string & name) const ;
-
-   void AddQuantizationInfo(const std::string & tensor_name, QuantizationInfo info);
-   bool HasQuantizationInfo(const std::string & tensor_name) const;
-   const QuantizationInfo & GetQuantizationInfo(const std::string & tensor_name) const;
-
-   void AddLowPrecisionTensorInfo(const std::string & tensor_name, LowPrecisionTensorInfo info);
-   bool HasLowPrecisionTensorInfo(const std::string & tensor_name) const;
-   const LowPrecisionTensorInfo & GetLowPrecisionTensorInfo(const std::string & tensor_name) const;
-
-   void RegisterQuantizedTensorStorage(QuantizedTensorStorage storage);
-   bool HasQuantizedTensorStorage(const std::string & storage_tensor_name) const;
-   const QuantizedTensorStorage & GetQuantizedTensorStorage(const std::string & storage_tensor_name) const;
-
-   void AnalyzeQuantizedRegions();
-   const QuantizationModelState & GetQuantizationState() const;
-   // Report of the last lowered-view build: per-pass event counts, the frontier
-   // classification, and one entry per planned region.
-   const QuantizationPipelineReport &GetQuantizationPipelineReport() const;
 
    // The pass library's state, or null when nothing has attached any.
    RModelExtension *GetExtension() { return fExtension.get(); }

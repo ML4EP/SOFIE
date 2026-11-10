@@ -16,7 +16,6 @@
 #include "SOFIE/SOFIE_common.hxx"
 #include "SOFIE/ROperator_Cast.hxx"
 #include "SOFIE/ROperator_Gemm.hxx"
-#include "SOFIE/ROperator_ONNXQuantizeLinear.hxx"
 #include "SOFIE/RModelCodegenPass.hxx"
 #include "SOFIE/ROperator_Transpose.hxx"
 
@@ -92,8 +91,8 @@ void RModel::CanonicaliseBatchedMatMulOperands()
       // that lays it out. Every tensor on the way must be read only here.
       std::string cursor = gemm->GetWeightTensorName();
       ROperator_Transpose<float> *transpose = nullptr;
-      // Deliberately shorter than kQuantizationWalkMaxHops: staging puts at most two
-      // operators between the operand and its Transpose.
+      // Shorter than kQuantizationWalkMaxHops: staging places at most two operators between
+      // the operand and its Transpose.
       constexpr int kStagingWalkMaxHops = 3;
       for (int hop = 0; hop < kStagingWalkMaxHops && !cursor.empty(); ++hop) {
          if (readers[cursor] != 1 || graphOutputs.count(cursor) != 0)
@@ -106,16 +105,14 @@ void RModel::CanonicaliseBatchedMatMulOperands()
             transpose = candidate;
             break;
          }
-         if (auto *dequantize = dynamic_cast<ROperator_ONNXDequantizeLinear *>(op)) {
-            cursor = dequantize->GetInputTensor();
+         // A quantization boundary (frontend or canonical encode/decode) only retypes the
+         // operand; the walk continues behind it.
+         if (op->IsQuantizationBoundary()) {
+            cursor = op->GetQuantizationSourceTensor();
             continue;
          }
-         if (auto *quantize = dynamic_cast<ROperator_ONNXQuantizeLinear *>(op)) {
-            cursor = quantize->GetInputTensor();
-            continue;
-         }
-         // A Cast stages the operand in a native low-precision graph where the int8
-         // spelling has a fake-quant pair; both retype without moving elements.
+         // A Cast stages the operand in a native low-precision graph, as a fake-quant pair does
+         // in the int8 form; both retype without moving elements.
          if (dynamic_cast<ROperator_Cast *>(op) != nullptr) {
             const auto castInputs = op->GetOpInputTensors();
             if (castInputs.empty())
@@ -151,8 +148,8 @@ void RModel::EliminateDeadOperators()
 
    const std::set<std::string> graphOutputs(fOutputTensorNames.begin(), fOutputTensorNames.end());
 
-   // Consumers are counted over the operators actually emitted, which differ from
-   // fOperators wherever a lowered region replaced one and suppressed those it absorbed.
+   // Counts consumers over the emitted operators, which differ from fOperators where a
+   // lowered region replaces an operator and suppresses those it absorbs.
    auto emitted = [this](std::size_t index) -> const ROperator * {
       if (fLoweredConsumedOperatorIndices.count(index) != 0)
          return nullptr;
@@ -185,7 +182,7 @@ void RModel::EliminateDeadOperators()
             return readers[name] == 0 && graphOutputs.count(name) == 0;
          });
          if (dead) {
-            // Same suppression channel the lowering uses; the effect wanted is identical.
+            // Suppresses the operator through the same channel as the lowering.
             fLoweredConsumedOperatorIndices.insert(index);
             changed = true;
          }
@@ -789,6 +786,9 @@ void RModel::Initialize(const std::map<std::string, size_t> & inputParams, bool 
       PrintDynamicTensors();
    }
 
+   if (auto *pass = InstalledCodegenPass())
+      pass->Normalize(*this);
+
    CanonicaliseBatchedMatMulOperands();
 
    // Go through model and initialize each operator
@@ -830,9 +830,9 @@ void RModel::Initialize(const std::map<std::string, size_t> & inputParams, bool 
    if (auto *pass = InstalledCodegenPass())
       pass->Analyze(*this);
 
-   // Check whether tensors flagged as not writable are used by runtime operators.
-   // Integer initializers remain embedded for compatibility, except for physical
-   // quantized storage explicitly registered as file-backed model weights.
+   // Checks whether tensors flagged as not writable are used by runtime operators.
+   // Integer initializers are embedded in the generated code, except quantized storage
+   // registered as file-backed model weights.
    for (auto &it : fInitializedTensors) {
       // check if not-writable tensors are really not writable, i.e. are not used by non constant operators
       if (it.second.IsNotWritable() && runtimeInitializedInputs.find(it.first) != runtimeInitializedInputs.end()) {
@@ -1720,7 +1720,6 @@ void RModel::Generate(std::underlying_type_t<Options> options, int batchSize, lo
       AddNeededCustomHeader("SOFIE/RWeightFile.hxx");
    if (pass) {
       pass->BuildLoweredView(*this, ECodegenTarget::CPU);
-      pass->ContributeGeneratedHeaders(*this, ECodegenTarget::CPU);
    }
 
    // if having dynamic tensor we need to have a Session
@@ -1977,8 +1976,7 @@ long RModel::WriteInitializedTensorsToFile(std::string filename) {
                   f << static_cast<int>(data[idx]) <<  ( (idx < length-1) ? " " : "\n" );
                }
             }
-            // An FP8 tensor is a byte carrier, so it round-trips through the same
-            // unsigned-byte spelling; the bits are the payload either way.
+            // An FP8 tensor is a byte carrier and is written as unsigned bytes.
             else if (i.second.type() == ETensorType::UINT8 || IsFP8TensorType(i.second.type())) {
                const uint8_t * data = i.second.data<uint8_t>();
                for (size_t idx = 0; idx < length; idx++) {

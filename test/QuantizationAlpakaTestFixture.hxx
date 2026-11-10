@@ -1,9 +1,8 @@
 #ifndef SOFIE_TEST_QUANTIZATIONALPAKATESTFIXTURE
 #define SOFIE_TEST_QUANTIZATIONALPAKATESTFIXTURE
 
-// Shared Alpaka/CUDA session fixture for the quantization gtest binary's
-// translation units, with the deterministic int8 dense-linear reference the
-// DenseLinear and MemoryPlanning session runs check against.
+// Alpaka/CUDA session fixture for the quantization tests, with the deterministic
+// int8 dense-linear reference the DenseLinear sessions are checked against.
 
 #include <algorithm>
 #include <cmath>
@@ -122,6 +121,41 @@ protected:
         auto input_d = CopyQuantizedInputToDevice(input);
         TModel model(weightFile);
         ExpectQuantizedLinearInt8Output(model, expectedOutput, input_d);
+    }
+
+    // Runs the dense layer behind a float graph boundary (QONNX float I/O): feeds
+    // codes * inputScale and checks the output against codes * outputScale.
+    template <typename TModel>
+    void RunQuantizedLinearFloat(const char *weightFile, const QuantizedLinearTest &test, float inputScale,
+                                 float outputScale)
+    {
+        const auto codes = MakeQuantizedLinearTestInput(test);
+        const auto expectedCodes = MakeQuantizedLinearTestExpected(test, codes);
+
+        auto input_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx(codes.size())));
+        for (Idx i = 0; i < codes.size(); ++i)
+            alpaka::getPtrNative(input_h)[i] = static_cast<float>(codes[i]) * inputScale;
+        auto input_d = alpaka::allocBuf<float, Idx>(device, Ext1D::all(Idx(codes.size())));
+        alpaka::memcpy(queue, input_d, input_h);
+        alpaka::wait(queue);
+
+        TModel model(weightFile);
+        auto result = model.infer(input_d);
+        alpaka::wait(queue);
+        auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx(expectedCodes.size())));
+        alpaka::memcpy(queue, result_h, result);
+        alpaka::wait(queue);
+
+        const float *res = alpaka::getPtrNative(result_h);
+        int mismatches = 0;
+        for (Idx i = 0; i < expectedCodes.size() && mismatches < 5; ++i) {
+            const float expected = static_cast<float>(expectedCodes[i]) * outputScale;
+            if (res[i] != expected) {
+                ++mismatches;
+                EXPECT_EQ(res[i], expected) << "i=" << i;
+            }
+        }
+        EXPECT_EQ(mismatches, 0);
     }
 
 

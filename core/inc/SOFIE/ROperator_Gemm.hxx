@@ -24,14 +24,6 @@ namespace SOFIE{
    {
    public:
 
-      // Computes on codes, but the product/sum lands on a different grid than the operands, so
-      // it needs a scale contract rather than a retyping; the low-precision kernels for this
-      // family exist. Lets the frontier check tell an unabsorbed boundary from a legitimate one.
-      ELowPrecisionCarrierSupport CarrierSupport() const override
-      {
-         return ELowPrecisionCarrierSupport::Arithmetic;
-      }
-
    private:
       bool fIsDynamic = false;
       bool fBroadcastBias = false;
@@ -92,7 +84,7 @@ namespace SOFIE{
          fOutputTensorNames = { fNY };
          fKind = OperatorKind::GEMM;
       }
-      // Getters for further quantized GEMM lowering-elimination.
+      // Getters used by quantized GEMM lowering.
       float GetAlpha() const { return fAttrAlpha; }
       float GetBeta() const { return fAttrBeta; }
       int_t GetTransA() const { return fAttrTransA; }
@@ -355,8 +347,7 @@ namespace SOFIE{
                shapeY.erase(shapeY.end()-1);
          }
 
-         // Use the same rule as TypeInference: a dense layer with an FP8 operand produces a
-         // FLOAT value.
+         // Matches TypeInference: a dense layer with an FP8 operand produces FLOAT.
          const ETensorType outputType = TypeInference({model.GetTensorType(fNA)})[0];
          if (!fIsDynamic)
             model.AddIntermediateTensor(fNY, outputType, shapeY);
@@ -987,6 +978,9 @@ namespace SOFIE{
          auto ldb = (fAttrTransB ? k : n);
          auto ldc = n;
          std::string transFlags = std::string(fAttrTransB ? "'t'" : "'n'") + ", " + (fAttrTransA ? "'t'" : "'n'");
+         // sofieBLAS caches the algorithm per epilogue, so the config names the call's epilogue.
+         std::string epilogue = fNC.empty() ? "Epilogue::Default"
+                                            : (fActivation == EActivationType::RELU ? "Epilogue::ReluBias" : "Epilogue::Bias");
 
          // For stacked (batched) GEMMs on static shapes, return the layout that
          // matches the actual call emitted by Generate_GPU_ALPAKA:
@@ -1006,7 +1000,7 @@ namespace SOFIE{
                if (bLeadingDimsAllOne) {
                   // batch-collapse: register layout for the full-batch GEMM
                   auto m_batched = std::to_string(std::stoi(m) * std::stoi(lengthExtra));
-                  return n+", "+m_batched+", "+k+", "+ldb+", "+lda+", "+ldc+", "+transFlags;
+                  return n+", "+m_batched+", "+k+", "+ldb+", "+lda+", "+ldc+", "+transFlags+", "+epilogue;
                } else if (fNC.empty()) {
                   // gemmStridedBatched: legacy cuBLAS, no cuBLASLt layout needed
                   return "";
@@ -1015,7 +1009,7 @@ namespace SOFIE{
             }
          }
 
-         return n+", "+m+", "+k+", "+ldb+", "+lda+", "+ldc+", "+transFlags;
+         return n+", "+m+", "+k+", "+ldb+", "+lda+", "+ldc+", "+transFlags+", "+epilogue;
       }
 
       // low rank factorized Gemm issues two chained GEMM calls (see Generate_GPU_ALPAKA)
@@ -1037,10 +1031,12 @@ namespace SOFIE{
          auto lda1 = (fAttrTransA ? m : k);
 
          // step 1: tmp (m x rank) = op(A) * Bin
-         std::string cfg1 = rankStr+", "+m+", "+k+", "+rankStr+", "+lda1+", "+rankStr+", "+transFlags1;
+         std::string epilogue = fNC.empty() ? "Epilogue::Default"
+                                            : (fActivation == EActivationType::RELU ? "Epilogue::ReluBias" : "Epilogue::Bias");
+         std::string cfg1 = rankStr+", "+m+", "+k+", "+rankStr+", "+lda1+", "+rankStr+", "+transFlags1+", Epilogue::Default";
 
          // step 2: Y (m x n) = tmp * Bout (+ bias) -- both operands untransposed
-         std::string cfg2 = n+", "+m+", "+rankStr+", "+n+", "+rankStr+", "+n+", 'n', 'n'";
+         std::string cfg2 = n+", "+m+", "+rankStr+", "+n+", "+rankStr+", "+n+", 'n', 'n', "+epilogue;
 
          return {cfg1, cfg2};
       }

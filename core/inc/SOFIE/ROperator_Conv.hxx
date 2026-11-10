@@ -20,14 +20,6 @@ class ROperator_Conv final : public ROperator
 {
 public:
 
-   // Computes on codes, but the product/sum lands on a different grid than the operands, so
-   // it needs a scale contract rather than a retyping; the low-precision kernels for this
-   // family exist. Lets the frontier check tell an unabsorbed boundary from a legitimate one.
-   ELowPrecisionCarrierSupport CarrierSupport() const override
-   {
-      return ELowPrecisionCarrierSupport::Arithmetic;
-   }
-
 private:
    bool fBroadcastBias = false;
 
@@ -1038,7 +1030,7 @@ public:
       auto lda = std::to_string(gemm_m_);  // ld for xcol^T (gemm_m×gemm_k col-major)
       auto ldb = std::to_string(gemm_k_);  // ld for xf^T   (gemm_k×gemm_n col-major)
       auto ldc = std::to_string(gemm_m_);  // ld for y^T    (gemm_m×gemm_n col-major)
-      return std::to_string(gemm_m_) + ", " + std::to_string(gemm_n_) + ", " + std::to_string(gemm_k_) + ", " + lda + ", " + ldb + ", " + ldc + ", 'n', 'n'";
+      return std::to_string(gemm_m_) + ", " + std::to_string(gemm_n_) + ", " + std::to_string(gemm_k_) + ", " + lda + ", " + ldb + ", " + ldc + ", 'n', 'n', Epilogue::Default";
    }
 
 };

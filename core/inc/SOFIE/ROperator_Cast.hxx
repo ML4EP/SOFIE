@@ -41,6 +41,10 @@ public:
       fOutputTensorNames = { fNY };
    }
 
+   const std::string &GetInputTensor() const { return fNX; }
+   const std::string &GetOutputTensor() const { return fNY; }
+   ETensorType GetTargetType() const { return fType; }
+
    std::vector<ETensorType> TypeInference(std::vector<ETensorType> input) override {
       return input;
    }
@@ -131,7 +135,7 @@ public:
       op += SP + SP + "template<typename TAcc, typename SrcT, typename DstT>\n";
       op += SP + SP + "ALPAKA_FN_ACC void operator()(TAcc const & acc, SrcT const * src, DstT * dst, std::size_t numElements) const {\n";
       op += SP + SP + SP + "for (auto i : alpaka::uniformElements(acc, numElements)) {\n";
-      // A numeric cast into an FP8 byte carrier would truncate the value to an integer.
+      // FP8 goes through the E4M3 codec; a numeric cast truncates the value to an integer.
       if (IsFP8TensorType(fType))
          op += SP + SP + SP + "dst[i] = SOFIE::EncodeFP8E4M3(static_cast<float>(src[i]));\n";
       else if (IsFP8TensorType(fInputType))

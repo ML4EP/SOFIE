@@ -70,6 +70,13 @@ if(ccache)
   set(CMAKE_CXX_COMPILER_LAUNCHER ccache)
 endif()
 
+option(SOFIE_WITH_QUANTIZATION "Build the quantization library (Q/DQ, QONNX and FP8 models) and let the ONNX parser use it" ON)
+if(SOFIE_WITH_QUANTIZATION)
+  message(STATUS "Building SOFIE with quantization support")
+else()
+  message(STATUS "Building SOFIE without quantization support (SOFIE_WITH_QUANTIZATION=OFF)")
+endif()
+
 option(testing "Build and run tests" OFF)
 if(testing)
   find_package(GTest REQUIRED)

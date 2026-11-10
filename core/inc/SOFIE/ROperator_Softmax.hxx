@@ -28,31 +28,22 @@ private:
 
    std::string fType;
 
-   // Set when a following Clip, and optionally its QuantizeLinear, are absorbed into
-   // pass 3. The absorbed operator's output tensor is written in place of fNY.
-   std::string fFusedOutputTensor; // empty means write fNY as usual
-   // Set means write a low-precision carrier rather than a float. Held as a QuantizationGrid
-   // so one encode serves int8 and FP8: the affine map plus which codes exist.
+   // Output tensor of an absorbed Clip (and optional QuantizeLinear), written in place of fNY.
+   std::string fFusedOutputTensor; // empty: write fNY
+   // Grid of an absorbed QuantizeLinear; when set, pass 3 writes a low-precision carrier.
+   // One QuantizationGrid encode covers int8 and FP8.
    std::optional<QuantizationGrid> fOutputGrid;
    bool fQuantHasClip = false;
    double fQuantClipLow = 0.0;
    double fQuantClipHigh = 0.0;
 
-   // The producing GEMM's cuBLASLt state, when it deferred its float epilogue here; the launch
-   // reads the accumulator and epilogue parameters from it. Empty means read the float output.
-   std::string fAccumulatorStateName;
-   // The planner's epilogue shape, instantiated into the call so untaken branches are dropped.
-   QuantizedEpilogueSpecialization fAccumulatorSpec;
-
-   bool ReadsDeferredAccumulator() const { return !fAccumulatorStateName.empty(); }
-
-   // The absorbed DequantizeLinear's grid: its carrier is read and decoded at the load.
+   // Grid of an absorbed DequantizeLinear; when set, the carrier input decodes at the load.
    std::optional<QuantizationGrid> fInputGrid;
 
    bool ReadsCarrierInput() const { return fInputGrid.has_value(); }
 
-   // Where pass 1's values come from, kept together because a parameter changed without its
-   // load, or a T deduced from a pointee that is no longer the working type, still compiles.
+   // Input parameter, load expression and working type of pass 1. Held together because a
+   // mismatched parameter and load still compiles.
    struct SoftmaxInputBinding {
       std::string templateParams;   // after `typename TAcc, `, before `, typename TOut`
       std::string parameter;        // the input parameter declaration
@@ -62,26 +53,14 @@ private:
 
    SoftmaxInputBinding InputBinding() const
    {
-      // Same function and params struct as QuantizedGemmCudaEpilogueKernel, passed through from
-      // the GEMM rather than rebuilt, so the value is bit-identical. The index is the producer's
-      // logical output index, which AcceptInt32Accumulator checked against this traversal.
-      if (ReadsDeferredAccumulator()) {
-         const std::string args = fAccumulatorSpec.TemplateArgs();
-         // No input template parameter: the epilogue struct is concrete and yields float.
-         return {"", "SOFIE::QuantizedDeferredEpilogue const& ep", "float",
-                 [args](const std::string &at) {
-                    return "SOFIE::INTERNAL::QuantizedGemmCudaEpilogueValueSpec" + args + "(" + at +
-                           ", ep.accumulator, ep.bias, ep.weightScaleVector, "
-                           "ep.inputZeroPointColumnSums, ep.params)";
-                 }};
-      }
-      // Spelled as ROperator_ONNXDequantizeLinear's FP8 kernel does, so absorbing it changes no
-      // bits. T is the decode's result, not the carrier.
+      // Decodes through the same portable codec as a QuantDecode boundary, so the result is
+      // bit-identical. T is the decoded type, not the carrier type.
       if (ReadsCarrierInput()) {
          const std::string scale = ExactDoubleLiteral(fInputGrid->scale);
          return {"typename TIn", "TIn const* __restrict__ X", "float",
                  [scale](const std::string &at) {
-                    return "static_cast<T>(SOFIE::DecodeFP8E4M3(X[" + at + "]) * " + scale + "f)";
+                    return "static_cast<T>(SOFIE::QuantCodec::DecodeE4M3(static_cast<std::uint8_t>(X[" + at +
+                           "])) * " + scale + ")";
                  }};
       }
       return {"typename T", "T const* __restrict__ X", "",
@@ -99,18 +78,16 @@ public:
          fOutputTensorNames = { fNY };
    }
 
-   // The fusion gate for every hook below: only the register-resident emission reads each
-   // element exactly once and keeps it, so only it can absorb work into the load or the store.
-   // The staged variant re-reads X in pass 2 and uses Y as scratch for the exponentials.
+   // Gates every fusion hook below. Only the register-resident emission reads each element
+   // once and keeps it; the staged variant re-reads X in pass 2 and uses Y as scratch.
    bool CanFuseClip() const { return SoftmaxUsesRegisterResidentRows(); }
-   // A log-softmax output is not on the grid the boundary describes, so it cannot encode.
+   // Returns false for log-softmax, whose output is not on the boundary's grid.
    bool CanFuseOutputOnGrid(EQuantizedOutputEmit mode) const override
    {
       return mode == EQuantizedOutputEmit::Carrier && CanFuseClip() && !fLogSoftmax;
    }
 
-   // The general hook: encode onto `grid` with no additional clamp. The five-argument
-   // FuseQuantizedOutput below is the Softmax-and-Clip case, which also folds the Clip's bounds.
+   // Encodes onto `grid` with no clamp. FuseQuantizedOutput covers the Softmax-Clip case.
    void FuseOutputOnGrid(const std::string &output, const QuantizationGrid &grid,
                          EQuantizedOutputEmit mode) override
    {
@@ -119,7 +96,7 @@ public:
       FuseQuantizedOutput(output, grid, false, 0.0, 0.0);
    }
 
-   // Absorb a following Clip, writing its output tensor instead of fNY.
+   // Absorbs a following Clip and writes its output tensor in place of fNY.
    void FuseClip(std::string clipOutput, double clipLow, double clipHigh)
    {
       fFusedOutputTensor = std::move(clipOutput);
@@ -129,8 +106,7 @@ public:
       fQuantClipHigh = clipHigh;
    }
 
-   // As FuseClip, and additionally encode onto `grid`, writing `carrier` as a low-precision
-   // code rather than a float.
+   // Absorbs a following Clip and encodes onto `grid`, writing `carrier` as a low-precision code.
    void FuseQuantizedOutput(std::string carrier, const QuantizationGrid &grid, bool hasClip,
                             double clipLow, double clipHigh)
    {
@@ -139,51 +115,19 @@ public:
       fOutputGrid = grid;
    }
 
-   // See CanFuseClip for why only this emission may fuse.
-   bool CanAcceptInt32Accumulator() const override { return SoftmaxUsesRegisterResidentRows(); }
 
-   // This traversal is `row * axisLen + k`, matching the producer's logical index only when its
-   // rows tile these and its columns are the axis length; a wrong mapping is silently wrong.
-   bool AcceptInt32Accumulator(const std::string &stateName, std::size_t batch, std::size_t rows,
-                               std::size_t cols, const QuantizedEpilogueSpecialization &spec) override
-   {
-      if (stateName.empty() || fShape.empty() || !CanAcceptInt32Accumulator())
-         return false;
-      const auto &axisDim = fShape[SoftmaxAxis()];
-      if (axisDim.isParam || axisDim.dim == 0)
-         return false;
-      if (cols != axisDim.dim)
-         return false;
-      // Rows are the product of the non-axis dimensions, visited in the producer's write order.
-      std::size_t ourRows = 1;
-      for (std::size_t i = 0; i < fShape.size(); ++i) {
-         if (i == SoftmaxAxis())
-            continue;
-         if (fShape[i].isParam)
-            return false;
-         ourRows *= fShape[i].dim;
-      }
-      const std::size_t batchCount = batch == 0 ? 1 : batch;
-      if (batchCount * rows != ourRows)
-         return false;
-      fAccumulatorStateName = stateName;
-      fAccumulatorSpec = spec;
-      return true;
-   }
-
-   // Read the carrier and decode at the load, dropping the DequantizeLinear kernel and the
-   // float round trip on both sides. Gated as CanFuseClip.
+   // Returns whether the carrier input can decode at the load, removing the DequantizeLinear
+   // kernel and its float round trip. Gated as CanFuseClip.
    bool CanFuseDequantizedInput() const override
    {
-      return SoftmaxUsesRegisterResidentRows() && !ReadsDeferredAccumulator();
+      return SoftmaxUsesRegisterResidentRows();
    }
 
    bool FuseDequantizedInput(const std::string &from, const std::string &carrier,
                              const QuantizationGrid &grid) override
    {
-      // E4M3 only, as in ROperator_BasicBinary: an affine grid carries a zero point too, and
-      // E5M2 needs its own decode.
-      if (!IsPerTensorE4M3(grid) || fNX != from || fInputGrid || ReadsDeferredAccumulator())
+      // Accepts per-tensor E4M3 only: an affine grid adds a zero point, and E5M2 has its own decode.
+      if (!IsPerTensorE4M3(grid) || fNX != from || fInputGrid)
          return false;
       fNX = carrier;
       fInputGrid = grid;
@@ -437,8 +381,7 @@ public:
       std::string op;
       op = "\n//------ SOFTMAX_KERNEL_ALPAKA\n";
       op += SP + "struct " + kname + " {\n";
-      // TOut is deduced: it is T for an ordinary Softmax and the integer carrier type
-      // when the output quantization is fused in.
+      // TOut is deduced: T for a plain Softmax, the carrier type with a fused output quantization.
       const auto binding = InputBinding();
       std::string templateParams = "typename TAcc";
       if (!binding.templateParams.empty())
@@ -524,14 +467,13 @@ public:
                      ExactDoubleLiteral(fQuantClipHigh) + ") : v);\n";
             }
             if (fOutputGrid && fOutputGrid->IsFloatingPoint()) {
-               // An FP8 grid has no zero point and its own saturation: the encode is the scale
-               // division followed by the hardware convert, matching ROperator_ONNXQuantizeLinear.
-               op += I4 + "auto q = SOFIE::EncodeFP8E4M3(static_cast<float>(static_cast<double>(v) / " +
-                     ExactDoubleLiteral(fOutputGrid->scale) + "));\n";
+               // FP8: divides by the scale in double, rounds to float, then applies the
+               // portable saturating E4M3 encode. No zero point.
+               op += I4 + "auto q = SOFIE::QuantCodec::EncodeE4M3(static_cast<double>(static_cast<float>("
+                     "static_cast<double>(v) / " + ExactDoubleLiteral(fOutputGrid->scale) + ")));\n";
                op += I4 + "Y[base + k] = static_cast<TOut>(q);\n";
             } else if (fOutputGrid) {
-               // Exactly the expression ROperator_ONNXQuantizeLinear emits, in the same
-               // order and the same types.
+               // Matches the QuantEncode boundary: round half to even, add the zero point, saturate.
                const auto qMin = static_cast<std::int64_t>(fOutputGrid->codeMin);
                const auto qMax = static_cast<std::int64_t>(fOutputGrid->codeMax);
                op += I4 + "double q = nearbyint(static_cast<double>(v) / " +
@@ -631,20 +573,10 @@ public:
          out << SP << "auto const elementsPerGrid_" << fNY << " = Vec::all(Idx{" << numRows << "});\n";
          out << SP << "auto const workDiv_" << fNY << " = sofie_workdiv(elementsPerGrid_" << fNY << ");\n";
       }
-      // The fused form writes the Quantize's carrier; the bypassed float intermediate
-      // has no reader and is never allocated.
+      // The fused form writes the QuantizeLinear carrier; the bypassed float intermediate is
+      // never allocated.
       const std::string outBuf = fFusedOutputTensor.empty() ? fNY : fFusedOutputTensor;
-      // The GEMM's scratch is reused by the next quantized GEMM; safe only because this
-      // enqueue sits between them on one in-order queue.
-      const std::string inArg = ReadsDeferredAccumulator()
-                                   ? fAccumulatorStateName + ".DeferredEpilogue()"
-                                   : "alpaka::getPtrNative(deviceBuf_" + fNX + ")";
-      // The kernel is compiled for one epilogue shape, and a disagreement is a wrong number
-      // rather than a crash, so it is caught on the host.
-      if (ReadsDeferredAccumulator()) {
-         out << SP << "SOFIE::RequireDeferredEpilogueSpecialization(" << fAccumulatorStateName
-             << ".DeferredEpilogue(), " << fAccumulatorSpec.CallArgs() << ");\n";
-      }
+      const std::string inArg = "alpaka::getPtrNative(deviceBuf_" + fNX + ")";
       out << SP << "auto task_" << opName << " = alpaka::createTaskKernel<Acc>(workDiv_" << fNY
           << ", softmaxKernel_" << opName << ", " << inArg
           << ", alpaka::getPtrNative(deviceBuf_" << outBuf << "), static_cast<Idx>(" << numRows

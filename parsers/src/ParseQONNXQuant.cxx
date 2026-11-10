@@ -74,15 +74,12 @@ ParserFuncSignature ParseQONNXQuant = [](RModelParser_ONNX &parser, const onnx::
       throw std::runtime_error("TMVA::SOFIE QONNX Quant missing required rounding_mode attribute");
    }
 
-   // The initial PQuant/QONNX profile accepts saturating per-tensor affine semantics only.
-   const auto overflow = narrow ? EQuantizationOverflowMode::SAT_SYM : EQuantizationOverflowMode::SAT;
-
    if (!parser.IsRegisteredTensorType(outputName)) {
       parser.RegisterTensorType(outputName, parser.GetTensorType(inputName));
    }
 
    return std::make_unique<ROperator_QONNXQuant>(inputName, scaleName, zeroPointName, bitWidthName, outputName,
-                                                 isSigned, narrow, rounding, overflow);
+                                                 isSigned, narrow, rounding);
 };
 
 } // namespace SOFIE

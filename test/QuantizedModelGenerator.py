@@ -1192,6 +1192,46 @@ def emit_onnx_qdq_quantgemm():
          opset=13, ir=6)
 
 
+def emit_onnx_qdq_quantgemm_unaligned():
+    """M=7, K=30, N=18: neither K nor N is a multiple of 4, so the vendor int8 kernels do not apply."""
+    nodes = [
+        node("DequantizeLinear", ['input', 'input_scale', 'input_zero_point'], ['input_dequantized'], name="input_dequantize"),
+        node("DequantizeLinear", ['weight_q', 'weight_scale', 'weight_zero_point'], ['weight_dequantized'], name="weight_dequantize"),
+        node("Gemm", ['input_dequantized', 'weight_dequantized'], ['gemm_output'], name="qdq_gemm", alpha=1.0, beta=1.0, transA=0, transB=1),
+        node("QuantizeLinear", ['gemm_output', 'output_scale', 'output_zero_point'], ['output_quantized'], name="output_quantize"),
+    ]
+    initializers = [
+        from_array("weight_q", (((np.arange(540) * 3 + np.arange(540) // 11 + 18) % 29 + (-14.0))).astype(np.int8).reshape([18, 30])),
+        from_values("input_scale", np.float32, [1], [0.03125]),
+        from_values("input_zero_point", np.int8, [1], [0]),
+        from_values("weight_scale", np.float32, [1], [0.015625]),
+        from_values("weight_zero_point", np.int8, [1], [0]),
+        from_values("output_scale", np.float32, [1], [0.015625]),
+        from_values("output_zero_point", np.int8, [1], [0]),
+    ]
+    emit("ONNX_QDQ_QuantGemm_Unaligned", nodes, [vi("input", 3, [7, 30])], [vi("output_quantized", 3, [7, 18])], initializers,
+         opset=13, ir=6)
+
+
+def emit_onnx_qdq_quantconv_unaligned():
+    """Conv1D [1,5,13] * [6,5,3] -> [1,6,11]: the output plane (11) and the window (15) are unaligned."""
+    nodes = [
+        node("DequantizeLinear", ['input', 'input_scale', 'zero_int8'], ['input_dq']),
+        node("DequantizeLinear", ['weight', 'weight_scale', 'zero_int8'], ['weight_dq']),
+        node("Conv", ['input_dq', 'weight_dq'], ['conv'], group=1, kernel_shape=[3], pads=[0, 0], strides=[1]),
+        node("QuantizeLinear", ['conv', 'output_scale', 'zero_int8'], ['output']),
+    ]
+    initializers = [
+        from_array("weight", (((np.arange(90) * 5 + np.arange(90) // 7 + 2) % 17 + (-8.0))).astype(np.int8).reshape([6, 5, 3])),
+        from_values("input_scale", np.float32, [], [0.125]),
+        from_values("weight_scale", np.float32, [], [0.0625]),
+        from_values("output_scale", np.float32, [], [0.25]),
+        from_values("zero_int8", np.int8, [], [0]),
+    ]
+    emit("ONNX_QDQ_QuantConv_Unaligned", nodes, [vi("input", 3, [1, 5, 13])], [vi("output", 3, [1, 6, 11])], initializers,
+         opset=13, ir=13)
+
+
 def emit_onnx_qdq_quantgemm_perchannelweight():
     nodes = [
         node("DequantizeLinear", ['input', 'input_scale', 'input_zero_point'], ['input_dequantized'], name="input_dequantize"),
@@ -1630,6 +1670,8 @@ def main():
     emit_onnx_qdq_decodeabsorb()
     emit_onnx_qdq_gridcrossing()
     emit_onnx_qdq_quantconv()
+    emit_onnx_qdq_quantconv_unaligned()
+    emit_onnx_qdq_quantgemm_unaligned()
     emit_onnx_qdq_quantgemm()
     emit_onnx_qdq_quantgemm_perchannelweight()
     emit_onnx_qdq_quantmatmul()

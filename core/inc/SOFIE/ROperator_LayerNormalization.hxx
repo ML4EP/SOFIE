@@ -51,8 +51,8 @@ private:
 
    std::string fType;
 
-   // Fold grid: the store applies the absorbed boundary's snap and keeps writing float.
-   // Carrier grid: the store encodes and writes the boundary's code tensor instead.
+   // Snap grid: the store applies the absorbed boundary's snap and writes float.
+   // Carrier grid: the store encodes and writes the boundary's code tensor.
    std::optional<QuantizationGrid> fFakeQuantGrid;
    std::optional<QuantizationGrid> fCarrierGrid;
 
@@ -177,15 +177,14 @@ public:
       model.AddNeededStdLib("cmath");
    }
 
-   // Absorbs a downstream boundary in either mode: the snap runs before the store, or the
-   // store encodes onto `grid` and writes the boundary's code tensor.
+   // Returns whether a downstream boundary can be absorbed: Snap always, Carrier only when
+   // no grid is set yet.
    bool CanFuseOutputOnGrid(EQuantizedOutputEmit mode) const override
    {
       return mode == EQuantizedOutputEmit::Snap || (!fFakeQuantGrid && !fCarrierGrid);
    }
 
-   // Adopts the boundary's output tensor; the previous output is left for dead-code
-   // elimination.
+   // Adopts the boundary's output tensor; dead-code elimination removes the previous output.
    void FuseOutputOnGrid(const std::string &output, const QuantizationGrid &grid,
                          EQuantizedOutputEmit mode) override
    {
@@ -679,7 +678,7 @@ public:
             op += ";\n";
             op += SP + SP + SP + SP + SP + "val += bias[b_idx];\n";
          }
-         // The serial fallback applies the same snap and encode as the parallel path.
+         // Applies the same snap and encode as the parallel path.
          if (fCarrierGrid) {
             op += EncodeToGridStatements("Y[norm_idx]", "val", *fCarrierGrid,
                                          SP + SP + SP + SP + SP);

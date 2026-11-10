@@ -13,12 +13,12 @@
 #endif
 
 #include "SOFIE/RModel.hxx"
+#include "SOFIE/RModelCodegenPass.hxx"
 #include "SOFIE/RModelProfilerGPU.hxx"
 #include "SOFIE/SOFIE_common.hxx"
 #include "SOFIE/ROperator_Gemm.hxx"
 #include "SOFIE/ROperator_LeakyRelu.hxx"
 #include "SOFIE/ROperator_Relu.hxx"
-#include "SOFIE/quantization/RQuantization_Pipeline.hxx"
 
 namespace SOFIE {
 
@@ -39,10 +39,19 @@ void RModel::ComputeEltwiseFusionGroups() {
    fOpToFusionGroupIdx.clear();
    fFusionIntermediateTensors.clear();
 
+   // Includes only operators emitted as parsed; a lowered or suppressed operator emits no
+   // float kernel to fuse. Readers are counted over the emitted view.
+   auto emittedAsParsed = [this](size_t i) {
+      return !IsOperatorLowered(i) && fLoweredConsumedOperatorIndices.count(i) == 0;
+   };
+
    // Build tensor -> consumer op indices map
    std::unordered_map<std::string, std::vector<size_t>> tensorConsumers;
    for (size_t i = 0; i < fOperators.size(); i++) {
-      for (const auto& name : fOperators[i]->GetOpInputTensors())
+      const ROperator *emitted = GetEmittedOperatorAt(i);
+      if (emitted == nullptr)
+         continue;
+      for (const auto& name : emitted->GetOpInputTensors())
          tensorConsumers[std::string(name)].push_back(i);
    }
 
@@ -58,7 +67,7 @@ void RModel::ComputeEltwiseFusionGroups() {
    std::vector<bool> opAssigned(fOperators.size(), false);
 
    for (size_t i = 0; i < fOperators.size(); i++) {
-      if (opAssigned[i]) continue;
+      if (opAssigned[i] || !emittedAsParsed(i)) continue;
       opAssigned[i] = true;
 
       EltwiseFusionGroup group;
@@ -78,7 +87,7 @@ void RModel::ComputeEltwiseFusionGroups() {
          size_t nextIdx = tensorConsumers.find(curOut)->second[0];
          // Must be strictly the next op in sequence and itself elementwise with single input
          if (nextIdx != current + 1) break;
-         if (opAssigned[nextIdx]) break;
+         if (opAssigned[nextIdx] || !emittedAsParsed(nextIdx)) break;
          if (!fOperators[nextIdx]->IsElementwise()) break;
          auto nextInputs = fOperators[nextIdx]->GetOpInputTensors();
          if (nextInputs.size() != 1) break;
@@ -118,14 +127,20 @@ void RModel::ComputeEltwiseFusionGroups() {
 
 
 void RModel::FuseGemmActivations_GPU() {
+   // Includes only operators emitted as parsed, and counts readers over the emitted view, as
+   // in ComputeEltwiseFusionGroups. A lowered Gemm keeps its Relu.
+   auto emittedAsParsed = [this](size_t i) {
+      return !IsOperatorLowered(i) && fLoweredConsumedOperatorIndices.count(i) == 0;
+   };
    std::unordered_map<std::string, size_t> consumerCount;
-   for (const auto& op : fOperators)
-      for (const auto& inp : op->GetOpInputTensors())
-         ++consumerCount[std::string(inp)];
+   for (size_t i = 0; i < fOperators.size(); ++i)
+      if (const ROperator *emitted = GetEmittedOperatorAt(i))
+         for (const auto& inp : emitted->GetOpInputTensors())
+            ++consumerCount[std::string(inp)];
 
    const size_t N = fOperators.size();
    for (size_t i = 0; i + 1 < N; ++i) {
-      if (fSkipOperators.count(i)) continue;
+      if (fSkipOperators.count(i) || !emittedAsParsed(i) || !emittedAsParsed(i + 1)) continue;
 
       auto* gemm = dynamic_cast<ROperator_Gemm<float>*>(fOperators[i].get());
       if (!gemm) continue;
@@ -254,8 +269,8 @@ void RModel::GenerateGPU_ALPAKA_Buffers()
          }
       };
 
-      // Lifetime analysis follows the effective operator view used by code generation.
-      // Outputs of suppressed Q/DQ/QONNX source operators therefore never enter the plan.
+      // Follows the emitted operator view, so outputs of suppressed Q/DQ/QONNX source operators
+      // never enter the plan.
       for (std::size_t opIndex = 0; opIndex < fOperators.size(); ++opIndex) {
          if (fSkipOperators.count(opIndex) || fLoweredConsumedOperatorIndices.count(opIndex))
             continue;
@@ -270,37 +285,8 @@ void RModel::GenerateGPU_ALPAKA_Buffers()
          ++graphStep;
       }
 
-      std::unordered_set<std::string> aliases;
-      for (const auto &[alias, origin] : fAliasTensors) {
-         aliases.insert(alias);
-         aliases.insert(origin);
-      }
       std::unordered_set<std::string> modelOutputs(fOutputTensorNames.begin(), fOutputTensorNames.end());
-      // Tensors the generator would allocate individually, offered to the pass in case it
-      // can place them in one arena instead.
-      std::vector<PoolableTensor> poolable;
-      for (const auto &[name, info] : fIntermediateTensorInfos) {
-         const auto use = tensorUses.find(name);
-         if (use == tensorUses.end() || modelOutputs.count(name) || aliases.count(name) ||
-             fFusionIntermediateTensors.count(name))
-            continue;
-         const auto elementBytes = GetTypeSize(info.type);
-         if (elementBytes == 0)
-            continue;
-         poolable.push_back({name, info.type, ConvertShapeToLength(info.shape) * elementBytes,
-                             use->second.first, use->second.last});
-      }
-      PooledStoragePlan pooled;
-      if (auto *pass = InstalledCodegenPass())
-         pooled = pass->PlanPooledStorage(*this, poolable);
-      fAlpakaIntermediateDeviceBytes += pooled.arenaBytes;
-
       std::string tensorDeclarationBlock;
-      if (pooled.arenaBytes != 0) {
-         tensorDeclarationBlock +=
-            "BufUI81D " + pooled.arenaName + " = alpaka::allocBuf<std::uint8_t, size_t>"
-            "(devAcc, Ext1D::all(Idx{" + std::to_string(pooled.arenaBytes) + "}));\n";
-      }
 
       fAlpakaDeclaredIntermediateBuffers.clear();
       for (const auto &[name, info] : fIntermediateTensorInfos) {
@@ -312,26 +298,6 @@ void RModel::GenerateGPU_ALPAKA_Buffers()
          fAlpakaDeclaredIntermediateBuffers.insert(name);
 
          const auto length = ConvertShapeToLength(info.shape);
-         if (auto allocation = pooled.offsets.find(name); allocation != pooled.offsets.end()) {
-            const auto offset = std::to_string(allocation->second);
-            const auto extent = "Ext1D::all(Idx{" + std::to_string(length) + "})";
-            const auto pointer = "alpaka::getPtrNative(" + pooled.arenaName + ") + " + offset;
-            if (info.type == ETensorType::FLOAT) {
-               tensorDeclarationBlock += "ViewF1D deviceBuf_" + name + "{reinterpret_cast<float *>(" +
-                                         pointer + "), devAcc, " + extent + "};\n";
-            } else if (info.type == ETensorType::INT8) {
-               tensorDeclarationBlock += "ViewI81D deviceBuf_" + name + "{reinterpret_cast<std::int8_t *>(" +
-                                         pointer + "), devAcc, " + extent + "};\n";
-            } else if (info.type == ETensorType::FLOAT16) {
-               tensorDeclarationBlock += "ViewUI161D deviceBuf_" + name + "{reinterpret_cast<std::uint16_t *>(" +
-                                         pointer + "), devAcc, " + extent + "};\n";
-            } else {
-               tensorDeclarationBlock += "ViewUI81D deviceBuf_" + name + "{" + pointer +
-                                         ", devAcc, " + extent + "};\n";
-            }
-            continue;
-         }
-
          fAlpakaIntermediateDeviceBytes += length * GetTypeSize(info.type);
          if (info.type == ETensorType::FLOAT) {
             tensorDeclarationBlock += "BufF1D deviceBuf_" + name +
@@ -368,8 +334,8 @@ void RModel::GenerateGPU_ALPAKA_Buffers()
          fGC += "\n//--- declare and allocate live intermediate tensors\n" + tensorDeclarationBlock;
    }
 
-   // Dynamic graph values retain independent ownership because their byte sizes
-   // are not known when the static carrier plan is built.
+   // Dynamic tensors own their buffers: their byte sizes are unknown when the static carrier
+   // plan is built.
    if (!fDynamicTensorInfos.empty()) {
       fGC += "//--- declare the dynamic tensors\n";
       fGC += "using bufDev_float = alpaka::Buf<devAcc, float, alpaka::DimInt<1u>, size_t>;\n";
@@ -715,15 +681,21 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
    };
 
    bool OpNeedsBlas = false;
+   // Quantized sofieBLAS calls are opt-in; without {.quantization = true} at backend
+   // construction they throw.
+   bool OpNeedsQuantizedBlas = false;
 
    fGC += "\n//--- ALPAKA Kernels\n";
    for (size_t id = 0; id < fOperators.size(); id++) {
       if (fLoweredConsumedOperatorIndices.count(id) != 0) continue;
       auto loweredIt = fLoweredOperators.find(id);
       ROperator *op = (loweredIt != fLoweredOperators.end()) ? loweredIt->second.get() : fOperators[id].get();
-      if(op->GetKind() == OperatorKind::GEMM || op->GetKind() == OperatorKind::CONV) {
+      if (op->GetKind() == OperatorKind::GEMM || op->GetKind() == OperatorKind::CONV ||
+          op->GetKind() == OperatorKind::QUANTIZED_GEMM || op->GetKind() == OperatorKind::QUANTIZED_CONV) {
          OpNeedsBlas = true;
       }
+      if (op->GetKind() == OperatorKind::QUANTIZED_GEMM || op->GetKind() == OperatorKind::QUANTIZED_CONV)
+         OpNeedsQuantizedBlas = true;
 
       auto gIt = fOpToFusionGroupIdx.find(id);
       size_t gIdx = (gIt != fOpToFusionGroupIdx.end()) ? gIt->second : SIZE_MAX;
@@ -734,16 +706,41 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
          if (fEltwiseFusionGroups[gIdx].opIndices[0] == id && !fusedGroupsEmitted.count(gIdx)) {
             const auto& grp = fEltwiseFusionGroups[gIdx];
             std::string sfx = grp.suffix();
+            // A chain whose element type changes (e.g. across a quantization boundary) reads TIn,
+            // writes TOut and types each step as the tensor it replaces, so the fused kernel rounds
+            // exactly where the separate kernels do.
+            const ETensorType inType = GetTensorType(grp.inputTensor);
+            bool typeChanges = false;
+            for (size_t opIdx : grp.opIndices)
+               typeChanges |= GetTensorType(std::string(fOperators[opIdx]->GetOpOutputTensors()[0])) != inType;
             fGC += "\n//------ FUSED_ELTWISE_KERNEL" + sfx + "\n";
             fGC += "struct FusedEltwiseKernel" + sfx + " {\n";
-            fGC += SP + "template<typename TAcc, typename T>\n";
-            fGC += SP + "ALPAKA_FN_ACC void operator()(TAcc const& acc, T const* __restrict__ data, T* __restrict__ out, std::size_t n) const {\n";
-            fGC += SP + SP + "const auto idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
-            fGC += SP + SP + "if (idx < n) {\n";
-            fGC += SP + SP + SP + "T v = data[idx];\n";
-            for (size_t opIdx : grp.opIndices)
-               fGC += SP + SP + SP + "v = " + fOperators[opIdx]->GetElementwiseExpr("v") + ";\n";
-            fGC += SP + SP + SP + "out[idx] = v;\n";
+            if (!typeChanges) {
+               fGC += SP + "template<typename TAcc, typename T>\n";
+               fGC += SP + "ALPAKA_FN_ACC void operator()(TAcc const& acc, T const* __restrict__ data, T* __restrict__ out, std::size_t n) const {\n";
+               fGC += SP + SP + "const auto idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
+               fGC += SP + SP + "if (idx < n) {\n";
+               fGC += SP + SP + SP + "T v = data[idx];\n";
+               for (size_t opIdx : grp.opIndices)
+                  fGC += SP + SP + SP + "v = " + fOperators[opIdx]->GetElementwiseExpr("v") + ";\n";
+               fGC += SP + SP + SP + "out[idx] = v;\n";
+            } else {
+               fGC += SP + "template<typename TAcc, typename TIn, typename TOut>\n";
+               fGC += SP + "ALPAKA_FN_ACC void operator()(TAcc const& acc, TIn const* __restrict__ data, TOut* __restrict__ out, std::size_t n) const {\n";
+               fGC += SP + SP + "const auto idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
+               fGC += SP + SP + "if (idx < n) {\n";
+               fGC += SP + SP + SP + "const TIn v0 = data[idx];\n";
+               for (size_t k = 0; k < grp.opIndices.size(); ++k) {
+                  const ROperator &step = *fOperators[grp.opIndices[k]];
+                  // A boundary's expression carries its exact type (codes or float).
+                  const std::string stepType = step.IsQuantizationBoundary()
+                     ? "auto"
+                     : ConvertTypeToString(GetTensorType(std::string(step.GetOpOutputTensors()[0])));
+                  fGC += SP + SP + SP + "const " + stepType + " v" + std::to_string(k + 1) + " = " +
+                         step.GetElementwiseExpr("v" + std::to_string(k)) + ";\n";
+               }
+               fGC += SP + SP + SP + "out[idx] = static_cast<TOut>(v" + std::to_string(grp.opIndices.size()) + ");\n";
+            }
             fGC += SP + SP + "}\n";
             fGC += SP + "}\n";
             fGC += "};\n";
@@ -817,14 +814,13 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
     fGC += "using Vec = alpaka::Vec<Dim, Idx>;\n";
     if (OpNeedsBlas) {
          fGC += "\n\n// BLAS declarations\n";
-         fGC += "sofieBLAS<tagAcc> blas{queue};\n";
+         fGC += OpNeedsQuantizedBlas ? "sofieBLAS<tagAcc> blas{queue, BlasOptions{.quantization = true}};\n"
+                                     : "sofieBLAS<tagAcc> blas{queue};\n";
     }
 
    GenerateInitializedTensorInfo_GPU_ALPAKA();
    GenerateGPU_ALPAKA_Buffers();
    GenerateOperatorDeclarations();
-   if (auto *pass = InstalledCodegenPass())
-      fGC += pass->ContributeSessionDeclarations(*this, ECodegenTarget::ALPAKA);
    // inject profiling session data member
    if (fProfile) {
       fGC += RModelProfilerGPU::GenerateSessionMembers();
@@ -871,7 +867,7 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
                // legacy cuBLAS path) need no cuBLASLt layout registration.
                for (auto &blasCfg : op->GetBlasConfigs()) {
                   if (!blasCfg.empty())
-                     fGC += "\nblas.addLayoutConfig(" + blasCfg + ");\n";
+                     fGC += "\nblas.addOperationConfig(" + blasCfg + ");\n";
                }
             }
          }
@@ -907,7 +903,7 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
          }
          fGC += ")\n    : queue(extQueue)";
          if (OpNeedsBlas)
-            fGC += ", blas(queue)";
+            fGC += OpNeedsQuantizedBlas ? ", blas(queue, BlasOptions{.quantization = true})" : ", blas(queue)";
          fGC += "\n{\n";
          fGC += ctorBody;
          fGC += "}\n\n";
@@ -952,8 +948,6 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
 
    GenerateOutput_GPU_ALPAKA();
 
-   if (auto *pass = InstalledCodegenPass())
-      fGC += pass->ContributeSessionMembers(*this, ECodegenTarget::ALPAKA);
 
    // emit resetState() — zeros all intermediate tensors to reset model state
    if (fUseSession) {
@@ -1049,7 +1043,6 @@ void RModel::GenerateGPU_ALPAKA(std::underlying_type_t<Options> options, int bat
       AddNeededCustomHeader("SOFIE/RWeightFile.hxx");
    if (pass) {
       pass->BuildLoweredView(*this, ECodegenTarget::ALPAKA);
-      pass->ContributeGeneratedHeaders(*this, ECodegenTarget::ALPAKA);
    }
    FuseGemmActivations_GPU();   // must run before elementwise fusion (redirects tensors)
    ComputeEltwiseFusionGroups();
@@ -1078,9 +1071,6 @@ void RModel::GenerateGPU_ALPAKA(std::underlying_type_t<Options> options, int bat
 void RModel::MoveInitializedTensorsToBuffers_ALPAKA(){
       for (auto &i : fInitializedTensors) {
          if (i.second.IsNotWritable())  continue;
-         if (auto *pass = InstalledCodegenPass();
-             pass && !pass->WantsDeviceUpload(*this, i.first, ECodegenTarget::ALPAKA))
-            continue;
          const auto type = i.second.type();
          if (type != ETensorType::FLOAT && type != ETensorType::INT32 && type != ETensorType::INT64 &&
              type != ETensorType::INT8 && !IsByteBackedAlpakaTensorType(type))
