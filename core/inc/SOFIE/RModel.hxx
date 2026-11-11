@@ -189,6 +189,14 @@ public:
                                 std::shared_ptr<void> data);
    std::shared_ptr<void> GetInitializedTensorData(std::string tensor_name);
    void RemoveInitializedTensor(std::string tensor_name);
+   /*! \brief Return the list of names of all initialized tensors */
+   std::vector<std::string> GetInitializedTensorNames() const;
+   /*! \brief Return the number of initialized tensors in the model */
+   std::size_t GetNumInitializedTensors() const { return fInitializedTensors.size(); }
+   /*! \brief Remove all initialized tensors from the model */
+   void ResetInitializedTensors();
+   /*! \brief Remove a collection of initialized tensors by name from the model */
+   void ResetInitializedTensors(const std::vector<std::string> &tensor_names);
    template<class T>
    std::vector<T> GetTensorData(const std::string & name);
 
