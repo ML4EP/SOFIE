@@ -49,7 +49,7 @@ private:
    std::string fType;
 
 public:
-   ROperator_LayerNormalization() {}
+   ROperator_LayerNormalization() { fKind = OperatorKind::LAYERNORM; }
 
    ROperator_LayerNormalization(int axis, float epsilon, size_t stashType, const std::string &nameX,
                                 const std::string &nameScale, const std::string &nameB, const std::string &nameY,
@@ -58,6 +58,7 @@ public:
         fNScale(UTILITY::Clean_name(nameScale)), fNB(UTILITY::Clean_name(nameB)),
         fNY(UTILITY::Clean_name(nameY)), fNMean(UTILITY::Clean_name(nameMean)), fNInvStdDev(UTILITY::Clean_name(nameInvStdDev))
    {
+         fKind = OperatorKind::LAYERNORM;
          fInputTensorNames = { fNX, fNScale };
          if (!fNB.empty()){
             fInputTensorNames.emplace_back(fNB);

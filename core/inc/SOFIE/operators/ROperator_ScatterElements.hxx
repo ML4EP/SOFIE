@@ -60,7 +60,7 @@ private:
    }
 
 public:
-   ROperator_ScatterElements(){}
+   ROperator_ScatterElements(){ fKind = OperatorKind::SCATTERELEMENTS; }
    ROperator_ScatterElements(const std::string & nameX, const std::string & nameI, const std::string & nameU, const std::string & nameY,
                            int axis, std::string reduction):
       fAxis(axis),
@@ -70,6 +70,7 @@ public:
       {
          fInputTensorNames = { fNX, fNI, fNU };
          fOutputTensorNames = { fNY };
+         fKind = OperatorKind::SCATTERELEMENTS;
       }
 
 

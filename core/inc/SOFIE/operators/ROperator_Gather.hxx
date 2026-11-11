@@ -37,11 +37,12 @@ private:
    bool fStridedIndices = false;
 
 public:
-   ROperator_Gather(){}
+   ROperator_Gather(){ fKind = OperatorKind::GATHER; }
    ROperator_Gather(int64_t attrAxis, std::string nameX, std::string nameIndices, std::string nameY):
       fAttrAxis(attrAxis), fNX(UTILITY::Clean_name(nameX)), fNIndices(UTILITY::Clean_name(nameIndices)), fNY(UTILITY::Clean_name(nameY)) {
          fInputTensorNames = { fNX, fNIndices };
          fOutputTensorNames = { fNY };
+         fKind = OperatorKind::GATHER;
    }
 
    bool SupportsStridedInput() const override { return true; }

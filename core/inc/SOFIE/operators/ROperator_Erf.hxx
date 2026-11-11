@@ -20,11 +20,12 @@ private:
    std::vector<Dim> fShape;
 
 public:
-   ROperator_Erf(){}
+   ROperator_Erf(){ fKind = OperatorKind::ERF; }
    ROperator_Erf(std::string nameX, std::string nameY):
       fNX(UTILITY::Clean_name(nameX)), fNY(UTILITY::Clean_name(nameY)){
          fInputTensorNames = { fNX };
          fOutputTensorNames = { fNY };
+         fKind = OperatorKind::ERF;
       }
 
    void Initialize(RModel& model) override {

@@ -31,7 +31,7 @@ private:
    size_t fBlockSize = 256;
 
 public:
-   ROperator_TopK() {}
+   ROperator_TopK() { fKind = OperatorKind::TOPK; }
    ROperator_TopK(int attr_axis, int attr_largest, int attr_sorted, std::string nameK, std::string nameX, std::string nameVal, std::string nameInd)
       : fAttrAxis(attr_axis),
         fAttrLargest(attr_largest),
@@ -42,6 +42,7 @@ public:
         fNInd(UTILITY::Clean_name(nameInd)){
             fInputTensorNames = { fNX, fNK };
             fOutputTensorNames = { fNVal, fNInd };
+            fKind = OperatorKind::TOPK;
         }
 
    void Initialize(RModel& model) override {

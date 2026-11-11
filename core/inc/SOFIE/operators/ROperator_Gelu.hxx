@@ -19,11 +19,12 @@ private:
    std::vector<size_t> fShape;
 
 public:
-   ROperator_Gelu(){}
+   ROperator_Gelu(){ fKind = OperatorKind::GELU; }
    ROperator_Gelu(std::string nameX, std::string nameY, std::string approximate = "none"):
       fNX(UTILITY::Clean_name(nameX)), fNY(UTILITY::Clean_name(nameY)), fApproximate(approximate){
          fInputTensorNames = { fNX };
          fOutputTensorNames = { fNY };
+         fKind = OperatorKind::GELU;
       }
 
 

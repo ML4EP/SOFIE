@@ -120,12 +120,13 @@ private:
    }
 
 public:
-   ROperator_BasicBinary() {}
+   ROperator_BasicBinary() { fKind = OperatorKind::BASIC_BINARY; }
    ROperator_BasicBinary(std::string nameA, std::string nameB, std::string nameY)
       : fNA(UTILITY::Clean_name(nameA)), fNB(UTILITY::Clean_name(nameB)), fNY(UTILITY::Clean_name(nameY))
    {
       fInputTensorNames = {fNA, fNB};
       fOutputTensorNames = {fNY};
+      fKind = OperatorKind::BASIC_BINARY;
    }
 
    void Initialize(RModel &model) override

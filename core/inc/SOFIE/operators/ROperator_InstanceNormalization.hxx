@@ -21,7 +21,7 @@ private:
    std::string fType;
 
 public:
-   ROperator_InstanceNormalization() : fEpsilon(1e-5) {}
+   ROperator_InstanceNormalization() : fEpsilon(1e-5) { fKind = OperatorKind::INSTANCENORM; }
 
    ROperator_InstanceNormalization(float epsilon, std::string nameInput, std::string nameScale, std::string nameBias,
                                    std::string nameOutput)
@@ -31,6 +31,7 @@ public:
         fNBias(UTILITY::Clean_name(nameBias)),
         fNOutput(UTILITY::Clean_name(nameOutput))
    {
+      fKind = OperatorKind::INSTANCENORM;
       fInputTensorNames = {fNInput, fNScale, fNBias};
       fOutputTensorNames = {fNOutput};
    }

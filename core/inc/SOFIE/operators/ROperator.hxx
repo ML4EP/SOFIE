@@ -23,39 +23,77 @@ enum class OperatorKind {
    CONSTANT = 3,
    CONSTANTOFSHAPE = 4,
    UNDEFINED = 5,
-   CONV=6,
-   BATCHNORM=7,
-   CAST=8,
-   COMPARISON=9,
-   EINSUM=10,
-   ELU=11,
-   SIGMOID=12,
-   TANH=13,
-   SOFTMAX=14,
-   LEAKYRELU=15,
-   UNARY_RECIPROCAL=16,
-   UNARY_SQRT=17,
-   UNARY_NEG=18,
-   UNARY_EXP=19,
-   UNARY_LOG=20,
-   UNARY_SIN=21,
-   UNARY_COS=22,
-   UNARY_ABS=23,
-   CLIP=24,
-   NOT=25,
-   UNARY_SOFTPLUS=26,
-   UNARY_ATAN=27,
-   UNARY_FLOOR=28,
-   L2NORMALIZATION=29,
-   POOL=30,
-   SELU=31,
-   RMSNORM=32,
-   GROUPNORM=33,
-   CUMSUM=34,
-   SDPA=35,
-   MAMBA_SCAN=36,
-   RWKV_WKV6=37,
-   GRIFFIN_RGLRU=38
+   CONV = 6,
+   BATCHNORM = 7,
+   CAST = 8,
+   COMPARISON = 9,
+   EINSUM = 10,
+   ELU = 11,
+   SIGMOID = 12,
+   TANH = 13,
+   SOFTMAX = 14,
+   LEAKYRELU = 15,
+   UNARY_RECIPROCAL = 16,
+   UNARY_SQRT = 17,
+   UNARY_NEG = 18,
+   UNARY_EXP = 19,
+   UNARY_LOG = 20,
+   UNARY_SIN = 21,
+   UNARY_COS = 22,
+   UNARY_ABS = 23,
+   CLIP = 24,
+   NOT = 25,
+   UNARY_SOFTPLUS = 26,
+   UNARY_ATAN = 27,
+   UNARY_FLOOR = 28,
+   L2NORMALIZATION = 29,
+   POOL = 30,
+   SELU = 31,
+   RMSNORM = 32,
+   GROUPNORM = 33,
+   CUMSUM = 34,
+   SDPA = 35,
+   MAMBA_SCAN = 36,
+   RWKV_WKV6 = 37,
+   GRIFFIN_RGLRU = 38,
+   GELU = 39,
+   BASIC_IS = 40,
+   BASIC_BINARY = 41,
+   BASIC_NARY = 42,
+   CONCAT = 43,
+   TRANSPOSE = 44,
+   GATHER = 45,
+   GATHERND = 46,
+   SCATTERELEMENTS = 47,
+   SCATTERND = 48,
+   SPLIT = 49,
+   TILE = 50,
+   WHERE = 51,
+   SLICE = 52,
+   PAD = 53,
+   RESHAPE = 54,
+   SHAPE = 55,
+   RANGE = 56,
+   REDUCE = 57,
+   TOPK = 58,
+   EXPAND = 59,
+   TRILU = 60,
+   NONZERO = 61,
+   LOGIC_BINARY = 62,
+   BITWISE_NOT = 63,
+   IDENTITY = 64,
+   SUBGRAPH = 65,
+   CONVTRANSPOSE = 66,
+   CUSTOM = 67,
+   ERF = 68,
+   EYELIKE = 69,
+   GRU = 70,
+   HARDSIGMOID = 71,
+   HARDSWISH = 72,
+   INSTANCENORM = 73,
+   LSTM = 74,
+   RNN = 75,
+   SWISH = 76
 };
 
 enum class EFusionMappingType {
@@ -88,19 +126,84 @@ inline const char *toString(EFusionMappingType type)
 
 inline const char* toString(OperatorKind kind) {
    switch (kind) {
-       case OperatorKind::GEMM:       return "GEMM";
-       case OperatorKind::LAYERNORM:  return "LAYERNORM";
-       case OperatorKind::RELU:       return "RELU";
-       case OperatorKind::CONSTANT:        return "CONSTANT";
-       case OperatorKind::CONSTANTOFSHAPE: return "CONSTANTOFSHAPE";
-       case OperatorKind::BATCHNORM:       return "BATCHNORM";  
-       case OperatorKind::CONV:       return "CONV";
-       case OperatorKind::UNARY_SOFTPLUS: return "UNARY_SOFTPLUS";
-       case OperatorKind::UNARY_ATAN:     return "UNARY_ATAN";
-       case OperatorKind::UNARY_FLOOR:    return "UNARY_FLOOR";
-       case OperatorKind::UNDEFINED:  return "UNDEFINED";
-       case OperatorKind::L2NORMALIZATION: return "L2NORMALIZATION";
-       default:                       return "UNKNOWN";
+       case OperatorKind::GEMM:              return "GEMM";
+       case OperatorKind::LAYERNORM:         return "LAYERNORM";
+       case OperatorKind::RELU:              return "RELU";
+       case OperatorKind::CONSTANT:          return "CONSTANT";
+       case OperatorKind::CONSTANTOFSHAPE:   return "CONSTANTOFSHAPE";
+       case OperatorKind::UNDEFINED:         return "UNDEFINED";
+       case OperatorKind::CONV:              return "CONV";
+       case OperatorKind::BATCHNORM:         return "BATCHNORM";
+       case OperatorKind::CAST:              return "CAST";
+       case OperatorKind::COMPARISON:        return "COMPARISON";
+       case OperatorKind::EINSUM:            return "EINSUM";
+       case OperatorKind::ELU:               return "ELU";
+       case OperatorKind::SIGMOID:           return "SIGMOID";
+       case OperatorKind::TANH:              return "TANH";
+       case OperatorKind::SOFTMAX:           return "SOFTMAX";
+       case OperatorKind::LEAKYRELU:         return "LEAKYRELU";
+       case OperatorKind::UNARY_RECIPROCAL:  return "UNARY_RECIPROCAL";
+       case OperatorKind::UNARY_SQRT:        return "UNARY_SQRT";
+       case OperatorKind::UNARY_NEG:         return "UNARY_NEG";
+       case OperatorKind::UNARY_EXP:         return "UNARY_EXP";
+       case OperatorKind::UNARY_LOG:         return "UNARY_LOG";
+       case OperatorKind::UNARY_SIN:         return "UNARY_SIN";
+       case OperatorKind::UNARY_COS:         return "UNARY_COS";
+       case OperatorKind::UNARY_ABS:         return "UNARY_ABS";
+       case OperatorKind::CLIP:              return "CLIP";
+       case OperatorKind::NOT:               return "NOT";
+       case OperatorKind::UNARY_SOFTPLUS:    return "UNARY_SOFTPLUS";
+       case OperatorKind::UNARY_ATAN:        return "UNARY_ATAN";
+       case OperatorKind::UNARY_FLOOR:       return "UNARY_FLOOR";
+       case OperatorKind::L2NORMALIZATION:   return "L2NORMALIZATION";
+       case OperatorKind::POOL:              return "POOL";
+       case OperatorKind::SELU:              return "SELU";
+       case OperatorKind::RMSNORM:           return "RMSNORM";
+       case OperatorKind::GROUPNORM:         return "GROUPNORM";
+       case OperatorKind::CUMSUM:            return "CUMSUM";
+       case OperatorKind::SDPA:              return "SDPA";
+       case OperatorKind::MAMBA_SCAN:        return "MAMBA_SCAN";
+       case OperatorKind::RWKV_WKV6:         return "RWKV_WKV6";
+       case OperatorKind::GRIFFIN_RGLRU:     return "GRIFFIN_RGLRU";
+       case OperatorKind::GELU:              return "GELU";
+       case OperatorKind::BASIC_IS:          return "BASIC_IS";
+       case OperatorKind::BASIC_BINARY:      return "BASIC_BINARY";
+       case OperatorKind::BASIC_NARY:        return "BASIC_NARY";
+       case OperatorKind::CONCAT:            return "CONCAT";
+       case OperatorKind::TRANSPOSE:         return "TRANSPOSE";
+       case OperatorKind::GATHER:            return "GATHER";
+       case OperatorKind::GATHERND:          return "GATHERND";
+       case OperatorKind::SCATTERELEMENTS:   return "SCATTERELEMENTS";
+       case OperatorKind::SCATTERND:         return "SCATTERND";
+       case OperatorKind::SPLIT:             return "SPLIT";
+       case OperatorKind::TILE:              return "TILE";
+       case OperatorKind::WHERE:             return "WHERE";
+       case OperatorKind::SLICE:             return "SLICE";
+       case OperatorKind::PAD:               return "PAD";
+       case OperatorKind::RESHAPE:           return "RESHAPE";
+       case OperatorKind::SHAPE:             return "SHAPE";
+       case OperatorKind::RANGE:             return "RANGE";
+       case OperatorKind::REDUCE:            return "REDUCE";
+       case OperatorKind::TOPK:              return "TOPK";
+       case OperatorKind::EXPAND:            return "EXPAND";
+       case OperatorKind::TRILU:             return "TRILU";
+       case OperatorKind::NONZERO:           return "NONZERO";
+       case OperatorKind::LOGIC_BINARY:      return "LOGIC_BINARY";
+       case OperatorKind::BITWISE_NOT:       return "BITWISE_NOT";
+       case OperatorKind::IDENTITY:          return "IDENTITY";
+       case OperatorKind::SUBGRAPH:          return "SUBGRAPH";
+       case OperatorKind::CONVTRANSPOSE:     return "CONVTRANSPOSE";
+       case OperatorKind::CUSTOM:            return "CUSTOM";
+       case OperatorKind::ERF:               return "ERF";
+       case OperatorKind::EYELIKE:           return "EYELIKE";
+       case OperatorKind::GRU:               return "GRU";
+       case OperatorKind::HARDSIGMOID:       return "HARDSIGMOID";
+       case OperatorKind::HARDSWISH:         return "HARDSWISH";
+       case OperatorKind::INSTANCENORM:      return "INSTANCENORM";
+       case OperatorKind::LSTM:              return "LSTM";
+       case OperatorKind::RNN:               return "RNN";
+       case OperatorKind::SWISH:             return "SWISH";
+       default:                              return "UNKNOWN";
    }
 }
 

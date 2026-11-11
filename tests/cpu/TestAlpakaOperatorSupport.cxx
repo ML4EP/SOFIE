@@ -4,9 +4,11 @@
 #include "SOFIE/RModel.hxx"
 #include "SOFIE/operators/ROperator_BasicUnary.hxx"
 #include "SOFIE/operators/ROperator_Erf.hxx"
+#include "SOFIE/operators/ROperator_Gelu.hxx"
 #include "SOFIE/operators/ROperator_Relu.hxx"
 #include "SOFIE/operators/ROperator_SubGraph.hxx"
 #include "SOFIE/operators/ROperator_Tile.hxx"
+#include "SOFIE/operators/ROperator_Transpose.hxx"
 
 #include <gtest/gtest.h>
 
@@ -254,4 +256,49 @@ TEST(AlpakaOperatorSupport, TileFusionDataInputIndicesAreValidInputs)
    const auto indices = tile.GetFusionDataInputIndices();
    ASSERT_FALSE(indices.empty());
    EXPECT_TRUE(std::all_of(indices.begin(), indices.end(), [&](size_t i) { return i < inputs.size(); }));
+}
+
+TEST(AlpakaOperatorSupport, OperatorKindAndToStringCoverage)
+{
+   ROperator_Gelu gelu("X", "Y");
+   EXPECT_EQ(gelu.GetKind(), OperatorKind::GELU);
+   EXPECT_STREQ(toString(gelu.GetKind()), "GELU");
+
+   ROperator_Transpose transpose({1, 0}, "X", "Y");
+   EXPECT_EQ(transpose.GetKind(), OperatorKind::TRANSPOSE);
+   EXPECT_STREQ(toString(transpose.GetKind()), "TRANSPOSE");
+
+   for (int i = 0; i <= static_cast<int>(OperatorKind::SWISH); ++i) {
+      OperatorKind kind = static_cast<OperatorKind>(i);
+      const char *str = toString(kind);
+      ASSERT_NE(str, nullptr);
+      if (kind != OperatorKind::UNDEFINED) {
+         EXPECT_STRNE(str, "UNDEFINED");
+      } else {
+         EXPECT_STREQ(str, "UNDEFINED");
+      }
+   }
+}
+
+TEST(AlpakaOperatorSupport, MultipleGeluDeduplicatesSessionKernel)
+{
+   RModel model("MultiGeluModel", "now");
+   model.AddInputTensorInfo("X", ETensorType::FLOAT, std::vector<Dim>{Dim(2), Dim(4)});
+   model.AddInputTensorName("X");
+   model.AddOperator(std::make_unique<ROperator_Gelu>("X", "H1"));
+   model.AddOperator(std::make_unique<ROperator_Gelu>("H1", "Y"));
+   model.AddOutputTensorNameList({"Y"});
+
+   EXPECT_NO_THROW(model.GenerateGPU_ALPAKA(Options::kNoWeightFile));
+   const std::string generated = model.ReturnGenerated();
+
+   size_t kernelDeclPos = generated.find("struct GeluKernel");
+   EXPECT_NE(kernelDeclPos, std::string::npos);
+   size_t secondKernelDeclPos = generated.find("struct GeluKernel", kernelDeclPos + 1);
+   EXPECT_EQ(secondKernelDeclPos, std::string::npos);
+
+   size_t memberPos = generated.find("GeluKernel geluKernel");
+   EXPECT_NE(memberPos, std::string::npos);
+   size_t secondMemberPos = generated.find("GeluKernel geluKernel", memberPos + 1);
+   EXPECT_EQ(secondMemberPos, std::string::npos);
 }

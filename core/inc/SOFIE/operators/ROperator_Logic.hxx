@@ -105,7 +105,7 @@ private:
    using Trait = LogicBinaryTrait<T, Op>;
 
 public:
-   ROperator_LogicBinary() {}
+   ROperator_LogicBinary() { fKind = OperatorKind::LOGIC_BINARY; }
 
    ROperator_LogicBinary(std::string nameA, std::string nameB, std::string nameY)
       : fNA(UTILITY::Clean_name(nameA)),
@@ -114,6 +114,7 @@ public:
    {
       fInputTensorNames  = { fNA, fNB };
       fOutputTensorNames = { fNY };
+      fKind = OperatorKind::LOGIC_BINARY;
    }
 
    // ── Type / shape inference ────────────────────────────────────────────────
@@ -284,7 +285,7 @@ private:
    std::vector<Dim> fShape;
 
 public:
-   ROperator_BitwiseNot() {}
+   ROperator_BitwiseNot() { fKind = OperatorKind::BITWISE_NOT; }
 
    ROperator_BitwiseNot(std::string nameX, std::string nameY)
       : fNX(UTILITY::Clean_name(nameX)),
@@ -292,6 +293,7 @@ public:
    {
       fInputTensorNames  = { fNX };
       fOutputTensorNames = { fNY };
+      fKind = OperatorKind::BITWISE_NOT;
    }
 
    void Initialize(RModel& model) override {

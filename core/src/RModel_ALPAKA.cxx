@@ -1013,7 +1013,9 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
       SOFIE::OperatorKind::UNARY_FLOOR,
       SOFIE::OperatorKind::NOT,
       SOFIE::OperatorKind::SELU,
-      SOFIE::OperatorKind::GEMM
+      SOFIE::OperatorKind::GEMM,
+      SOFIE::OperatorKind::GELU,
+      SOFIE::OperatorKind::BASIC_IS
    };
 
    bool OpNeedsBlas = false;
@@ -1058,7 +1060,8 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
             }
          } else {
             auto idDynParamNames = GetOperatorKernelParams(id, dynParamNames);
-            if (single_initialized_operators.find(fOperators[id]->GetKind()) != single_initialized_operators.end()) {
+            if (fOperators[id]->GetKind() != OperatorKind::UNDEFINED &&
+                single_initialized_operators.find(fOperators[id]->GetKind()) != single_initialized_operators.end()) {
                if (registered_operators.find(kernelKey(id)) == registered_operators.end()) {
                   if (fVerbose)
                      std::cout << "Generating ALPAKA kernel for operator " << toString(fOperators[id]->GetKind()) << std::endl;
@@ -1506,7 +1509,8 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
                fGC += "FusedEltwiseKernel" + sfx + " fusedEltwiseKernel" + sfx + ";\n";
             }
          } else {
-            if (single_initialized_operators.find(fOperators[id]->GetKind()) != single_initialized_operators.end()) {
+            if (fOperators[id]->GetKind() != OperatorKind::UNDEFINED &&
+                single_initialized_operators.find(fOperators[id]->GetKind()) != single_initialized_operators.end()) {
                if (registered_operators.find(kernelKey(id)) == registered_operators.end()) {
                   if (fVerbose)
                      std::cout << "Declaring ALPAKA kernel for operator " << toString(fOperators[id]->GetKind()) << std::endl;

@@ -23,7 +23,7 @@ private:
    std::string fType;
 
 public:
-   ROperator_Softmax() {}
+   ROperator_Softmax() { fKind = OperatorKind::SOFTMAX; }
    ROperator_Softmax(int64_t attr_axis, std::string nameX, std::string nameY, bool logSoftmax = false)
       : fLogSoftmax(logSoftmax),
       fAttrAxis(attr_axis), fNX(UTILITY::Clean_name(nameX)), fNY(UTILITY::Clean_name(nameY))
@@ -31,6 +31,7 @@ public:
    {
          fInputTensorNames = { fNX };
          fOutputTensorNames = { fNY };
+         fKind = OperatorKind::SOFTMAX;
    }
 
    void Initialize(RModel& model) override {

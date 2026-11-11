@@ -127,7 +127,7 @@ private:
    std::string fType;
 
 public:
-   ROperator_BasicNary(){}
+   ROperator_BasicNary(){ fKind = OperatorKind::BASIC_NARY; }
 
    ROperator_BasicNary( const std::vector<std::string> & inputNames, const std::string& nameY):
    fNY(UTILITY::Clean_name(nameY)){
@@ -139,6 +139,7 @@ public:
       std::transform(fNInputs.begin(), fNInputs.end(), fInputTensorNames.begin(),
                   [](const std::string& s) -> std::string_view { return s; });
       fOutputTensorNames = { fNY };
+      fKind = OperatorKind::BASIC_NARY;
    }
 
    bool InitializeShapeTensorOutput(RModel &model)

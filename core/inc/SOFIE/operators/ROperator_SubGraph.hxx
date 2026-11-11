@@ -28,7 +28,7 @@ private:
    std::string fInputSignature_modelElse;
 
 public:
-   ROperator_If(){}
+   ROperator_If(){ fKind = OperatorKind::SUBGRAPH; }
    ROperator_If(const std::string & nameX, const std::vector<std::string> & nameYs, std::unique_ptr<RModel> model_then, std::unique_ptr<RModel> model_else):
       fNX(UTILITY::Clean_name(nameX)), fNYs(nameYs), fModel_then(std::move(model_then)), fModel_else(std::move(model_else))
       {
@@ -37,6 +37,7 @@ public:
 
          fInputTensorNames = { fNX };
          fOutputTensorNames.assign(fNYs.begin(), fNYs.end());
+         fKind = OperatorKind::SUBGRAPH;
       }
 
    // the condition has one element: it is read without strides. The branches read the strided inputs of the model

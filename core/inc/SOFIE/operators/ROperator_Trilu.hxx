@@ -32,7 +32,7 @@ private:
    std::string fTotal;  // ConvertDimShapeToLength(fShape)
 
 public:
-   ROperator_Trilu() {}
+   ROperator_Trilu() { fKind = OperatorKind::TRILU; }
 
    ROperator_Trilu(int upper, std::string nameX, std::string nameY)
       : fUpper(upper),
@@ -41,6 +41,7 @@ public:
    {
       fInputTensorNames  = { fNX };
       fOutputTensorNames = { fNY };
+      fKind = OperatorKind::TRILU;
    }
 
    ROperator_Trilu(int upper, std::string nameX, std::string nameK, std::string nameY)
@@ -51,6 +52,7 @@ public:
    {
       fInputTensorNames  = { fNX, fNK };
       fOutputTensorNames = { fNY };
+      fKind = OperatorKind::TRILU;
    }
 
    void Initialize(RModel& model) override {

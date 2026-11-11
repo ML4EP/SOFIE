@@ -25,11 +25,12 @@ private:
    bool fHasDynamicTiledAxis = false;  // true if any output dim is a "(param * repeat)" expression
 
 public:
-   ROperator_Tile(){}
+   ROperator_Tile(){ fKind = OperatorKind::TILE; }
    ROperator_Tile(std::string nameRepeat, std::string nameInput, std::string nameY):
       fNRepeats(UTILITY::Clean_name(nameRepeat)),fNInput(UTILITY::Clean_name(nameInput)), fNY(UTILITY::Clean_name(nameY)){
          fInputTensorNames = { fNInput };
          fOutputTensorNames = { fNY };
+         fKind = OperatorKind::TILE;
       }
 
    std::vector<Dim> DoShapeInference(const std::vector<Dim> & input, const std::vector<size_t> repeat)  {
