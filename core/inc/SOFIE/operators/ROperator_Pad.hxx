@@ -31,7 +31,7 @@ private:
 
 public:
 
-   ROperator_Pad(){}
+   ROperator_Pad(){ fKind = OperatorKind::PAD; }
    ROperator_Pad(const std::string & nameX, const std::string & nameP,  const std::string & nameCV,
                  const std::string & nameAX, const std::string & nameY, const std::string & mode) :
       fNX(UTILITY::Clean_name(nameX)), fNP(UTILITY::Clean_name(nameP)),
@@ -50,6 +50,7 @@ public:
          
          fInputTensorNames = { fNX };
          fOutputTensorNames = { fNY };
+         fKind = OperatorKind::PAD;
       }
 
    void Initialize(RModel& model) override {

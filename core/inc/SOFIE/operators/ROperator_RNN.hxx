@@ -50,7 +50,7 @@ template <typename T> class ROperator_RNN final : public ROperator {
 
  public:
    /*! Default constructor of ROperator_RNN */
-   ROperator_RNN() {}
+   ROperator_RNN() { fKind = OperatorKind::RNN; }
 
    /*! \brief Constructor of ROperator_RNN from the attributes
     *
@@ -112,6 +112,7 @@ template <typename T> class ROperator_RNN final : public ROperator {
       if(!fNY_h.empty()){
          fOutputTensorNames.emplace_back(fNY_h);
       }
+      fKind = OperatorKind::RNN;
    }
 
    /*! \brief Infers the shape of the output tensors

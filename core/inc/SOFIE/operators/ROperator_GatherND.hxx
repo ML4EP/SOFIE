@@ -34,11 +34,12 @@ private:
    static std::string sz(const std::string &e) { return "static_cast<std::size_t>(" + e + ")"; }
 
 public:
-   ROperator_GatherND(){}
+   ROperator_GatherND(){ fKind = OperatorKind::GATHERND; }
    ROperator_GatherND(int batch_dims, std::string nameX, std::string nameIndices, std::string nameY):
       fBatchDims(batch_dims), fNX(UTILITY::Clean_name(nameX)), fNIndices(UTILITY::Clean_name(nameIndices)), fNY(UTILITY::Clean_name(nameY)) {
          fInputTensorNames = { fNX, fNIndices };
          fOutputTensorNames = { fNY };
+         fKind = OperatorKind::GATHERND;
    }
 
    void Initialize(RModel& model) override {

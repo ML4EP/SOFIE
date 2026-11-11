@@ -30,11 +30,12 @@ private:
    std::string fCountScratchName;
 
 public:
-   ROperator_NonZero(){}
+   ROperator_NonZero(){ fKind = OperatorKind::NONZERO; }
    ROperator_NonZero(std::string nameX, std::string nameY):
       fNX(UTILITY::Clean_name(nameX)), fNY(UTILITY::Clean_name(nameY)){
          fInputTensorNames = { fNX };
          fOutputTensorNames = { fNY };
+         fKind = OperatorKind::NONZERO;
       }
 
 

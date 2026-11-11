@@ -56,11 +56,12 @@ private:
    size_t fRankC = 0;
 
 public:
-   ROperator_Where(){}
+   ROperator_Where(){ fKind = OperatorKind::WHERE; }
    ROperator_Where(const std::string & nameC, const std::string & nameX, const std::string & nameY, const std::string & nameZ):
       fNX(UTILITY::Clean_name(nameX)), fNY(UTILITY::Clean_name(nameY)), fNC(UTILITY::Clean_name(nameC)), fNZ(UTILITY::Clean_name(nameZ)){
          fInputTensorNames = { fNX, fNY, fNC };
          fOutputTensorNames = { fNZ };
+         fKind = OperatorKind::WHERE;
       }
 
    void Initialize(RModel& model) override {

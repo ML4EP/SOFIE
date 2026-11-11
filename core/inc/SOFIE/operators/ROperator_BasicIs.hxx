@@ -49,13 +49,14 @@ private:
    std::vector<Dim> fShapeY;
 
 public:
-   ROperator_BasicIs() {}
+   ROperator_BasicIs() { fKind = OperatorKind::BASIC_IS; }
 
    ROperator_BasicIs(std::string nameX, std::string nameY)
       : fNX(UTILITY::Clean_name(nameX)), fNY(UTILITY::Clean_name(nameY))
    {
          fInputTensorNames =  { fNX };
          fOutputTensorNames = { fNY };
+         fKind = OperatorKind::BASIC_IS;
    }
 
    void Initialize(RModel& model) override {

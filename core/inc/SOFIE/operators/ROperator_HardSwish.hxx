@@ -19,11 +19,12 @@ private:
    std::vector<size_t> fShape;
 
 public:
-   ROperator_HardSwish(){}
+   ROperator_HardSwish(){ fKind = OperatorKind::HARDSWISH; }
    ROperator_HardSwish(std::string nameX, std::string nameY):
       fNX(UTILITY::Clean_name(nameX)), fNY(UTILITY::Clean_name(nameY)){
          fInputTensorNames = { fNX };
          fOutputTensorNames = { fNY };
+         fKind = OperatorKind::HARDSWISH;
       }
 
    void Initialize(RModel& model) override {

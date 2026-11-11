@@ -53,7 +53,7 @@ private:
 
 public:
    /*! Default constructor of ROperator_ConvTranspose */
-   ROperator_ConvTranspose() {}
+   ROperator_ConvTranspose() { fKind = OperatorKind::CONVTRANSPOSE; }
 
    /*! \brief Constructor of ROperator_ConvTranspose from the attributes
     *
@@ -87,6 +87,7 @@ public:
         fNB(UTILITY::Clean_name(nameB)),
         fNY(UTILITY::Clean_name(nameY))
    {
+      fKind = OperatorKind::CONVTRANSPOSE;
       fInputTensorNames = {fNX, fNW};
       fOutputTensorNames = {fNY};
       if (!fNB.empty()) {

@@ -27,7 +27,7 @@ private:
 
 
 public:
-   ROperator_Split(){}
+   ROperator_Split(){ fKind = OperatorKind::SPLIT; }
    ROperator_Split(const std::string & nameX, const std::string & nameS,  int axis, const std::vector<std::string> &  namesY):
       fAxis(axis), fNX(UTILITY::Clean_name(nameX)), fNSplit(UTILITY::Clean_name(nameS)) {
          fNYs.reserve(namesY.size());
@@ -38,6 +38,7 @@ public:
          fOutputTensorNames.resize(fNYs.size());
          std::transform(fNYs.begin(), fNYs.end(), fOutputTensorNames.begin(),
                    [](const std::string& s) -> std::string_view { return s; });
+         fKind = OperatorKind::SPLIT;
       }
 
    void Initialize(RModel& model) override {
