@@ -582,6 +582,18 @@ supported = model.CheckGPUOperators();   // prints the operators without an alpa
 
 ---
 
+## Contributing
+
+We welcome contributions to SOFIE! Please see our [Contributing Guidelines](CONTRIBUTING.md) for details on:
+
+- **Branching Workflow**: Feature and bugfix PRs should target the active `gpu/alpaka` development branch.
+- **Development Standards**: C++20 conventions, operator architecture with `ROperator_ALPAKA`, memory safety, and conventional commit messaging.
+- **Testing**: Building and validating tests locally with `cmake --preset cpu-tests` before submitting pull requests.
+
+For detailed instructions, see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+---
+
 ## License
 
 [LGPL-2.1](https://github.com/ML4EP/SOFIE/blob/main/LICENSE)
