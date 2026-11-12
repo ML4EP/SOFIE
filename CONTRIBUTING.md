@@ -1,6 +1,6 @@
 # Contributing to SOFIE
 
-Thank you for your interest in contributing to **SOFIE** (System for Optimized Fast Inference code Emit)! SOFIE is developed under the CERN Machine Learning for Experiments (ML4EP) initiative and the HEP Software Foundation (HSF) to generate fast, self-contained inference code for deep learning models across CPUs and heterogeneous GPU architectures via [alpaka](https://github.com/alpaka-group/alpaka).
+Thank you for your interest in contributing to **SOFIE** (System for Optimized Fast Inference code Emit)! SOFIE is developed within the ML4EP Project of the EP-SFT Group at CERN to generate fast, self-contained inference code for deep learning models across CPUs and heterogeneous GPU architectures via [alpaka](https://github.com/alpaka-group/alpaka).
 
 We welcome contributions of all kinds, including new operator implementations, GPU kernel optimizations, bug fixes, and documentation improvements.
 
@@ -52,7 +52,7 @@ We welcome contributions of all kinds, including new operator implementations, G
   - Operators reside in `core/inc/SOFIE/operators/ROperator_<Name>.hxx`.
   - GPU-supported operators must inherit from `ROperator_ALPAKA` (`core/inc/SOFIE/operators/ROperator_ALPAKA.hxx`).
   - Assign an explicit `OperatorKind` enum value in `core/inc/SOFIE/operators/ROperator.hxx` and initialize `fKind` in constructors.
-  - Implement `Generate_GPU_Kernel_ALPAKA`, `Generate_GPU_Kernel_Definitions_ALPAKA`, and `Generate_GPU_Launch_ALPAKA`.
+  - Implement `Generate_GPU_Kernel_ALPAKA`, `Generate_GPU_Kernel_Definitions_ALPAKA`, and `Generate_GPU_ALPAKA`.
   - When applicable, support strided input layout using `GenerateStridedUnaryKernel` / `GenerateStridedUnaryLaunch`.
 - **Memory Safety**:
   - Memory buffers for GPU execution must declare whether they are temporary intermediates or persistent across session inferences via `GetPersistentTensorNames_GPU_ALPAKA()`.
