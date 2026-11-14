@@ -26,6 +26,17 @@ ParserFuseFuncSignature ParseFuseBatchnormRelu = [](RModelParser_ONNX &parser, c
               fepsilon = batchnormnode.attribute(i).f();
            else if (attribute_name == "momentum")
               fmomentum = batchnormnode.attribute(i).f();
+           else if (attribute_name == "training_mode")
+              ftraining_mode = batchnormnode.attribute(i).i();
+        }
+        // same check as in ParseBatchNormalization: only inference is supported
+        bool training_outputs = false;
+        for (int_t i = 1; i < batchnormnode.output_size(); i++)
+           training_outputs |= !batchnormnode.output(i).empty();
+        if (ftraining_mode != 0 || training_outputs) {
+           throw std::runtime_error("SOFIE ONNX Parser BatchNormalization op " + batchnormnode.name() +
+                                    " is in training mode (training_mode=1 or running mean and variance outputs),"
+                                    " only inference is supported");
         }
 
         switch (input_type) {
@@ -34,6 +45,9 @@ ParserFuseFuncSignature ParseFuseBatchnormRelu = [](RModelParser_ONNX &parser, c
                 op.reset(new ROperator_BatchNormalization<float>(fepsilon, fmomentum, ftraining_mode, batchnormnode.input(0),
                                                                 batchnormnode.input(1), batchnormnode.input(2), batchnormnode.input(3),
                                                                 batchnormnode.input(4), output_name, EActivationType::RELU));
+            } else {
+                throw std::runtime_error("SOFIE ONNX Parser BatchNormalization op requires exactly 5 inputs, got " +
+                                         std::to_string(batchnormnode.input_size()));
             }
             break;
         default:
