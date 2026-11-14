@@ -582,6 +582,12 @@ supported = model.CheckGPUOperators();   // prints the operators without an alpa
 
 ---
 
+## Contributing
+
+We welcome contributions to SOFIE! Feature and bugfix pull requests should target the active `gpu/alpaka` branch. Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a PR for development standards, testing requirements, PR limits, and AI disclosure rules.
+
+---
+
 ## License
 
 [LGPL-2.1](https://github.com/ML4EP/SOFIE/blob/main/LICENSE)
