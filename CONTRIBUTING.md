@@ -79,6 +79,14 @@ Examples:
 - `perf(conv): move WeightVecKernel and dilation setup from infer to session init (#25)`
 - `docs: update README with contribution guidelines (#74)`
 
+### AI-Assisted Contributions Policy
+
+Non-maintainers who use AI or LLM-based coding assistants (such as ChatGPT, Claude, GitHub Copilot, Gemini, etc.) to draft or assist with code contributions must adhere to the following guidelines:
+
+- **Explicit Declaration**: Any AI assistance must be explicitly declared in your pull request description and commit trailers (e.g., `Assisted-by: <tool-name>`). Transparency helps maintainers evaluate review depth, edge cases, and architectural compliance.
+- **Author Responsibility**: Contributors are fully responsible for the correctness, maintainability, and safety of every line of code submitted. Do not submit AI-generated code without thoroughly reading, understanding, and testing it locally.
+- **Architectural & Style Adherence**: Code must strictly conform to SOFIE's C++20 conventions, Alpaka kernel execution model, memory layout rules, and existing error-handling patterns. Boilerplate or unverified LLM output will be closed.
+
 ---
 
 ## Testing
@@ -118,6 +126,16 @@ ctest --test-dir build --output-on-failure
 ---
 
 ## Opening a Pull Request
+
+### Pull Request Limits & Review Policy
+
+The SOFIE project values the time you invest to contribute and welcomes pull requests. However, maintainers need sufficient time to thoroughly review, test, and merge pending work. Please observe the following guidelines:
+
+- **Limit concurrent pull requests**: As a good rule of thumb, please keep at most **2 pull requests open at any time**. Work through the review process collaboratively with one of the maintainers, and wait for one of your open PRs to be merged or closed before submitting another one. Submitting multiple PRs in a short time span may overwhelm maintainer capacity and result in immediate closure.
+- **Review pacing**: Please note that repeatedly pinging maintainers will not speed up the review process, and in extreme cases might lead a reviewer to close your PR without further question. Maintainers review submissions in batches alongside ongoing research deliverables.
+- **Focused scope**: Keep each PR focused on a single logical change or bugfix. Avoid bundling unrelated operator additions, refactorings, or formatting changes into a single pull request.
+
+### Submitting a PR
 
 1. **Push** your branch to your GitHub fork:
    ```bash
