@@ -25,6 +25,19 @@ ParserFuncSignature ParseBatchNormalization = [](RModelParser_ONNX &parser, cons
          fepsilon = nodeproto.attribute(i).f();
       else if (attribute_name == "momentum")
          fmomentum = nodeproto.attribute(i).f();
+      else if (attribute_name == "training_mode")
+         ftraining_mode = nodeproto.attribute(i).i();
+   }
+   // In training mode Y is normalized with the statistics of the batch, and the node can also
+   // output the updated running mean and variance (the only way to ask for training before
+   // opset 14). SOFIE only implements inference, which uses the input mean and variance.
+   bool training_outputs = false;
+   for (int_t i = 1; i < nodeproto.output_size(); i++)
+      training_outputs |= !nodeproto.output(i).empty();
+   if (ftraining_mode != 0 || training_outputs) {
+      throw std::runtime_error("SOFIE ONNX Parser BatchNormalization op " + nodeproto.name() +
+                               " is in training mode (training_mode=1 or running mean and variance outputs),"
+                               " only inference is supported");
    }
 
    switch (input_type) {

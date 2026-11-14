@@ -148,6 +148,92 @@ GenerateGemmCode(const std::string &fileName, const std::vector<TestTensor> &inp
    return code.str();
 }
 
+std::string FloatTensor(const std::string &name, const std::vector<float> &values)
+{
+   std::string raw(reinterpret_cast<const char *>(values.data()), values.size() * sizeof(float));
+   std::string out;
+   AppendVarintField(out, 1, values.size());
+   AppendVarintField(out, 2, 1);
+   AppendBytesField(out, 8, name);
+   AppendBytesField(out, 9, raw);
+   return out;
+}
+
+std::string IntAttribute(const std::string &name, std::int64_t value)
+{
+   std::string out;
+   AppendBytesField(out, 1, name);
+   AppendVarintField(out, 3, static_cast<std::uint64_t>(value));
+   AppendVarintField(out, 20, 2);
+   return out;
+}
+
+struct BatchNormModel {
+   int numInputs = 5;                       // x, scale, bias, mean, var
+   std::vector<std::string> extraOutputs;   // running mean and variance outputs of a training node
+   int trainingMode = -1;                   // -1: no training_mode attribute
+   bool withRelu = false;                   // followed by a Relu, which the parser fuses
+};
+
+// x[1,3,2,2] -> BatchNormalization (-> Relu) -> y
+void WriteBatchNormModel(const std::string &fileName, const BatchNormModel &m)
+{
+   const std::vector<std::string> inputNames{"x", "scale", "bias", "mean", "var"};
+
+   std::string bn;
+   for (int i = 0; i < m.numInputs; ++i)
+      AppendBytesField(bn, 1, inputNames[i]);
+   AppendBytesField(bn, 2, m.withRelu ? "bn" : "y");
+   for (const std::string &out : m.extraOutputs)
+      AppendBytesField(bn, 2, out);
+   AppendBytesField(bn, 3, "bn_0");
+   AppendBytesField(bn, 4, "BatchNormalization");
+   if (m.trainingMode >= 0)
+      AppendBytesField(bn, 5, IntAttribute("training_mode", m.trainingMode));
+
+   std::string graph;
+   AppendBytesField(graph, 1, bn);
+   if (m.withRelu) {
+      std::string relu;
+      AppendBytesField(relu, 1, "bn");
+      AppendBytesField(relu, 2, "y");
+      AppendBytesField(relu, 3, "relu_0");
+      AppendBytesField(relu, 4, "Relu");
+      AppendBytesField(graph, 1, relu);
+   }
+   AppendBytesField(graph, 2, "test_graph");
+   AppendBytesField(graph, 5, FloatTensor("scale", {1.5f, 0.5f, 2.f}));
+   AppendBytesField(graph, 5, FloatTensor("bias", {0.1f, -0.2f, 0.3f}));
+   AppendBytesField(graph, 5, FloatTensor("mean", {0.f, 1.f, -1.f}));
+   AppendBytesField(graph, 5, FloatTensor("var", {1.f, 4.f, 0.25f}));
+   AppendBytesField(graph, 11, FloatValueInfo({"x", {"1", "3", "2", "2"}}));
+   AppendBytesField(graph, 12, FloatValueInfo({"y", {"1", "3", "2", "2"}}));
+   for (const std::string &out : m.extraOutputs)
+      AppendBytesField(graph, 12, FloatValueInfo({out, {"3"}}));
+
+   std::string opset;
+   AppendVarintField(opset, 2, 15);
+   std::string model;
+   AppendVarintField(model, 1, 10);
+   AppendBytesField(model, 7, graph);
+   AppendBytesField(model, 8, opset);
+
+   std::ofstream file(fileName, std::ios::binary);
+   file.write(model.data(), model.size());
+   ASSERT_TRUE(file.good());
+}
+
+// Parse must throw a runtime_error whose message contains `expected`
+void ExpectParseError(const std::string &fileName, const std::string &expected)
+{
+   try {
+      RModelParser_ONNX{}.Parse(fileName);
+      ADD_FAILURE() << fileName << " was parsed without an error";
+   } catch (const std::runtime_error &e) {
+      EXPECT_NE(std::string(e.what()).find(expected), std::string::npos) << e.what();
+   }
+}
+
 }
 
 TEST(SOFIEParser, ExternalDataLocationRelativeToModelDirectory)
@@ -226,4 +312,44 @@ TEST(SOFIEParser, GemmDoesNotBroadcastABiasThatHasTheOutputShape)
 
    EXPECT_EQ(code.find("Copy(tensor_y"), std::string::npos);
    EXPECT_NE(code.find(",tensor_c);"), std::string::npos);
+}
+
+TEST(SOFIEParser, BatchNormInferenceModeIsParsed)
+{
+   for (bool withRelu : {false, true}) {
+      const std::string fileName = withRelu ? "bn_relu_inference.onnx" : "bn_inference.onnx";
+      WriteBatchNormModel(fileName, {5, {}, 0, withRelu});
+
+      RModel model = RModelParser_ONNX{}.Parse(fileName);
+      EXPECT_NO_THROW(model.Generate(Options::kNoWeightFile));
+   }
+}
+
+TEST(SOFIEParser, BatchNormTrainingModeThrows)
+{
+   for (bool withRelu : {false, true}) {
+      const std::string fileName = withRelu ? "bn_relu_training_mode.onnx" : "bn_training_mode.onnx";
+      WriteBatchNormModel(fileName, {5, {}, 1, withRelu});
+      ExpectParseError(fileName, "training mode");
+   }
+}
+
+TEST(SOFIEParser, BatchNormTrainingOutputsThrow)
+{
+   // before opset 14 there is no training_mode attribute: a node in training mode
+   // has the running mean and variance as extra outputs
+   for (bool withRelu : {false, true}) {
+      const std::string fileName = withRelu ? "bn_relu_training_outputs.onnx" : "bn_training_outputs.onnx";
+      WriteBatchNormModel(fileName, {5, {"running_mean", "running_var"}, -1, withRelu});
+      ExpectParseError(fileName, "training mode");
+   }
+}
+
+TEST(SOFIEParser, BatchNormWrongInputCountThrows)
+{
+   for (bool withRelu : {false, true}) {
+      const std::string fileName = withRelu ? "bn_relu_4_inputs.onnx" : "bn_4_inputs.onnx";
+      WriteBatchNormModel(fileName, {4, {}, -1, withRelu});
+      ExpectParseError(fileName, "requires exactly 5 inputs");
+   }
 }
