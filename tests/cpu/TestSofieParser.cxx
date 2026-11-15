@@ -7,9 +7,9 @@
 #include <gtest/gtest.h>
 
 #include "common/onnx_proto_helpers.h"
+#include "models/parser/BatchNormModels.h"
 
 #include <cstdint>
-#include <cctype>
 #include <cstring>
 #include <fstream>
 #include <sstream>
@@ -85,34 +85,6 @@ void WriteDataFile(const std::string &fileName, const std::vector<float> &values
    ASSERT_TRUE(file.good());
 }
 
-struct TestTensor {
-   std::string name;
-   std::vector<std::string> dims;
-};
-
-std::string FloatValueInfo(const TestTensor &tensor)
-{
-   std::string shape;
-   for (const std::string &dim : tensor.dims) {
-      std::string entry;
-      if (std::isdigit(static_cast<unsigned char>(dim[0])))
-         AppendVarintField(entry, 1, std::stoull(dim));
-      else
-         AppendBytesField(entry, 2, dim);
-      AppendBytesField(shape, 1, entry);
-   }
-
-   std::string tensorType;
-   AppendVarintField(tensorType, 1, 1);
-   AppendBytesField(tensorType, 2, shape);
-   std::string type;
-   AppendBytesField(type, 1, tensorType);
-   std::string out;
-   AppendBytesField(out, 1, tensor.name);
-   AppendBytesField(out, 2, type);
-   return out;
-}
-
 std::string
 GenerateGemmCode(const std::string &fileName, const std::vector<TestTensor> &inputs, const TestTensor &output)
 {
@@ -146,81 +118,6 @@ GenerateGemmCode(const std::string &fileName, const std::vector<TestTensor> &inp
    std::ostringstream code;
    rmodel.PrintGenerated(code);
    return code.str();
-}
-
-std::string FloatTensor(const std::string &name, const std::vector<float> &values)
-{
-   std::string raw(reinterpret_cast<const char *>(values.data()), values.size() * sizeof(float));
-   std::string out;
-   AppendVarintField(out, 1, values.size());
-   AppendVarintField(out, 2, 1);
-   AppendBytesField(out, 8, name);
-   AppendBytesField(out, 9, raw);
-   return out;
-}
-
-std::string IntAttribute(const std::string &name, std::int64_t value)
-{
-   std::string out;
-   AppendBytesField(out, 1, name);
-   AppendVarintField(out, 3, static_cast<std::uint64_t>(value));
-   AppendVarintField(out, 20, 2);
-   return out;
-}
-
-struct BatchNormModel {
-   int numInputs = 5;                       // x, scale, bias, mean, var
-   std::vector<std::string> extraOutputs;   // running mean and variance outputs of a training node
-   int trainingMode = -1;                   // -1: no training_mode attribute
-   bool withRelu = false;                   // followed by a Relu, which the parser fuses
-};
-
-// x[1,3,2,2] -> BatchNormalization (-> Relu) -> y
-void WriteBatchNormModel(const std::string &fileName, const BatchNormModel &m)
-{
-   const std::vector<std::string> inputNames{"x", "scale", "bias", "mean", "var"};
-
-   std::string bn;
-   for (int i = 0; i < m.numInputs; ++i)
-      AppendBytesField(bn, 1, inputNames[i]);
-   AppendBytesField(bn, 2, m.withRelu ? "bn" : "y");
-   for (const std::string &out : m.extraOutputs)
-      AppendBytesField(bn, 2, out);
-   AppendBytesField(bn, 3, "bn_0");
-   AppendBytesField(bn, 4, "BatchNormalization");
-   if (m.trainingMode >= 0)
-      AppendBytesField(bn, 5, IntAttribute("training_mode", m.trainingMode));
-
-   std::string graph;
-   AppendBytesField(graph, 1, bn);
-   if (m.withRelu) {
-      std::string relu;
-      AppendBytesField(relu, 1, "bn");
-      AppendBytesField(relu, 2, "y");
-      AppendBytesField(relu, 3, "relu_0");
-      AppendBytesField(relu, 4, "Relu");
-      AppendBytesField(graph, 1, relu);
-   }
-   AppendBytesField(graph, 2, "test_graph");
-   AppendBytesField(graph, 5, FloatTensor("scale", {1.5f, 0.5f, 2.f}));
-   AppendBytesField(graph, 5, FloatTensor("bias", {0.1f, -0.2f, 0.3f}));
-   AppendBytesField(graph, 5, FloatTensor("mean", {0.f, 1.f, -1.f}));
-   AppendBytesField(graph, 5, FloatTensor("var", {1.f, 4.f, 0.25f}));
-   AppendBytesField(graph, 11, FloatValueInfo({"x", {"1", "3", "2", "2"}}));
-   AppendBytesField(graph, 12, FloatValueInfo({"y", {"1", "3", "2", "2"}}));
-   for (const std::string &out : m.extraOutputs)
-      AppendBytesField(graph, 12, FloatValueInfo({out, {"3"}}));
-
-   std::string opset;
-   AppendVarintField(opset, 2, 15);
-   std::string model;
-   AppendVarintField(model, 1, 10);
-   AppendBytesField(model, 7, graph);
-   AppendBytesField(model, 8, opset);
-
-   std::ofstream file(fileName, std::ios::binary);
-   file.write(model.data(), model.size());
-   ASSERT_TRUE(file.good());
 }
 
 // Parse must throw a runtime_error whose message contains `expected`
