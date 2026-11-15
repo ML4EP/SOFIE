@@ -44,7 +44,7 @@ private:
 
 
 public:
-   ROperator_ScatterND(){ fKind = OperatorKind::SCATTERND; }
+   ROperator_ScatterND(){}
    ROperator_ScatterND(const std::string & nameX, const std::string & nameI, const std::string & nameU, const std::string & nameY,
                         std::string reduction):
       fNX(UTILITY::Clean_name(nameX)), fNI(UTILITY::Clean_name(nameI)), fNU(UTILITY::Clean_name(nameU)),

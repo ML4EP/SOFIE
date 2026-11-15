@@ -120,7 +120,7 @@ private:
    }
 
 public:
-   ROperator_BasicBinary() { fKind = OperatorKind::BASIC_BINARY; }
+   ROperator_BasicBinary() {}
    ROperator_BasicBinary(std::string nameA, std::string nameB, std::string nameY)
       : fNA(UTILITY::Clean_name(nameA)), fNB(UTILITY::Clean_name(nameB)), fNY(UTILITY::Clean_name(nameY))
    {

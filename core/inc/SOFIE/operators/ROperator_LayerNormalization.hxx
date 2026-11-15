@@ -49,7 +49,7 @@ private:
    std::string fType;
 
 public:
-   ROperator_LayerNormalization() { fKind = OperatorKind::LAYERNORM; }
+   ROperator_LayerNormalization() {}
 
    ROperator_LayerNormalization(int axis, float epsilon, size_t stashType, const std::string &nameX,
                                 const std::string &nameScale, const std::string &nameB, const std::string &nameY,

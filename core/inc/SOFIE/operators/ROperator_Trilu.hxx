@@ -32,7 +32,7 @@ private:
    std::string fTotal;  // ConvertDimShapeToLength(fShape)
 
 public:
-   ROperator_Trilu() { fKind = OperatorKind::TRILU; }
+   ROperator_Trilu() {}
 
    ROperator_Trilu(int upper, std::string nameX, std::string nameY)
       : fUpper(upper),

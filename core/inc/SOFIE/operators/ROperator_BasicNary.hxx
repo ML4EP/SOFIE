@@ -127,7 +127,7 @@ private:
    std::string fType;
 
 public:
-   ROperator_BasicNary(){ fKind = OperatorKind::BASIC_NARY; }
+   ROperator_BasicNary(){}
 
    ROperator_BasicNary( const std::vector<std::string> & inputNames, const std::string& nameY):
    fNY(UTILITY::Clean_name(nameY)){

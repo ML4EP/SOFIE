@@ -47,7 +47,7 @@ public:
       return "";
    }
 
-   ROperator_Reshape(){ fKind = OperatorKind::RESHAPE; }
+   ROperator_Reshape(){}
    ROperator_Reshape(ReshapeOpMode opMode, int attr_value, std::string nameData, std::string nameInput2, std::string nameOutput)
       : fOpMode(opMode), fNData(UTILITY::Clean_name(nameData)), fNInput2(UTILITY::Clean_name(nameInput2)),
          fNOutput(UTILITY::Clean_name(nameOutput))

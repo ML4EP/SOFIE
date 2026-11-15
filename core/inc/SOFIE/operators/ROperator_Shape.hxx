@@ -28,7 +28,7 @@ private:
    std::vector<size_t> fOutput_shape;
 
 public:
-   ROperator_Shape(){ fKind = OperatorKind::SHAPE; }
+   ROperator_Shape(){}
    ROperator_Shape(int start, int end, std::string nameX, std::string nameY):
    fStart(start) ,fEnd(end), fNX(UTILITY::Clean_name(nameX)), fNY(UTILITY::Clean_name(nameY)){
          fInputTensorNames = { fNX };

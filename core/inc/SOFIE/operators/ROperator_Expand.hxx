@@ -29,7 +29,7 @@ private:
    size_t fRankX = 0; ///< rank of the input, before the padding to the rank of the output
 
 public:
-   ROperator_Expand(){ fKind = OperatorKind::EXPAND; }
+   ROperator_Expand(){}
    ROperator_Expand(std::string nameX, std::string nameShape, std::string nameY):
       fNX(UTILITY::Clean_name(nameX)), fNShape(UTILITY::Clean_name(nameShape)), fNY(UTILITY::Clean_name(nameY)){
          fInputTensorNames = { fNX };

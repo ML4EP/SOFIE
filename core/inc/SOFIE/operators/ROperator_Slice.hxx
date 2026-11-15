@@ -48,7 +48,7 @@ private:
 
 public:
 
-   ROperator_Slice(){ fKind = OperatorKind::SLICE; }
+   ROperator_Slice(){}
 
    // ctor for versions >= 10
    ROperator_Slice(std::string nameData, std::vector<std::string> names, std::string nameOutput)

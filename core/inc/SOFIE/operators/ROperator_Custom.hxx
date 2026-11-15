@@ -21,7 +21,7 @@ private:
     ETensorType fInputType;
 
 public:
-    ROperator_Custom(){ fKind = OperatorKind::CUSTOM; }
+    ROperator_Custom(){}
     ROperator_Custom(std::string OpName, std::vector<std::string>Inputs, std::vector<std::string>Outputs, std::vector<std::vector<std::size_t>> OutputShapes, std::string HeaderName){
         fKind = OperatorKind::CUSTOM;
         fOpName = OpName;

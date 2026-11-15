@@ -58,7 +58,7 @@ template <typename T> class ROperator_LSTM final : public ROperator {
 
  public:
    /*! Default constructor of ROperator_LSTM */
-   ROperator_LSTM() { fKind = OperatorKind::LSTM; }
+   ROperator_LSTM() {}
 
    /*! \brief Constructor of ROperator_LSTM from the attributes
     *

@@ -50,7 +50,7 @@ template <typename T> class ROperator_RNN final : public ROperator {
 
  public:
    /*! Default constructor of ROperator_RNN */
-   ROperator_RNN() { fKind = OperatorKind::RNN; }
+   ROperator_RNN() {}
 
    /*! \brief Constructor of ROperator_RNN from the attributes
     *

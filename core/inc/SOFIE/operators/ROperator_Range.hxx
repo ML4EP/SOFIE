@@ -56,7 +56,7 @@ private:
    }
 
 public:
-   ROperator_Range(){ fKind = OperatorKind::RANGE; }
+   ROperator_Range(){}
 
    ROperator_Range(std::string start, std::string limit, std::string delta, std::string nameOutput)
       : fNStart(UTILITY::Clean_name(start)),

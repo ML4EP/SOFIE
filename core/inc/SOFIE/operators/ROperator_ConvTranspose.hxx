@@ -53,7 +53,7 @@ private:
 
 public:
    /*! Default constructor of ROperator_ConvTranspose */
-   ROperator_ConvTranspose() { fKind = OperatorKind::CONVTRANSPOSE; }
+   ROperator_ConvTranspose() {}
 
    /*! \brief Constructor of ROperator_ConvTranspose from the attributes
     *

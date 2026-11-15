@@ -10,6 +10,7 @@
 #include <sstream>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace SOFIE{
@@ -125,86 +126,87 @@ inline const char *toString(EFusionMappingType type)
 }
 
 inline const char* toString(OperatorKind kind) {
-   switch (kind) {
-       case OperatorKind::GEMM:              return "GEMM";
-       case OperatorKind::LAYERNORM:         return "LAYERNORM";
-       case OperatorKind::RELU:              return "RELU";
-       case OperatorKind::CONSTANT:          return "CONSTANT";
-       case OperatorKind::CONSTANTOFSHAPE:   return "CONSTANTOFSHAPE";
-       case OperatorKind::UNDEFINED:         return "UNDEFINED";
-       case OperatorKind::CONV:              return "CONV";
-       case OperatorKind::BATCHNORM:         return "BATCHNORM";
-       case OperatorKind::CAST:              return "CAST";
-       case OperatorKind::COMPARISON:        return "COMPARISON";
-       case OperatorKind::EINSUM:            return "EINSUM";
-       case OperatorKind::ELU:               return "ELU";
-       case OperatorKind::SIGMOID:           return "SIGMOID";
-       case OperatorKind::TANH:              return "TANH";
-       case OperatorKind::SOFTMAX:           return "SOFTMAX";
-       case OperatorKind::LEAKYRELU:         return "LEAKYRELU";
-       case OperatorKind::UNARY_RECIPROCAL:  return "UNARY_RECIPROCAL";
-       case OperatorKind::UNARY_SQRT:        return "UNARY_SQRT";
-       case OperatorKind::UNARY_NEG:         return "UNARY_NEG";
-       case OperatorKind::UNARY_EXP:         return "UNARY_EXP";
-       case OperatorKind::UNARY_LOG:         return "UNARY_LOG";
-       case OperatorKind::UNARY_SIN:         return "UNARY_SIN";
-       case OperatorKind::UNARY_COS:         return "UNARY_COS";
-       case OperatorKind::UNARY_ABS:         return "UNARY_ABS";
-       case OperatorKind::CLIP:              return "CLIP";
-       case OperatorKind::NOT:               return "NOT";
-       case OperatorKind::UNARY_SOFTPLUS:    return "UNARY_SOFTPLUS";
-       case OperatorKind::UNARY_ATAN:        return "UNARY_ATAN";
-       case OperatorKind::UNARY_FLOOR:       return "UNARY_FLOOR";
-       case OperatorKind::L2NORMALIZATION:   return "L2NORMALIZATION";
-       case OperatorKind::POOL:              return "POOL";
-       case OperatorKind::SELU:              return "SELU";
-       case OperatorKind::RMSNORM:           return "RMSNORM";
-       case OperatorKind::GROUPNORM:         return "GROUPNORM";
-       case OperatorKind::CUMSUM:            return "CUMSUM";
-       case OperatorKind::SDPA:              return "SDPA";
-       case OperatorKind::MAMBA_SCAN:        return "MAMBA_SCAN";
-       case OperatorKind::RWKV_WKV6:         return "RWKV_WKV6";
-       case OperatorKind::GRIFFIN_RGLRU:     return "GRIFFIN_RGLRU";
-       case OperatorKind::GELU:              return "GELU";
-       case OperatorKind::BASIC_IS:          return "BASIC_IS";
-       case OperatorKind::BASIC_BINARY:      return "BASIC_BINARY";
-       case OperatorKind::BASIC_NARY:        return "BASIC_NARY";
-       case OperatorKind::CONCAT:            return "CONCAT";
-       case OperatorKind::TRANSPOSE:         return "TRANSPOSE";
-       case OperatorKind::GATHER:            return "GATHER";
-       case OperatorKind::GATHERND:          return "GATHERND";
-       case OperatorKind::SCATTERELEMENTS:   return "SCATTERELEMENTS";
-       case OperatorKind::SCATTERND:         return "SCATTERND";
-       case OperatorKind::SPLIT:             return "SPLIT";
-       case OperatorKind::TILE:              return "TILE";
-       case OperatorKind::WHERE:             return "WHERE";
-       case OperatorKind::SLICE:             return "SLICE";
-       case OperatorKind::PAD:               return "PAD";
-       case OperatorKind::RESHAPE:           return "RESHAPE";
-       case OperatorKind::SHAPE:             return "SHAPE";
-       case OperatorKind::RANGE:             return "RANGE";
-       case OperatorKind::REDUCE:            return "REDUCE";
-       case OperatorKind::TOPK:              return "TOPK";
-       case OperatorKind::EXPAND:            return "EXPAND";
-       case OperatorKind::TRILU:             return "TRILU";
-       case OperatorKind::NONZERO:           return "NONZERO";
-       case OperatorKind::LOGIC_BINARY:      return "LOGIC_BINARY";
-       case OperatorKind::BITWISE_NOT:       return "BITWISE_NOT";
-       case OperatorKind::IDENTITY:          return "IDENTITY";
-       case OperatorKind::SUBGRAPH:          return "SUBGRAPH";
-       case OperatorKind::CONVTRANSPOSE:     return "CONVTRANSPOSE";
-       case OperatorKind::CUSTOM:            return "CUSTOM";
-       case OperatorKind::ERF:               return "ERF";
-       case OperatorKind::EYELIKE:           return "EYELIKE";
-       case OperatorKind::GRU:               return "GRU";
-       case OperatorKind::HARDSIGMOID:       return "HARDSIGMOID";
-       case OperatorKind::HARDSWISH:         return "HARDSWISH";
-       case OperatorKind::INSTANCENORM:      return "INSTANCENORM";
-       case OperatorKind::LSTM:              return "LSTM";
-       case OperatorKind::RNN:               return "RNN";
-       case OperatorKind::SWISH:             return "SWISH";
-       default:                              return "UNKNOWN";
-   }
+   static const std::unordered_map<OperatorKind, const char*> kindToString = {
+      {OperatorKind::GEMM,              "GEMM"},
+      {OperatorKind::LAYERNORM,         "LAYERNORM"},
+      {OperatorKind::RELU,              "RELU"},
+      {OperatorKind::CONSTANT,          "CONSTANT"},
+      {OperatorKind::CONSTANTOFSHAPE,   "CONSTANTOFSHAPE"},
+      {OperatorKind::UNDEFINED,         "UNDEFINED"},
+      {OperatorKind::CONV,              "CONV"},
+      {OperatorKind::BATCHNORM,         "BATCHNORM"},
+      {OperatorKind::CAST,              "CAST"},
+      {OperatorKind::COMPARISON,        "COMPARISON"},
+      {OperatorKind::EINSUM,            "EINSUM"},
+      {OperatorKind::ELU,               "ELU"},
+      {OperatorKind::SIGMOID,           "SIGMOID"},
+      {OperatorKind::TANH,              "TANH"},
+      {OperatorKind::SOFTMAX,           "SOFTMAX"},
+      {OperatorKind::LEAKYRELU,         "LEAKYRELU"},
+      {OperatorKind::UNARY_RECIPROCAL,  "UNARY_RECIPROCAL"},
+      {OperatorKind::UNARY_SQRT,        "UNARY_SQRT"},
+      {OperatorKind::UNARY_NEG,         "UNARY_NEG"},
+      {OperatorKind::UNARY_EXP,         "UNARY_EXP"},
+      {OperatorKind::UNARY_LOG,         "UNARY_LOG"},
+      {OperatorKind::UNARY_SIN,         "UNARY_SIN"},
+      {OperatorKind::UNARY_COS,         "UNARY_COS"},
+      {OperatorKind::UNARY_ABS,         "UNARY_ABS"},
+      {OperatorKind::CLIP,              "CLIP"},
+      {OperatorKind::NOT,               "NOT"},
+      {OperatorKind::UNARY_SOFTPLUS,    "UNARY_SOFTPLUS"},
+      {OperatorKind::UNARY_ATAN,        "UNARY_ATAN"},
+      {OperatorKind::UNARY_FLOOR,       "UNARY_FLOOR"},
+      {OperatorKind::L2NORMALIZATION,   "L2NORMALIZATION"},
+      {OperatorKind::POOL,              "POOL"},
+      {OperatorKind::SELU,              "SELU"},
+      {OperatorKind::RMSNORM,           "RMSNORM"},
+      {OperatorKind::GROUPNORM,         "GROUPNORM"},
+      {OperatorKind::CUMSUM,            "CUMSUM"},
+      {OperatorKind::SDPA,              "SDPA"},
+      {OperatorKind::MAMBA_SCAN,        "MAMBA_SCAN"},
+      {OperatorKind::RWKV_WKV6,         "RWKV_WKV6"},
+      {OperatorKind::GRIFFIN_RGLRU,     "GRIFFIN_RGLRU"},
+      {OperatorKind::GELU,              "GELU"},
+      {OperatorKind::BASIC_IS,          "BASIC_IS"},
+      {OperatorKind::BASIC_BINARY,      "BASIC_BINARY"},
+      {OperatorKind::BASIC_NARY,        "BASIC_NARY"},
+      {OperatorKind::CONCAT,            "CONCAT"},
+      {OperatorKind::TRANSPOSE,         "TRANSPOSE"},
+      {OperatorKind::GATHER,            "GATHER"},
+      {OperatorKind::GATHERND,          "GATHERND"},
+      {OperatorKind::SCATTERELEMENTS,   "SCATTERELEMENTS"},
+      {OperatorKind::SCATTERND,         "SCATTERND"},
+      {OperatorKind::SPLIT,             "SPLIT"},
+      {OperatorKind::TILE,              "TILE"},
+      {OperatorKind::WHERE,             "WHERE"},
+      {OperatorKind::SLICE,             "SLICE"},
+      {OperatorKind::PAD,               "PAD"},
+      {OperatorKind::RESHAPE,           "RESHAPE"},
+      {OperatorKind::SHAPE,             "SHAPE"},
+      {OperatorKind::RANGE,             "RANGE"},
+      {OperatorKind::REDUCE,            "REDUCE"},
+      {OperatorKind::TOPK,              "TOPK"},
+      {OperatorKind::EXPAND,            "EXPAND"},
+      {OperatorKind::TRILU,             "TRILU"},
+      {OperatorKind::NONZERO,           "NONZERO"},
+      {OperatorKind::LOGIC_BINARY,      "LOGIC_BINARY"},
+      {OperatorKind::BITWISE_NOT,       "BITWISE_NOT"},
+      {OperatorKind::IDENTITY,          "IDENTITY"},
+      {OperatorKind::SUBGRAPH,          "SUBGRAPH"},
+      {OperatorKind::CONVTRANSPOSE,     "CONVTRANSPOSE"},
+      {OperatorKind::CUSTOM,            "CUSTOM"},
+      {OperatorKind::ERF,               "ERF"},
+      {OperatorKind::EYELIKE,           "EYELIKE"},
+      {OperatorKind::GRU,               "GRU"},
+      {OperatorKind::HARDSIGMOID,       "HARDSIGMOID"},
+      {OperatorKind::HARDSWISH,         "HARDSWISH"},
+      {OperatorKind::INSTANCENORM,      "INSTANCENORM"},
+      {OperatorKind::LSTM,              "LSTM"},
+      {OperatorKind::RNN,               "RNN"},
+      {OperatorKind::SWISH,             "SWISH"}
+   };
+   auto it = kindToString.find(kind);
+   return (it != kindToString.end()) ? it->second : "UNKNOWN";
 }
 
 /// name of the Session member holding the user-provided strides (in elements) of a graph-input tensor;

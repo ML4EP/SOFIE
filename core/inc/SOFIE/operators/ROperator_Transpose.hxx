@@ -29,7 +29,7 @@ private:
 
 public:
 
-   ROperator_Transpose(){ fKind = OperatorKind::TRANSPOSE; }
+   ROperator_Transpose(){}
    ROperator_Transpose(std::vector<int64_t> attr_perm, std::string nameData, std::string nameOutput):
       fAttrPerm(attr_perm), fNX(UTILITY::Clean_name(nameData)), fNY(UTILITY::Clean_name(nameOutput)) {
             fInputTensorNames = { fNX };

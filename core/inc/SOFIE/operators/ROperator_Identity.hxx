@@ -22,7 +22,7 @@ private:
    std::vector<Dim> fShape;
 
 public:
-   ROperator_Identity(){ fKind = OperatorKind::IDENTITY; }
+   ROperator_Identity(){}
    ROperator_Identity(std::string nameX, std::string nameY):
       fNX(UTILITY::Clean_name(nameX)), fNY(UTILITY::Clean_name(nameY)){
          fInputTensorNames = { fNX };

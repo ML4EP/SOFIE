@@ -105,7 +105,7 @@ private:
    using Trait = LogicBinaryTrait<T, Op>;
 
 public:
-   ROperator_LogicBinary() { fKind = OperatorKind::LOGIC_BINARY; }
+   ROperator_LogicBinary() {}
 
    ROperator_LogicBinary(std::string nameA, std::string nameB, std::string nameY)
       : fNA(UTILITY::Clean_name(nameA)),
@@ -285,7 +285,7 @@ private:
    std::vector<Dim> fShape;
 
 public:
-   ROperator_BitwiseNot() { fKind = OperatorKind::BITWISE_NOT; }
+   ROperator_BitwiseNot() {}
 
    ROperator_BitwiseNot(std::string nameX, std::string nameY)
       : fNX(UTILITY::Clean_name(nameX)),

@@ -47,7 +47,7 @@ private:
    }
 
 public:
-   ROperator_Constant(){ fKind = OperatorKind::CONSTANT; }
+   ROperator_Constant(){}
 
    ROperator_Constant(const std::string & type, const std::vector<T> & values, const std::vector<size_t> & shape, std::string nameX, std::string nameY):
       fNX(UTILITY::Clean_name(nameX)),

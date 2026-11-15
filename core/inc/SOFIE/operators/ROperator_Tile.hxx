@@ -25,7 +25,7 @@ private:
    bool fHasDynamicTiledAxis = false;  // true if any output dim is a "(param * repeat)" expression
 
 public:
-   ROperator_Tile(){ fKind = OperatorKind::TILE; }
+   ROperator_Tile(){}
    ROperator_Tile(std::string nameRepeat, std::string nameInput, std::string nameY):
       fNRepeats(UTILITY::Clean_name(nameRepeat)),fNInput(UTILITY::Clean_name(nameInput)), fNY(UTILITY::Clean_name(nameY)){
          fInputTensorNames = { fNInput };

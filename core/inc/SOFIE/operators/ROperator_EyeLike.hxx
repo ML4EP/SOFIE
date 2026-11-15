@@ -22,7 +22,7 @@ private:
    std::vector<size_t> fShape;
 
 public:
-   ROperator_EyeLike(){ fKind = OperatorKind::EYELIKE; }
+   ROperator_EyeLike(){}
    ROperator_EyeLike(int dtype, int k, std::string nameX, std::string nameY):
       fdtype(dtype), fk(k), fNX(UTILITY::Clean_name(nameX)), fNY(UTILITY::Clean_name(nameY)){
          fInputTensorNames = { fNX };

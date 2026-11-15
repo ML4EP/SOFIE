@@ -20,7 +20,7 @@ private:
    std::string fType;
 
 public:
-   ROperator_HardSigmoid() { fKind = OperatorKind::HARDSIGMOID; }
+   ROperator_HardSigmoid() {}
    ROperator_HardSigmoid(float alpha, float beta, std::string nameX, std::string nameY)
       : fAlpha(alpha), fBeta(beta), fNX(UTILITY::Clean_name(nameX)), fNY(UTILITY::Clean_name(nameY))
    {

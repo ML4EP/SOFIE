@@ -53,7 +53,7 @@ template <typename T> class ROperator_GRU final : public ROperator {
 
  public:
    /*! Default constructor of ROperator_GRU */
-   ROperator_GRU() { fKind = OperatorKind::GRU; }
+   ROperator_GRU() {}
 
    /*! \brief Constructor of ROperator_GRU from the attributes
     *
