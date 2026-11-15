@@ -7,9 +7,9 @@
 #include <gtest/gtest.h>
 
 #include "common/onnx_proto_helpers.h"
+#include "models/parser/BatchNormModels.h"
 
 #include <cstdint>
-#include <cctype>
 #include <cstring>
 #include <fstream>
 #include <sstream>
@@ -85,34 +85,6 @@ void WriteDataFile(const std::string &fileName, const std::vector<float> &values
    ASSERT_TRUE(file.good());
 }
 
-struct TestTensor {
-   std::string name;
-   std::vector<std::string> dims;
-};
-
-std::string FloatValueInfo(const TestTensor &tensor)
-{
-   std::string shape;
-   for (const std::string &dim : tensor.dims) {
-      std::string entry;
-      if (std::isdigit(static_cast<unsigned char>(dim[0])))
-         AppendVarintField(entry, 1, std::stoull(dim));
-      else
-         AppendBytesField(entry, 2, dim);
-      AppendBytesField(shape, 1, entry);
-   }
-
-   std::string tensorType;
-   AppendVarintField(tensorType, 1, 1);
-   AppendBytesField(tensorType, 2, shape);
-   std::string type;
-   AppendBytesField(type, 1, tensorType);
-   std::string out;
-   AppendBytesField(out, 1, tensor.name);
-   AppendBytesField(out, 2, type);
-   return out;
-}
-
 std::string
 GenerateGemmCode(const std::string &fileName, const std::vector<TestTensor> &inputs, const TestTensor &output)
 {
@@ -146,6 +118,17 @@ GenerateGemmCode(const std::string &fileName, const std::vector<TestTensor> &inp
    std::ostringstream code;
    rmodel.PrintGenerated(code);
    return code.str();
+}
+
+// Parse must throw a runtime_error whose message contains `expected`
+void ExpectParseError(const std::string &fileName, const std::string &expected)
+{
+   try {
+      RModelParser_ONNX{}.Parse(fileName);
+      ADD_FAILURE() << fileName << " was parsed without an error";
+   } catch (const std::runtime_error &e) {
+      EXPECT_NE(std::string(e.what()).find(expected), std::string::npos) << e.what();
+   }
 }
 
 }
@@ -226,4 +209,44 @@ TEST(SOFIEParser, GemmDoesNotBroadcastABiasThatHasTheOutputShape)
 
    EXPECT_EQ(code.find("Copy(tensor_y"), std::string::npos);
    EXPECT_NE(code.find(",tensor_c);"), std::string::npos);
+}
+
+TEST(SOFIEParser, BatchNormInferenceModeIsParsed)
+{
+   for (bool withRelu : {false, true}) {
+      const std::string fileName = withRelu ? "bn_relu_inference.onnx" : "bn_inference.onnx";
+      WriteBatchNormModel(fileName, {5, {}, 0, withRelu});
+
+      RModel model = RModelParser_ONNX{}.Parse(fileName);
+      EXPECT_NO_THROW(model.Generate(Options::kNoWeightFile));
+   }
+}
+
+TEST(SOFIEParser, BatchNormTrainingModeThrows)
+{
+   for (bool withRelu : {false, true}) {
+      const std::string fileName = withRelu ? "bn_relu_training_mode.onnx" : "bn_training_mode.onnx";
+      WriteBatchNormModel(fileName, {5, {}, 1, withRelu});
+      ExpectParseError(fileName, "training mode");
+   }
+}
+
+TEST(SOFIEParser, BatchNormTrainingOutputsThrow)
+{
+   // before opset 14 there is no training_mode attribute: a node in training mode
+   // has the running mean and variance as extra outputs
+   for (bool withRelu : {false, true}) {
+      const std::string fileName = withRelu ? "bn_relu_training_outputs.onnx" : "bn_training_outputs.onnx";
+      WriteBatchNormModel(fileName, {5, {"running_mean", "running_var"}, -1, withRelu});
+      ExpectParseError(fileName, "training mode");
+   }
+}
+
+TEST(SOFIEParser, BatchNormWrongInputCountThrows)
+{
+   for (bool withRelu : {false, true}) {
+      const std::string fileName = withRelu ? "bn_relu_4_inputs.onnx" : "bn_4_inputs.onnx";
+      WriteBatchNormModel(fileName, {4, {}, -1, withRelu});
+      ExpectParseError(fileName, "requires exactly 5 inputs");
+   }
 }
