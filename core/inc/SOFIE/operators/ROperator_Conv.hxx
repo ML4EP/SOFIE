@@ -54,6 +54,15 @@ private:
              fShapeW[0] == fShapeX[1].dim && fShapeW[1] == 1;
    }
 
+   bool HasDilation() const
+   {
+      for (size_t d = 0; d < fDim && d < fAttrDilations.size(); ++d) {
+         if (fAttrDilations[d] > 1)
+            return true;
+      }
+      return false;
+   }
+
    //the GEMM this conv lowers to and the extents defining it, shared by the GPU launch and the cuBLASLt layout
    struct GemmInfo {
       std::string oDepth, oHeight, oWidth, iDepth, iHeight, iWidth;
@@ -95,7 +104,9 @@ public:
          throw
             std::runtime_error("SOFIE Encountered unsupported type parsing a Conv operator");
       }
-      fInputTensorNames = { fNX, fNB };
+      fInputTensorNames = { fNX, fNW };
+      if (!fNB.empty())
+         fInputTensorNames.emplace_back(fNB);
       fOutputTensorNames = { fNY };
       fKind = OperatorKind::CONV;
    }
@@ -114,7 +125,7 @@ public:
          throw
             std::runtime_error("SOFIE Encountered unsupported type parsing a Conv operator");
       }
-      fInputTensorNames = { fNX };
+      fInputTensorNames = { fNX, fNW };
       fOutputTensorNames = { fNY };
       fKind = OperatorKind::CONV;
    }
@@ -711,17 +722,10 @@ public:
 
       size_t kernelSize  = fAttrKernelShape[0] * fAttrKernelShape[1] * fAttrKernelShape[2];
 
-      // Strides for weight vectorisation
+      // Strides for weight vectorisation and effective kernel extents
       size_t id = (fDim > 2) ? fDim - 3 : 2;
       size_t ih = (fDim > 1) ? fDim - 2 : 1;
       size_t iw = fDim - 1;
-      size_t wstrideDil  = fAttrDilations[iw];
-      size_t hstrideDil  = fAttrDilations[ih]  * fAttrKernelShape[iw];
-      size_t dstrideDil  = fAttrDilations[id]  * fAttrKernelShape[ih] * fAttrKernelShape[iw];
-      size_t icstrideDil = fAttrKernelShape[id] * fAttrKernelShape[ih] * fAttrKernelShape[iw];
-      size_t ocstrideDil = fShapeW[1] * icstrideDil;
-      size_t icstride    = kHeight * kWidth * kDepth;
-      size_t ocstride    = fShapeW[1] * icstride;
 
       // effective (dilation-expanded) kernel extents, used for the dense im2col decode
       size_t kHeightEff = (fDim > 1) ? fAttrKernelShape[ih] : 1;
@@ -729,55 +733,65 @@ public:
 
       std::string op;
 
-      // Kernel 1: Weight vectorisation — reorder W into _f with dilation layout
-      // Each thread handles one output element of _f
-      std::string wKname = "WeightVecKernel_" + opName;
-      op  = "\n//------ WEIGHT_VEC_KERNEL_ALPAKA (Conv " + opName + ")\n";
-      op += "struct " + wKname + " {\n";
-      op += "template<typename TAcc, typename T>\n";
-      op += "ALPAKA_FN_ACC void operator()(\n";
-      op += "TAcc const& acc,\n";
-      op += "T const* __restrict__ W,\n";
-      op += "T* __restrict__ f,\n";
-      op += "std::size_t const totalElements) const {\n\n";
+      if (HasDilation()) {
+         size_t wstrideDil  = fAttrDilations[iw];
+         size_t hstrideDil  = fAttrDilations[ih]  * fAttrKernelShape[iw];
+         size_t dstrideDil  = fAttrDilations[id]  * fAttrKernelShape[ih] * fAttrKernelShape[iw];
+         size_t icstrideDil = fAttrKernelShape[id] * fAttrKernelShape[ih] * fAttrKernelShape[iw];
+         size_t ocstrideDil = fShapeW[1] * icstrideDil;
+         size_t icstride    = kHeight * kWidth * kDepth;
+         size_t ocstride    = fShapeW[1] * icstride;
 
-      op += "auto const global_thread_idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
-      op += "if (global_thread_idx >= totalElements) return;\n";
-      op += "auto const grid_thread_extent = alpaka::getWorkDiv<alpaka::Grid, alpaka::Threads>(acc)[0];\n\n";
+         // Kernel 1: Weight vectorisation — reorder W into _f with dilation layout
+         // Each thread handles one output element of _f
+         std::string wKname = "WeightVecKernel_" + opName;
+         op  = "\n//------ WEIGHT_VEC_KERNEL_ALPAKA (Conv " + opName + ")\n";
+         op += "struct " + wKname + " {\n";
+         op += "template<typename TAcc, typename T>\n";
+         op += "ALPAKA_FN_ACC void operator()(\n";
+         op += "TAcc const& acc,\n";
+         op += "T const* __restrict__ W,\n";
+         op += "T* __restrict__ f,\n";
+         op += "std::size_t const totalElements) const {\n\n";
 
-      op += "for (std::size_t elem_idx = global_thread_idx; elem_idx < totalElements; elem_idx += grid_thread_extent) {\n\n";
+         op += "auto const global_thread_idx = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];\n";
+         op += "if (global_thread_idx >= totalElements) return;\n";
+         op += "auto const grid_thread_extent = alpaka::getWorkDiv<alpaka::Grid, alpaka::Threads>(acc)[0];\n\n";
 
-      // Decompose elem_idx into (oc, ic, kd, kh, kw) using compile-time strides
-      op += "std::size_t const oc    = elem_idx / " + std::to_string(ocstride) + "u;\n";
-      op += "std::size_t const oc_rem = elem_idx % " + std::to_string(ocstride) + "u;\n";
-      op += "std::size_t const ic    = oc_rem / " + std::to_string(icstride) + "u;\n";
-      op += "std::size_t const ic_rem = oc_rem % " + std::to_string(icstride) + "u;\n";
-      if (fDim > 2) {
-         op += "std::size_t const kd = ic_rem / " + std::to_string(kHeight * kWidth) + "u;\n";
-         op += "std::size_t const kh = (ic_rem / " + std::to_string(kWidth) + "u) % " + std::to_string(kHeight) + "u;\n";
-         op += "std::size_t const kw = ic_rem % " + std::to_string(kWidth) + "u;\n\n";
-      } else if (fDim > 1) {
-         op += "std::size_t const kd = 0u;\n";
-         op += "std::size_t const kh = ic_rem / " + std::to_string(kWidth) + "u;\n";
-         op += "std::size_t const kw = ic_rem % " + std::to_string(kWidth) + "u;\n\n";
-      } else {
-         op += "std::size_t const kd = 0u;\n";
-         op += "std::size_t const kh = 0u;\n";
-         op += "std::size_t const kw = ic_rem;\n\n";
+         op += "for (std::size_t elem_idx = global_thread_idx; elem_idx < totalElements; elem_idx += grid_thread_extent) {\n\n";
+
+         // Decompose elem_idx into (oc, ic, kd, kh, kw) using compile-time strides
+         op += "std::size_t const oc    = elem_idx / " + std::to_string(ocstride) + "u;\n";
+         op += "std::size_t const oc_rem = elem_idx % " + std::to_string(ocstride) + "u;\n";
+         op += "std::size_t const ic    = oc_rem / " + std::to_string(icstride) + "u;\n";
+         op += "std::size_t const ic_rem = oc_rem % " + std::to_string(icstride) + "u;\n";
+         if (fDim > 2) {
+            op += "std::size_t const kd = ic_rem / " + std::to_string(kHeight * kWidth) + "u;\n";
+            op += "std::size_t const kh = (ic_rem / " + std::to_string(kWidth) + "u) % " + std::to_string(kHeight) + "u;\n";
+            op += "std::size_t const kw = ic_rem % " + std::to_string(kWidth) + "u;\n\n";
+         } else if (fDim > 1) {
+            op += "std::size_t const kd = 0u;\n";
+            op += "std::size_t const kh = ic_rem / " + std::to_string(kWidth) + "u;\n";
+            op += "std::size_t const kw = ic_rem % " + std::to_string(kWidth) + "u;\n\n";
+         } else {
+            op += "std::size_t const kd = 0u;\n";
+            op += "std::size_t const kh = 0u;\n";
+            op += "std::size_t const kw = ic_rem;\n\n";
+         }
+
+         // Compute destination index in _f (dilated layout)
+         op += "std::size_t const f_idx =\n";
+         op += "oc * " + std::to_string(ocstrideDil) + "u +\n";
+         op += "ic * " + std::to_string(icstrideDil) + "u";
+         if (fDim > 2) op += " +\nkd * " + std::to_string(dstrideDil) + "u";
+         if (fDim > 1) op += " +\nkh * " + std::to_string(hstrideDil) + "u";
+         op += " +\nkw * " + std::to_string(wstrideDil) + "u;\n\n";
+
+         op += "f[f_idx] = W[elem_idx];\n";
+         op += "}\n";
+         op += "}\n";
+         op += "};\n\n";
       }
-
-      // Compute destination index in _f (dilated layout)
-      op += "std::size_t const f_idx =\n";
-      op += "oc * " + std::to_string(ocstrideDil) + "u +\n";
-      op += "ic * " + std::to_string(icstrideDil) + "u";
-      if (fDim > 2) op += " +\nkd * " + std::to_string(dstrideDil) + "u";
-      if (fDim > 1) op += " +\nkh * " + std::to_string(hstrideDil) + "u";
-      op += " +\nkw * " + std::to_string(wstrideDil) + "u;\n\n";
-
-      op += "f[f_idx] = W[elem_idx];\n";
-      op += "}\n";
-      op += "}\n";
-      op += "};\n\n";
 
       // Kernel 2: Im2Col
       std::string im2colKname = "Im2ColKernel_" + opName;
@@ -924,7 +938,8 @@ public:
          return "DepthwiseConv1DKernel_" + opName + " depthwiseConv1DKernel_" + opName + ";\n";
 
       std::string op;
-      op  = "WeightVecKernel_"  + opName + " weightVecKernel_"  + opName + ";\n";
+      if (HasDilation())
+         op += "WeightVecKernel_" + opName + " weightVecKernel_" + opName + ";\n";
       op += "Im2ColKernel_"     + opName + " im2colKernel_"     + opName + ";\n";
       if (!fNB.empty())
          op += "BiasBroadcastKernel_" + opName + " biasBroadcastKernel_" + opName + ";\n";
@@ -962,7 +977,6 @@ public:
       auto strideY = UTILITY::ComputeStrideFromShape(fShapeY);
       std::string bsize = fShapeX[0].GetVal();
       std::string colElements = std::to_string(gemm.k) + " * " + gemm.m;   // colRows * colCols
-      size_t wTotal       = ConvertShapeToLength(fShapeW);
       size_t groupFOffset = gemm.n * gemm.k;  // elements of _f per group
       std::string im2colExtents;  //the six extent args of Im2ColKernel, same order as its signature
       for (const std::string &e : {gemm.oDepth, gemm.oHeight, gemm.oWidth, gemm.iDepth, gemm.iHeight, gemm.iWidth})
@@ -975,29 +989,32 @@ public:
          im2colExtents += ", layout_" + opName + "_X";
       }
 
-      // dilation>1 leaves gaps in the dilated _f layout; zero it so those slots stay 0
-      bool hasDilation = false;
-      for (size_t d = 0; d < fDim; ++d) if (fAttrDilations[d] > 1) hasDilation = true;
+      // When there is no dilation, _f has the exact same layout as W, so GEMM reads W directly.
+      const bool hasDilation = HasDilation();
+      const std::string &weightBuf = hasDilation ? convK : fNW;
+
       if (hasDilation) {
+         size_t wTotal = ConvertShapeToLength(fShapeW);
+         // dilation>1 leaves gaps in the dilated _f layout; zero it so those slots stay 0
          out << "alpaka::memset(queue, deviceBuf_" << convK << ", 0);\n";
+
+         // --------------------------------------------------------------------
+         // Weight vectorisation kernel — runs once, fully on GPU
+         // --------------------------------------------------------------------
+         out << "// Vectorise W -> _f on GPU (once per infer call)\n";
+         out << "{\n";
+         out << "auto const elementsPerThread_wv = Vec::all(static_cast<Idx>(1));\n";
+         out << "auto const elementsPerGrid_wv   = Vec::all(Idx{" << wTotal << "});\n";
+         out << "auto const workDiv_wv = sofie_workdiv(elementsPerGrid_wv);\n";
+         out << "alpaka::exec<Acc>(queue, workDiv_wv, weightVecKernel_" << opName
+            << ", alpaka::getPtrNative(deviceBuf_" << fNW << ")"
+            << ", alpaka::getPtrNative(deviceBuf_" << convK << ")"
+            << ", static_cast<Idx>(" << wTotal << "));\n";
+         out << "}\n\n";
       }
 
       // -----------------------------------------------------------------------
-      // Step 1: Weight vectorisation kernel — runs once, fully on GPU
-      // -----------------------------------------------------------------------
-      out << "// Step 1: vectorise W -> _f on GPU (once per infer call)\n";
-      out << "{\n";
-      out << "auto const elementsPerThread_wv = Vec::all(static_cast<Idx>(1));\n";
-      out << "auto const elementsPerGrid_wv   = Vec::all(Idx{" << wTotal << "});\n";
-      out << "auto const workDiv_wv = sofie_workdiv(elementsPerGrid_wv);\n";
-      out << "alpaka::exec<Acc>(queue, workDiv_wv, weightVecKernel_" << opName
-         << ", alpaka::getPtrNative(deviceBuf_" << fNW << ")"
-         << ", alpaka::getPtrNative(deviceBuf_" << convK << ")"
-         << ", static_cast<Idx>(" << wTotal << "));\n";
-      out << "}\n\n";
-
-      // -----------------------------------------------------------------------
-      // Step 2: Batch loop
+      // Batch loop
       // -----------------------------------------------------------------------
       out << "for (std::size_t n = 0; n < " << bsize << "; n++) {\n\n";
       out << "std::size_t const x_offset   = n * ("
@@ -1006,11 +1023,11 @@ public:
          << strideY[0].GetVal() << ");\n\n";
 
       // -----------------------------------------------------------------------
-      // Step 3 + 4: Im2Col then GEMM — structure differs for grouped vs non-grouped
+      // Im2Col then GEMM — structure differs for grouped vs non-grouped
       // -----------------------------------------------------------------------
       if (fAttrGroup == 1) {
          // Non-grouped: single im2col per batch, then GEMM
-         out << "// Step 3: im2col\n";
+         out << "// im2col\n";
          out << "{\n";
          out << "auto const elementsPerThread_im2col = Vec::all(static_cast<Idx>(1));\n";
          out << "auto const elementsPerGrid_im2col   = Vec::all(Idx{" << colElements << "});\n";
@@ -1024,7 +1041,7 @@ public:
 
          if (!fNB.empty()) {
                std::string biasElements = std::to_string(gemm.n) + " * " + gemm.m;
-               out << "// Step 4a: broadcast bias into output slice\n";
+               out << "// Broadcast bias into output slice\n";
                out << "{\n";
                out << "auto const elementsPerThread_bias = Vec::all(static_cast<Idx>(1));\n";
                out << "auto const elementsPerGrid_bias   = Vec::all(Idx{" << biasElements << "});\n";
@@ -1035,18 +1052,18 @@ public:
                   << ", static_cast<std::size_t>(" << gemm.m << ")"
                   << ", static_cast<Idx>(" << biasElements << "));\n";
                out << "}\n\n";
-               out << "// Step 4b: GEMM beta=1 accumulates onto bias-initialised output\n";
+               out << "// GEMM beta=1 accumulates onto bias-initialised output\n";
                out << "blas.matmul('n', 'n', "
                   << gemm.m << ", " << gemm.n << ", " << gemm.k
                   << ", 1.0f, alpaka::getPtrNative(deviceBuf_" << imcol << ")"
-                  << ", alpaka::getPtrNative(deviceBuf_" << convK << ")"
+                  << ", alpaka::getPtrNative(deviceBuf_" << weightBuf << ")"
                   << ", 1.0f, alpaka::getPtrNative(deviceBuf_" << fNY << ") + out_offset);\n\n";
          } else {
-               out << "// Step 4: GEMM beta=0 (no bias)\n";
+               out << "// GEMM beta=0 (no bias)\n";
                out << "blas.matmul('n', 'n', "
                   << gemm.m << ", " << gemm.n << ", " << gemm.k
                   << ", 1.0f, alpaka::getPtrNative(deviceBuf_" << imcol << ")"
-                  << ", alpaka::getPtrNative(deviceBuf_" << convK << ")"
+                  << ", alpaka::getPtrNative(deviceBuf_" << weightBuf << ")"
                   << ", 0.0f, alpaka::getPtrNative(deviceBuf_" << fNY << ") + out_offset);\n\n";
          }
 
@@ -1088,13 +1105,13 @@ public:
                out << "blas.matmul('n', 'n', "
                   << gemm.m << ", " << gemm.n << ", " << gemm.k
                   << ", 1.0f, alpaka::getPtrNative(deviceBuf_" << imcol << ")"
-                  << ", alpaka::getPtrNative(deviceBuf_" << convK << ") + f_offset"
+                  << ", alpaka::getPtrNative(deviceBuf_" << weightBuf << ") + f_offset"
                   << ", 1.0f, alpaka::getPtrNative(deviceBuf_" << fNY << ") + g_out_offset);\n\n";
          } else {
                out << "blas.matmul('n', 'n', "
                   << gemm.m << ", " << gemm.n << ", " << gemm.k
                   << ", 1.0f, alpaka::getPtrNative(deviceBuf_" << imcol << ")"
-                  << ", alpaka::getPtrNative(deviceBuf_" << convK << ") + f_offset"
+                  << ", alpaka::getPtrNative(deviceBuf_" << weightBuf << ") + f_offset"
                   << ", 0.0f, alpaka::getPtrNative(deviceBuf_" << fNY << ") + g_out_offset);\n\n";
          }
          out << "}\n"; // end group loop
