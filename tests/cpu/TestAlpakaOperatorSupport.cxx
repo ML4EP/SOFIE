@@ -255,3 +255,36 @@ TEST(AlpakaOperatorSupport, TileFusionDataInputIndicesAreValidInputs)
    ASSERT_FALSE(indices.empty());
    EXPECT_TRUE(std::all_of(indices.begin(), indices.end(), [&](size_t i) { return i < inputs.size(); }));
 }
+
+TEST(RModelInitializedTensors, ResetInitializedTensorsAllAndSubset)
+{
+   RModel model("TestResetTensors", "now");
+   std::vector<float> data1 = {1.0f, 2.0f, 3.0f};
+   std::vector<float> data2 = {4.0f, 5.0f};
+   std::vector<float> data3 = {6.0f, 7.0f, 8.0f, 9.0f};
+
+   model.AddInitializedTensor("W1", ETensorType::FLOAT, {3}, data1.data());
+   model.AddInitializedTensor("W2", ETensorType::FLOAT, {2}, data2.data());
+   model.AddInitializedTensor("W3", ETensorType::FLOAT, {4}, data3.data());
+
+   EXPECT_EQ(model.GetNumInitializedTensors(), 3u);
+   EXPECT_TRUE(model.IsInitializedTensor("W1"));
+   EXPECT_TRUE(model.IsInitializedTensor("W2"));
+   EXPECT_TRUE(model.IsInitializedTensor("W3"));
+
+   auto names = model.GetInitializedTensorNames();
+   EXPECT_EQ(names.size(), 3u);
+
+   // Reset subset: W1 and W3
+   model.ResetInitializedTensors({"W1", "W3", "NonExistent"});
+   EXPECT_EQ(model.GetNumInitializedTensors(), 1u);
+   EXPECT_FALSE(model.IsInitializedTensor("W1"));
+   EXPECT_TRUE(model.IsInitializedTensor("W2"));
+   EXPECT_FALSE(model.IsInitializedTensor("W3"));
+
+   // Reset all
+   model.ResetInitializedTensors();
+   EXPECT_EQ(model.GetNumInitializedTensors(), 0u);
+   EXPECT_FALSE(model.IsInitializedTensor("W2"));
+   EXPECT_TRUE(model.GetInitializedTensorNames().empty());
+}

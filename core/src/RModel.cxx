@@ -481,6 +481,28 @@ void RModel::RemoveInitializedTensor(std::string tensor_name) {
    }
 }
 
+std::vector<std::string> RModel::GetInitializedTensorNames() const {
+   std::vector<std::string> names;
+   names.reserve(fInitializedTensors.size());
+   for (const auto &it : fInitializedTensors) {
+      names.push_back(it.first);
+   }
+   return names;
+}
+
+void RModel::ResetInitializedTensors() {
+   fInitializedTensors.clear();
+}
+
+void RModel::ResetInitializedTensors(const std::vector<std::string> &tensor_names) {
+   for (const auto &name : tensor_names) {
+      auto it = fInitializedTensors.find(name);
+      if (it != fInitializedTensors.end()) {
+         fInitializedTensors.erase(it);
+      }
+   }
+}
+
 void RModel::SetNotWritableInitializedTensor(const std::string & tensor_name) {
       auto t = fInitializedTensors.find(tensor_name);
       if (t == fInitializedTensors.end()) {
