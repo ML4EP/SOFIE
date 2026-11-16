@@ -34,6 +34,7 @@ public:
       fAttrPerm(attr_perm), fNX(UTILITY::Clean_name(nameData)), fNY(UTILITY::Clean_name(nameOutput)) {
             fInputTensorNames = { fNX };
             fOutputTensorNames = { fNY };
+            fKind = OperatorKind::TRANSPOSE;
    }
 
 

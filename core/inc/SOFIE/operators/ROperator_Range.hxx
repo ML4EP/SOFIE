@@ -64,6 +64,7 @@ public:
         fNDelta(UTILITY::Clean_name(delta)),
         fNOutput(UTILITY::Clean_name(nameOutput))
    {
+      fKind = OperatorKind::RANGE;
       if (std::is_same<T, float>::value) {
           fType = "float";
       } else if (std::is_same<T, int64_t>::value) {

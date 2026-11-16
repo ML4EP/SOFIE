@@ -37,6 +37,7 @@ public:
 
          fInputTensorNames = { fNX };
          fOutputTensorNames.assign(fNYs.begin(), fNYs.end());
+         fKind = OperatorKind::SUBGRAPH;
       }
 
    // the condition has one element: it is read without strides. The branches read the strided inputs of the model

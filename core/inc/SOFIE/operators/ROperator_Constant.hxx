@@ -56,8 +56,12 @@ public:
       fValues(values),
       fAttrType(type)
       {
-         if (!fNX.empty())
+         if (!fNX.empty()) {
             fInputTensorNames = {fNX};
+            fKind = OperatorKind::CONSTANTOFSHAPE;
+         } else {
+            fKind = OperatorKind::CONSTANT;
+         }
          fOutputTensorNames = {fNY};
       }
 

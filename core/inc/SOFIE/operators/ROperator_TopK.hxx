@@ -42,6 +42,7 @@ public:
         fNInd(UTILITY::Clean_name(nameInd)){
             fInputTensorNames = { fNX, fNK };
             fOutputTensorNames = { fNVal, fNInd };
+            fKind = OperatorKind::TOPK;
         }
 
    void Initialize(RModel& model) override {

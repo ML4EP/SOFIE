@@ -31,6 +31,7 @@ public:
    {
          fInputTensorNames = { fNX };
          fOutputTensorNames = { fNY };
+         fKind = OperatorKind::SOFTMAX;
    }
 
    void Initialize(RModel& model) override {

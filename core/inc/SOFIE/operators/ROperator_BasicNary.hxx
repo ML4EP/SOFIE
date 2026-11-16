@@ -139,6 +139,7 @@ public:
       std::transform(fNInputs.begin(), fNInputs.end(), fInputTensorNames.begin(),
                   [](const std::string& s) -> std::string_view { return s; });
       fOutputTensorNames = { fNY };
+      fKind = OperatorKind::BASIC_NARY;
    }
 
    bool InitializeShapeTensorOutput(RModel &model)

@@ -52,6 +52,7 @@ public:
    {
       fInputTensorNames = { fNX, fNI, fNU };
       fOutputTensorNames = { fNY };
+      fKind = OperatorKind::SCATTERND;
    }
 
    void Initialize(RModel& model) override {

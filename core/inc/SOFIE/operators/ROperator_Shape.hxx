@@ -33,6 +33,7 @@ public:
    fStart(start) ,fEnd(end), fNX(UTILITY::Clean_name(nameX)), fNY(UTILITY::Clean_name(nameY)){
          fInputTensorNames = { fNX };
          fOutputTensorNames = { fNY };
+         fKind = OperatorKind::SHAPE;
    }
 
    // only the shape of the input is used: its data (and so its strides) are never read

@@ -42,6 +42,7 @@ public:
       fAttrAxis(attrAxis), fNX(UTILITY::Clean_name(nameX)), fNIndices(UTILITY::Clean_name(nameIndices)), fNY(UTILITY::Clean_name(nameY)) {
          fInputTensorNames = { fNX, fNIndices };
          fOutputTensorNames = { fNY };
+         fKind = OperatorKind::GATHER;
    }
 
    bool SupportsStridedInput() const override { return true; }

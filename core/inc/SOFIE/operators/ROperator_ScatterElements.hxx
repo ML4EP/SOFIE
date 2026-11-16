@@ -70,6 +70,7 @@ public:
       {
          fInputTensorNames = { fNX, fNI, fNU };
          fOutputTensorNames = { fNY };
+         fKind = OperatorKind::SCATTERELEMENTS;
       }
 
 

@@ -117,6 +117,7 @@ template <typename T> class ROperator_GRU final : public ROperator {
          throw std::runtime_error(
              "SOFIE Encountered unsupported type parsing a GRU operator");
       }
+      fKind = OperatorKind::GRU;
    }
 
    /*! \brief Infers the shape of the output tensors

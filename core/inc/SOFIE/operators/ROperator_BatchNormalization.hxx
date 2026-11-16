@@ -51,6 +51,7 @@ public:
       fInputTensorNames = { fNX };
       fOutputTensorNames = { fNY };
       fNFusedScale = fNScale + "_fused_inv_std_dev";
+      fKind = OperatorKind::BATCHNORM;
 
       if(std::is_same<T, float>::value){
          fType = "float";

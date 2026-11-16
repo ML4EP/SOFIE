@@ -24,6 +24,7 @@ public:
    ROperator_HardSigmoid(float alpha, float beta, std::string nameX, std::string nameY)
       : fAlpha(alpha), fBeta(beta), fNX(UTILITY::Clean_name(nameX)), fNY(UTILITY::Clean_name(nameY))
    {
+      fKind = OperatorKind::HARDSIGMOID;
       if (std::is_same<T, float>::value) {
          fType = "float";
       } else {

@@ -56,6 +56,7 @@ public:
    {
          fInputTensorNames =  { fNX };
          fOutputTensorNames = { fNY };
+         fKind = OperatorKind::BASIC_IS;
    }
 
    void Initialize(RModel& model) override {

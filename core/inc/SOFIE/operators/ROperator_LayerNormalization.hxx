@@ -58,6 +58,7 @@ public:
         fNScale(UTILITY::Clean_name(nameScale)), fNB(UTILITY::Clean_name(nameB)),
         fNY(UTILITY::Clean_name(nameY)), fNMean(UTILITY::Clean_name(nameMean)), fNInvStdDev(UTILITY::Clean_name(nameInvStdDev))
    {
+         fKind = OperatorKind::LAYERNORM;
          fInputTensorNames = { fNX, fNScale };
          if (!fNB.empty()){
             fInputTensorNames.emplace_back(fNB);

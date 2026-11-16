@@ -61,6 +61,7 @@ public:
       fNX(UTILITY::Clean_name(nameX)), fNY(UTILITY::Clean_name(nameY)), fNC(UTILITY::Clean_name(nameC)), fNZ(UTILITY::Clean_name(nameZ)){
          fInputTensorNames = { fNX, fNY, fNC };
          fOutputTensorNames = { fNZ };
+         fKind = OperatorKind::WHERE;
       }
 
    void Initialize(RModel& model) override {

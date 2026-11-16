@@ -50,6 +50,7 @@ public:
          
          fInputTensorNames = { fNX };
          fOutputTensorNames = { fNY };
+         fKind = OperatorKind::PAD;
       }
 
    void Initialize(RModel& model) override {

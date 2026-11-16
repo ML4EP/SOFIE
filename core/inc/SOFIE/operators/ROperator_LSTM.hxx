@@ -136,6 +136,7 @@ template <typename T> class ROperator_LSTM final : public ROperator {
       if (!fNY_c.empty()){
          fOutputTensorNames.emplace_back(fNY_c);
       }
+      fKind = OperatorKind::LSTM;
    }
 
    /*! \brief Infers the shape of the output tensors

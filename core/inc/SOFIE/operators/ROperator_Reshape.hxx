@@ -60,6 +60,7 @@ public:
          fInputTensorNames.emplace_back(fNInput2);
       }
       fOutputTensorNames = { fNOutput };
+      fKind = OperatorKind::RESHAPE;
    }
 
    // for squeeze/unsqueezed operators following old ONNX version (< 10)
@@ -71,6 +72,7 @@ public:
       assert(fOpMode == Squeeze || fOpMode == Unsqueeze);
       fInputTensorNames = { fNData };
       fOutputTensorNames = { fNOutput };
+      fKind = OperatorKind::RESHAPE;
    }
 
 

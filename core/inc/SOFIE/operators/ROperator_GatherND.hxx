@@ -39,6 +39,7 @@ public:
       fBatchDims(batch_dims), fNX(UTILITY::Clean_name(nameX)), fNIndices(UTILITY::Clean_name(nameIndices)), fNY(UTILITY::Clean_name(nameY)) {
          fInputTensorNames = { fNX, fNIndices };
          fOutputTensorNames = { fNY };
+         fKind = OperatorKind::GATHERND;
    }
 
    void Initialize(RModel& model) override {

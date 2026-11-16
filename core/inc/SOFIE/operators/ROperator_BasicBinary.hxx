@@ -126,6 +126,7 @@ public:
    {
       fInputTensorNames = {fNA, fNB};
       fOutputTensorNames = {fNY};
+      fKind = OperatorKind::BASIC_BINARY;
    }
 
    void Initialize(RModel &model) override

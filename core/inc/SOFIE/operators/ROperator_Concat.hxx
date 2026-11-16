@@ -39,6 +39,7 @@
          std::transform(fInputs.begin(), fInputs.end(), fInputTensorNames.begin(),
                    [](const std::string& s) -> std::string_view { return s; });
          fOutputTensorNames = { fOutput };
+         fKind = OperatorKind::CONCAT;
          }
 
          // get shape of output given inputs. It is going to be called after initialized

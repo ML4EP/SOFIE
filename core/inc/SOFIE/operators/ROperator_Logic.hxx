@@ -114,6 +114,7 @@ public:
    {
       fInputTensorNames  = { fNA, fNB };
       fOutputTensorNames = { fNY };
+      fKind = OperatorKind::LOGIC_BINARY;
    }
 
    // ── Type / shape inference ────────────────────────────────────────────────
@@ -292,6 +293,7 @@ public:
    {
       fInputTensorNames  = { fNX };
       fOutputTensorNames = { fNY };
+      fKind = OperatorKind::BITWISE_NOT;
    }
 
    void Initialize(RModel& model) override {

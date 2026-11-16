@@ -88,6 +88,7 @@ public:
    ROperator_Reduce(int keepdims, std::vector<int64_t> attrAxes, std::string nameX, std::string nameAxes, std::string nameY):
    fkeepdims(keepdims), fAttrAxes(attrAxes), fNX(UTILITY::Clean_name(nameX)), fNAxes(UTILITY::Clean_name(nameAxes)), fNY(UTILITY::Clean_name(nameY)) {
       fReduceOpMode = Op;
+      fKind = OperatorKind::REDUCE;
       
       fInputTensorNames = { fNX };
       if(!fNAxes.empty()){

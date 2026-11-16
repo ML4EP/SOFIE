@@ -2,15 +2,31 @@
 // for the GPU, with an error naming the operator.
 
 #include "SOFIE/RModel.hxx"
+#include "SOFIE/operators/ROperator_BasicBinary.hxx"
+#include "SOFIE/operators/ROperator_BasicIs.hxx"
+#include "SOFIE/operators/ROperator_BasicNary.hxx"
 #include "SOFIE/operators/ROperator_BasicUnary.hxx"
+#include "SOFIE/operators/ROperator_Concat.hxx"
 #include "SOFIE/operators/ROperator_Erf.hxx"
+#include "SOFIE/operators/ROperator_Gelu.hxx"
+#include "SOFIE/operators/ROperator_HardSigmoid.hxx"
+#include "SOFIE/operators/ROperator_HardSwish.hxx"
+#include "SOFIE/operators/ROperator_Identity.hxx"
+#include "SOFIE/operators/ROperator_Logic.hxx"
+#include "SOFIE/operators/ROperator_NonZero.hxx"
 #include "SOFIE/operators/ROperator_Relu.hxx"
+#include "SOFIE/operators/ROperator_Shape.hxx"
+#include "SOFIE/operators/ROperator_Softmax.hxx"
 #include "SOFIE/operators/ROperator_SubGraph.hxx"
+#include "SOFIE/operators/ROperator_Swish.hxx"
 #include "SOFIE/operators/ROperator_Tile.hxx"
+#include "SOFIE/operators/ROperator_Transpose.hxx"
+#include "SOFIE/operators/ROperator_Where.hxx"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <set>
 #include <string>
 
 using namespace SOFIE;
@@ -254,4 +270,115 @@ TEST(AlpakaOperatorSupport, TileFusionDataInputIndicesAreValidInputs)
    const auto indices = tile.GetFusionDataInputIndices();
    ASSERT_FALSE(indices.empty());
    EXPECT_TRUE(std::all_of(indices.begin(), indices.end(), [&](size_t i) { return i < inputs.size(); }));
+}
+
+TEST(AlpakaOperatorSupport, OperatorKindAndToStringCoverage)
+{
+   ROperator_Gelu gelu("X", "Y");
+   EXPECT_EQ(gelu.GetKind(), OperatorKind::GELU);
+   EXPECT_STREQ(toString(gelu.GetKind()), "GELU");
+
+   ROperator_BasicIs<EBasicIsOperator::kIsInf> basicIs("X", "Y");
+   EXPECT_EQ(basicIs.GetKind(), OperatorKind::BASIC_IS);
+   EXPECT_STREQ(toString(basicIs.GetKind()), "BASIC_IS");
+
+   ROperator_BasicBinary<float, EBasicBinaryOperator::Add> basicBinary("A", "B", "Y");
+   EXPECT_EQ(basicBinary.GetKind(), OperatorKind::BASIC_BINARY);
+   EXPECT_STREQ(toString(basicBinary.GetKind()), "BASIC_BINARY");
+
+   ROperator_BasicNary<float, EBasicNaryOperator::Sum> basicNary({"A", "B"}, "Y");
+   EXPECT_EQ(basicNary.GetKind(), OperatorKind::BASIC_NARY);
+   EXPECT_STREQ(toString(basicNary.GetKind()), "BASIC_NARY");
+
+   ROperator_Concat concat({"A", "B"}, 0, 0, "Y");
+   EXPECT_EQ(concat.GetKind(), OperatorKind::CONCAT);
+   EXPECT_STREQ(toString(concat.GetKind()), "CONCAT");
+
+   ROperator_Transpose transpose({1, 0}, "X", "Y");
+   EXPECT_EQ(transpose.GetKind(), OperatorKind::TRANSPOSE);
+   EXPECT_STREQ(toString(transpose.GetKind()), "TRANSPOSE");
+
+   ROperator_Tile<float> tile("repeats", "X", "Y");
+   EXPECT_EQ(tile.GetKind(), OperatorKind::TILE);
+   EXPECT_STREQ(toString(tile.GetKind()), "TILE");
+
+   ROperator_Where<float> whereOp("C", "X", "Y", "Z");
+   EXPECT_EQ(whereOp.GetKind(), OperatorKind::WHERE);
+   EXPECT_STREQ(toString(whereOp.GetKind()), "WHERE");
+
+   ROperator_Shape shape(0, 1, "X", "Y");
+   EXPECT_EQ(shape.GetKind(), OperatorKind::SHAPE);
+   EXPECT_STREQ(toString(shape.GetKind()), "SHAPE");
+
+   ROperator_Softmax softmax(1, "X", "Y");
+   EXPECT_EQ(softmax.GetKind(), OperatorKind::SOFTMAX);
+   EXPECT_STREQ(toString(softmax.GetKind()), "SOFTMAX");
+
+   ROperator_Identity<float> identity("X", "Y");
+   EXPECT_EQ(identity.GetKind(), OperatorKind::IDENTITY);
+   EXPECT_STREQ(toString(identity.GetKind()), "IDENTITY");
+
+   ROperator_Erf<float> erf("X", "Y");
+   EXPECT_EQ(erf.GetKind(), OperatorKind::ERF);
+   EXPECT_STREQ(toString(erf.GetKind()), "ERF");
+
+   ROperator_HardSigmoid<float> hardSigmoid(0.2f, 0.5f, "X", "Y");
+   EXPECT_EQ(hardSigmoid.GetKind(), OperatorKind::HARDSIGMOID);
+   EXPECT_STREQ(toString(hardSigmoid.GetKind()), "HARDSIGMOID");
+
+   ROperator_HardSwish<float> hardSwish("X", "Y");
+   EXPECT_EQ(hardSwish.GetKind(), OperatorKind::HARDSWISH);
+   EXPECT_STREQ(toString(hardSwish.GetKind()), "HARDSWISH");
+
+   ROperator_Swish swish("X", "Y");
+   EXPECT_EQ(swish.GetKind(), OperatorKind::SWISH);
+   EXPECT_STREQ(toString(swish.GetKind()), "SWISH");
+
+   ROperator_NonZero<float> nonZero("X", "Y");
+   EXPECT_EQ(nonZero.GetKind(), OperatorKind::NONZERO);
+   EXPECT_STREQ(toString(nonZero.GetKind()), "NONZERO");
+
+   ROperator_BitwiseNot<int32_t> bitwiseNot("X", "Y");
+   EXPECT_EQ(bitwiseNot.GetKind(), OperatorKind::BITWISE_NOT);
+   EXPECT_STREQ(toString(bitwiseNot.GetKind()), "BITWISE_NOT");
+
+   std::set<std::string> seenNames;
+   const int maxKind = static_cast<int>(OperatorKind::SWISH);
+   for (int i = 0; i <= maxKind; ++i) {
+      OperatorKind kind = static_cast<OperatorKind>(i);
+      const char *str = toString(kind);
+      ASSERT_NE(str, nullptr);
+      EXPECT_STRNE(str, "UNKNOWN") << "Missing toString entry for OperatorKind(" << i << ")";
+      if (kind != OperatorKind::UNDEFINED) {
+         EXPECT_STRNE(str, "UNDEFINED");
+      } else {
+         EXPECT_STREQ(str, "UNDEFINED");
+      }
+      EXPECT_TRUE(seenNames.insert(str).second) << "Duplicate OperatorKind name: " << str;
+   }
+   EXPECT_EQ(seenNames.size(), static_cast<size_t>(maxKind + 1));
+   EXPECT_STREQ(toString(static_cast<OperatorKind>(maxKind + 100)), "UNKNOWN");
+}
+
+TEST(AlpakaOperatorSupport, MultipleGeluDeduplicatesSessionKernel)
+{
+   RModel model("MultiGeluModel", "now");
+   model.AddInputTensorInfo("X", ETensorType::FLOAT, std::vector<Dim>{Dim(2), Dim(4)});
+   model.AddInputTensorName("X");
+   model.AddOperator(std::make_unique<ROperator_Gelu>("X", "H1"));
+   model.AddOperator(std::make_unique<ROperator_Gelu>("H1", "Y"));
+   model.AddOutputTensorNameList({"Y"});
+
+   EXPECT_NO_THROW(model.GenerateGPU_ALPAKA(Options::kNoWeightFile));
+   const std::string generated = model.ReturnGenerated();
+
+   size_t kernelDeclPos = generated.find("struct GeluKernel");
+   EXPECT_NE(kernelDeclPos, std::string::npos);
+   size_t secondKernelDeclPos = generated.find("struct GeluKernel", kernelDeclPos + 1);
+   EXPECT_EQ(secondKernelDeclPos, std::string::npos);
+
+   size_t memberPos = generated.find("GeluKernel geluKernel");
+   EXPECT_NE(memberPos, std::string::npos);
+   size_t secondMemberPos = generated.find("GeluKernel geluKernel", memberPos + 1);
+   EXPECT_EQ(secondMemberPos, std::string::npos);
 }

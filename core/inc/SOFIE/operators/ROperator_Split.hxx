@@ -38,6 +38,7 @@ public:
          fOutputTensorNames.resize(fNYs.size());
          std::transform(fNYs.begin(), fNYs.end(), fOutputTensorNames.begin(),
                    [](const std::string& s) -> std::string_view { return s; });
+         fKind = OperatorKind::SPLIT;
       }
 
    void Initialize(RModel& model) override {

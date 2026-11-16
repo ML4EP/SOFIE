@@ -30,6 +30,7 @@ public:
       fNRepeats(UTILITY::Clean_name(nameRepeat)),fNInput(UTILITY::Clean_name(nameInput)), fNY(UTILITY::Clean_name(nameY)){
          fInputTensorNames = { fNInput };
          fOutputTensorNames = { fNY };
+         fKind = OperatorKind::TILE;
       }
 
    std::vector<Dim> DoShapeInference(const std::vector<Dim> & input, const std::vector<size_t> repeat)  {
