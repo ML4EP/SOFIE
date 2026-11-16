@@ -148,6 +148,44 @@ GenerateGemmCode(const std::string &fileName, const std::vector<TestTensor> &inp
    return code.str();
 }
 
+// Two chained Relus, input.1 -> input1 -> out. TorchScript exports name tensors this way,
+// and the first two names used to clean to the same C++ identifier (issue #11).
+std::string GenerateDottedNameCode(const std::string &fileName)
+{
+   auto relu = [](const std::string &input, const std::string &output, const std::string &name) {
+      std::string node;
+      AppendBytesField(node, 1, input);
+      AppendBytesField(node, 2, output);
+      AppendBytesField(node, 3, name);
+      AppendBytesField(node, 4, "Relu");
+      return node;
+   };
+
+   std::string graph;
+   AppendBytesField(graph, 1, relu("input.1", "input1", "relu_0"));
+   AppendBytesField(graph, 1, relu("input1", "out", "relu_1"));
+   AppendBytesField(graph, 2, "test_graph");
+   AppendBytesField(graph, 11, FloatValueInfo({"input.1", {"4"}}));
+   AppendBytesField(graph, 12, FloatValueInfo({"out", {"4"}}));
+
+   std::string opset;
+   AppendVarintField(opset, 2, 13);
+   std::string model;
+   AppendVarintField(model, 1, 10);
+   AppendBytesField(model, 7, graph);
+   AppendBytesField(model, 8, opset);
+
+   std::ofstream file(fileName, std::ios::binary);
+   file.write(model.data(), model.size());
+   file.close();
+
+   RModel rmodel = RModelParser_ONNX{}.Parse(fileName);
+   rmodel.Generate(Options::kNoWeightFile);
+   std::ostringstream code;
+   rmodel.PrintGenerated(code);
+   return code.str();
+}
+
 }
 
 TEST(SOFIEParser, ExternalDataLocationRelativeToModelDirectory)
@@ -226,4 +264,19 @@ TEST(SOFIEParser, GemmDoesNotBroadcastABiasThatHasTheOutputShape)
 
    EXPECT_EQ(code.find("Copy(tensor_y"), std::string::npos);
    EXPECT_NE(code.find(",tensor_c);"), std::string::npos);
+}
+
+TEST(SOFIEParser, CleanNameReplacesDotsLikeDashes)
+{
+   EXPECT_EQ(UTILITY::Clean_name("input.1"), "input_1");
+   EXPECT_EQ(UTILITY::Clean_name("layer-1.weight"), "layer_1_weight");
+   EXPECT_NE(UTILITY::Clean_name("input.1"), UTILITY::Clean_name("input1"));
+}
+
+TEST(SOFIEParser, DottedTensorNameDoesNotCollideWithUndottedName)
+{
+   std::string code;
+   ASSERT_NO_THROW(code = GenerateDottedNameCode("dotted_names.onnx"));
+   EXPECT_NE(code.find("tensor_input_1"), std::string::npos);
+   EXPECT_NE(code.find("tensor_input1"), std::string::npos);
 }
