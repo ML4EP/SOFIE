@@ -5554,6 +5554,53 @@ def make_BatchNormReluEpsilon():
     return _model(graph, opset=13, ir_version=10, producer_name="onnx-example")
 
 
+def make_BatchNorm3DBatched():
+    # rank-3 input [N, C, L] as from BatchNorm1d, with a batch of 2 and a negative scale
+    nodes = [
+        helper.make_node("BatchNormalization", ["x", "scale", "bias", "mean", "var"], ["y"], name="bn_0"),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        "batchnorm_3d_batched",
+        inputs=[_vi("x", FLOAT, [2, 3, 5])],
+        outputs=[_vi("y", FLOAT, [2, 3, 5])],
+        initializer=[
+            _tensor("scale", FLOAT, [3], [0.8, -1.2, 2.5]),
+            _tensor("bias", FLOAT, [3], [0.5, 0.0, -0.3]),
+            _tensor("mean", FLOAT, [3], [0.2, -0.4, 1.0]),
+            _tensor("var", FLOAT, [3], [0.5, 2.0, 1.5]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=10, producer_name="onnx-example")
+
+
+def make_BatchNormTwice():
+    # two BatchNormalization nodes in one model, with their own parameters and epsilons
+    nodes = [
+        helper.make_node("BatchNormalization", ["x", "scale0", "bias0", "mean0", "var0"], ["h"], name="bn_0"),
+        helper.make_node(
+            "BatchNormalization", ["h", "scale1", "bias1", "mean1", "var1"], ["y"], name="bn_1", epsilon=1e-3
+        ),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        "batchnorm_twice",
+        inputs=[_vi("x", FLOAT, [2, 3, 4])],
+        outputs=[_vi("y", FLOAT, [2, 3, 4])],
+        initializer=[
+            _tensor("scale0", FLOAT, [3], [1.5, 0.5, 2.0]),
+            _tensor("bias0", FLOAT, [3], [0.1, -0.2, 0.3]),
+            _tensor("mean0", FLOAT, [3], [0.0, 1.0, -1.0]),
+            _tensor("var0", FLOAT, [3], [1.0, 4.0, 0.25]),
+            _tensor("scale1", FLOAT, [3], [0.5, 1.0, -1.0]),
+            _tensor("bias1", FLOAT, [3], [0.0, 0.5, 0.0]),
+            _tensor("mean1", FLOAT, [3], [0.2, 0.0, 0.1]),
+            _tensor("var1", FLOAT, [3], [2.0, 1.0, 0.5]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=10, producer_name="onnx-example")
+
+
 def make_ClipInt():
     nodes = [
         helper.make_node("Clip", ["input", "cmin", "cmax"], ["output"], name="clip_0"),
@@ -5984,6 +6031,8 @@ MODELS = {
     "IdentityWeightBatchNorm": make_IdentityWeightBatchNorm,
     "BatchNormEpsilon": make_BatchNormEpsilon,
     "BatchNormReluEpsilon": make_BatchNormReluEpsilon,
+    "BatchNorm3DBatched": make_BatchNorm3DBatched,
+    "BatchNormTwice": make_BatchNormTwice,
     "AliasAcrossNewTensor": make_AliasAcrossNewTensor,
     "AliasChain": make_AliasChain,
     "AliasChainSingle": make_AliasChainSingle,
@@ -6817,6 +6866,8 @@ TEST_INPUTS = {
     "IdentityWeightBatchNorm": [rand_f32(38, (1, 3, 2, 2))],
     "BatchNormEpsilon": [rand_f32(40, (1, 3, 2, 2))],
     "BatchNormReluEpsilon": [rand_f32(41, (1, 3, 2, 2))],
+    "BatchNorm3DBatched": [rand_f32(42, (2, 3, 5))],
+    "BatchNormTwice": [rand_f32(43, (2, 3, 4))],
     "IdentityWeightOutput": [rand_f32(39, (3,))],
 
 
@@ -7713,9 +7764,10 @@ def _convtranspose_outputshape_reference(model, feeds):
 
 
 def _batchnorm_reference(model, feeds):
+    # Inference-mode BatchNormalization (and Relu), node by node in graph order. The onnx
+    # ReferenceEvaluator can't be used: momentum always has a value (its default is 0.9),
+    # and then it blends the batch statistics into the running mean and variance.
     init = {t.name: numpy_helper.to_array(t) for t in model.graph.initializer}
-    node = next(n for n in model.graph.node if n.op_type == "BatchNormalization")
-    eps = next((a.f for a in node.attribute if a.name == "epsilon"), 1e-5)
 
     def resolve(name):
 
@@ -7724,15 +7776,18 @@ def _batchnorm_reference(model, feeds):
         producer = next(n for n in model.graph.node if name in n.output)
         return resolve(producer.input[0])
 
-    x = np.asarray(feeds[node.input[0]], dtype=np.float32)
-    scale, bias, mean, var = (resolve(n) for n in node.input[1:5])
-    shape = (1, -1) + (1,) * (x.ndim - 2)
-    y = scale.reshape(shape) * (x - mean.reshape(shape)) / np.sqrt(var.reshape(shape) + eps)
-    y = y + bias.reshape(shape)
-    if any(n.op_type == "Relu" for n in model.graph.node):
-
-        y = np.maximum(y, 0)
-    return [y.astype(np.float32)]
+    values = {name: np.asarray(arr, dtype=np.float32) for name, arr in feeds.items()}
+    for node in model.graph.node:
+        if node.op_type == "BatchNormalization":
+            x = values[node.input[0]]
+            eps = next((a.f for a in node.attribute if a.name == "epsilon"), 1e-5)
+            scale, bias, mean, var = (resolve(n) for n in node.input[1:5])
+            shape = (1, -1) + (1,) * (x.ndim - 2)
+            y = scale.reshape(shape) * (x - mean.reshape(shape)) / np.sqrt(var.reshape(shape) + eps)
+            values[node.output[0]] = y + bias.reshape(shape)
+        elif node.op_type == "Relu":
+            values[node.output[0]] = np.maximum(values[node.input[0]], 0)
+    return [values[out.name].astype(np.float32) for out in model.graph.output]
 
 
 def _logsoftmax_reference(model, feeds):
@@ -7758,6 +7813,8 @@ EXPECTED_OVERRIDES = {
     "IdentityWeightBatchNorm": _batchnorm_reference,
     "BatchNormEpsilon": _batchnorm_reference,
     "BatchNormReluEpsilon": _batchnorm_reference,
+    "BatchNorm3DBatched": _batchnorm_reference,
+    "BatchNormTwice": _batchnorm_reference,
     "LogSoftmaxLargeRange": _logsoftmax_reference,
     "LogSoftmaxLargeRangeAxis0": _logsoftmax_reference,
 }

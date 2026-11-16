@@ -1976,6 +1976,24 @@ TEST(ONNX, BatchNormReluEpsilon)
    expectNear(output, ref.f32("output0"), DEFAULT_TOLERANCE);
 }
 
+TEST(ONNX, BatchNorm3DBatched)
+{
+   SofieReference ref = readReference("BatchNorm3DBatched");
+
+   ASSERT_RUN(std::vector<float>, BatchNorm3DBatched, ref.f32("input0"));
+
+   expectNear(output, ref.f32("output0"), DEFAULT_TOLERANCE);
+}
+
+TEST(ONNX, BatchNormTwice)
+{
+   SofieReference ref = readReference("BatchNormTwice");
+
+   ASSERT_RUN(std::vector<float>, BatchNormTwice, ref.f32("input0"));
+
+   expectNear(output, ref.f32("output0"), DEFAULT_TOLERANCE);
+}
+
 TEST(ONNX, ClipInt)
 {
    std::vector<int> input = {-5, -2, 0, 3, 5, 9};
