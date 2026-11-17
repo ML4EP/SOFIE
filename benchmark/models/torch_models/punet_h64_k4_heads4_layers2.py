@@ -25,8 +25,7 @@ _initializers = load_onnx_initializers(ONNX_PATH)
 # "/graphconvs.0/Squeeze" used to squeeze all size-1 dims implicitly,
 # which TensorRT's ONNX parser can't do for a dynamic shape
 # ("Cannot infer squeeze dimensions from a dynamic shape") — patched
-# in-place (see benchmark/models/*.onnx.bak for the pre-patch original)
-# to add an explicit axes=[-1] input instead, confirmed a pure no-op
+# in-place to add an explicit axes=[-1] input instead, confirmed a pure no-op
 # against onnxruntime at several n_edges values. That patch added one
 # new initializer holding the constant [-1], which isn't a model weight
 # at all — drop it before strict weight-loading sees it as unexpected.

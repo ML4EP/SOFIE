@@ -10,6 +10,10 @@ include_directories(${CMAKE_SOURCE_DIR}/parsers/inc)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Search PATH in order, not for the newest Python, and try the name python3
+# first: that is the interpreter "python3 -m pip" installs into.
+set(Python3_FIND_STRATEGY LOCATION)
+set(Python3_FIND_UNVERSIONED_NAMES FIRST)
 find_package(Python3 COMPONENTS Interpreter QUIET)
 
 function(sofie_find_python_module module)
@@ -77,10 +81,8 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
 set(USER_MODELS_DIR "")
 if (ONNX_MODELS_DIR)
   get_filename_component(USER_MODELS_DIR ${ONNX_MODELS_DIR} ABSOLUTE)
-  set(CHECKED_IN_MODELS_DIR ${USER_MODELS_DIR})
 else()
   set(ONNX_MODELS_DIR models/onnx)
-  set(CHECKED_IN_MODELS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/models/onnx)
 endif()
 
 option(ENABLE_ALPAKA_TESTS "Enable alpaka-based SOFIE tests" OFF)
@@ -106,8 +108,10 @@ set(CAPTURE_STR
         std::cerr << \"[SKIP] Multiple outputs are not supported for @1\" << std::endl;\n\
     } else if (msg.find(\"is of a data type which is not yet supported\") != std::string::npos) {\n\
         std::cerr << \"[SKIP] Operator with unsupported data type in @1: \" << msg << std::endl;\n\
-    } else if (msg.find(\"has no alpaka implementation\") != std::string::npos) {\n\
-        std::cerr << \"[SKIP] Operator without GPU implementation in @1: \" << msg << std::endl;\n\
+    } else if (msg.find(\"has no alpaka implementation\") != std::string::npos ||\n\
+               msg.find(\"is not supported on the ALPAKA backend\") != std::string::npos ||\n\
+               msg.find(\"GPU code generation requires\") != std::string::npos) {\n\
+        std::cerr << \"[SKIP] Not supported by the GPU code generation in @1: \" << msg << std::endl;\n\
     } else {\n\
         std::cerr << \"[ERROR] Failed processing @1: \" << msg << std::endl;\n\
         failures++;\n\
@@ -117,21 +121,6 @@ set(CAPTURE_STR
     failures++;\n\
 }\n\
 ")
-
-file(GLOB ONNX_FILES "${CHECKED_IN_MODELS_DIR}/*.onnx")
-
-set(ALL_CAPTURES "")
-foreach(onnx_file ${ONNX_FILES})
-    get_filename_component(fname ${onnx_file} NAME_WE)
-    string(REPLACE "@1" "${onnx_file}" cap "${CAPTURE_STR}")
-    string(REPLACE "@2" "${fname}" cap "${cap}")
-    string(APPEND ALL_CAPTURES "${cap}")
-endforeach()
-
-set(ALPAKA_CAPTURES "${ALL_CAPTURES}")
-
-set(EMIT_CAPTURES "${ALPAKA_CAPTURES}")
-configure_file(templates/EmitFromONNX_GPU_ALPAKA.cxx.in EmitFromONNX_GPU_ALPAKA_all.cxx @ONLY)
 
 SOFIE_GENERATE_EXECUTABLE(
   emitLowRankModels
@@ -238,6 +227,10 @@ if (ENABLE_ALPAKA_TESTS)
     message(FATAL_ERROR "Unsupported ALPAKA_BACKEND=${ALPAKA_BACKEND}")
   endif()
 
+  if (NOT SOFIE_ONNX_USABLE AND NOT USER_MODELS_DIR)
+    message(FATAL_ERROR "The alpaka tests need the generated ONNX models: install the onnx and numpy Python modules, or set ONNX_MODELS_DIR to a directory with pre-generated models.")
+  endif()
+
   FetchContent_Declare(
     sofieBLAS
     GIT_REPOSITORY https://github.com/ML4EP/sofieBLAS
@@ -270,7 +263,7 @@ SOFIE_GENERATE_EXECUTABLE(
   SOFIE_ADD_TEST(
     SofieCompileModels_ONNX_Alpaka
     COMMAND ${CMAKE_COMMAND} -E env ./emitFromONNXAlpaka
-    FIXTURES_REQUIRED sofie-compile-models-onnx-alpaka-build
+    FIXTURES_REQUIRED sofie-compile-models-onnx-alpaka-build;sofie-generate-models-onnx
     FIXTURES_SETUP sofie-compile-models-onnx-alpaka
   )
 
@@ -490,14 +483,21 @@ elseif (SOFIE_ONNX_USABLE)
     list(APPEND ONNX_MODEL_NAMES ${fname})
     list(APPEND ONNX_MODEL_PATHS ${TEST_MODELS_DIR}/${fname}.onnx)
   endforeach()
-  foreach(fname ScatterND_Ex1 ScatterND_Ex2 ScatterND_NegativeIndices ScatterND_2D)
-    if (EXISTS ${CHECKED_IN_MODELS_DIR}/${fname}.onnx AND NOT fname IN_LIST ONNX_MODEL_NAMES)
-      list(APPEND ONNX_MODEL_NAMES ${fname})
-      list(APPEND ONNX_MODEL_PATHS ${CHECKED_IN_MODELS_DIR}/${fname}.onnx)
-    endif()
-  endforeach()
 else()
   message(STATUS "The onnx and numpy Python modules are not usable: the generated ONNX models are not available and the ONNX tests based on them are disabled. Set ONNX_MODELS_DIR to use existing models.")
+endif()
+
+if (USER_MODELS_DIR OR SOFIE_ONNX_USABLE)
+  # Models still checked in under models/onnx that are not in the list yet
+  # are taken from there.
+  file(GLOB _checked_in_onnx_files "${CMAKE_CURRENT_SOURCE_DIR}/models/onnx/*.onnx")
+  foreach(onnx_file ${_checked_in_onnx_files})
+    get_filename_component(fname ${onnx_file} NAME_WE)
+    if (NOT fname IN_LIST ONNX_MODEL_NAMES)
+      list(APPEND ONNX_MODEL_NAMES ${fname})
+      list(APPEND ONNX_MODEL_PATHS ${onnx_file})
+    endif()
+  endforeach()
 endif()
 
 if (ONNX_MODEL_NAMES)
@@ -512,6 +512,7 @@ if (ONNX_MODEL_NAMES)
     string(APPEND EMIT_CAPTURES "${cap}")
   endforeach()
   configure_file(templates/EmitFromONNX.cxx.in EmitFromONNX_all.cxx @ONLY)
+  configure_file(templates/EmitFromONNX_GPU_ALPAKA.cxx.in EmitFromONNX_GPU_ALPAKA_all.cxx @ONLY)
 
   SOFIE_GENERATE_EXECUTABLE(emitFromONNX ${CMAKE_CURRENT_BINARY_DIR}/EmitFromONNX_all.cxx
                                LIBRARIES SOFIE_core SOFIE_parsers

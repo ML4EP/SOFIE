@@ -1,6 +1,6 @@
 // SOFIE Benchmark Emitter
 // Auto-configured by CMake — do not edit directly.
-// For each .onnx model in benchmark/models/ this binary generates:
+// For each benchmark model this binary generates:
 //   <ModelName>_GPU_ALPAKA.hxx  — SOFIE inference code
 //   <ModelName>_GPU_ALPAKA.dat  — serialized weights
 //   <ModelName>_bench.hxx       — timing function, following the same

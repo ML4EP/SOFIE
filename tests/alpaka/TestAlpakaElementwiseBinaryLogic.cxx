@@ -43,9 +43,9 @@
 #include "models/onnx/references/MinMultidirectionalBroadcast.ref.hxx"
 #include "models/onnx/references/MeanMultidirectionalBroadcast.ref.hxx"
 #include "models/onnx/references/SumMultidirectionalBroadcast.ref.hxx"
-#include "IsInf_FromONNX_GPU_ALPAKA.hxx"
+#include "IsInf1D_FromONNX_GPU_ALPAKA.hxx"
 #include "IsNaN_FromONNX_GPU_ALPAKA.hxx"
-#include "Clip_FromONNX_GPU_ALPAKA.hxx"
+#include "Clip1D_FromONNX_GPU_ALPAKA.hxx"
 #include "Not_FromONNX_GPU_ALPAKA.hxx"
 
 #include "DynamicEqual_FromONNX_GPU_ALPAKA.hxx"
@@ -574,7 +574,7 @@ TEST_F(SofieAlpakaTest, IsInf)
     auto result_h = alpaka::allocBuf<uint8_t, Idx>(host, Ext1D::all(Idx{N}));
 
     {
-        SOFIE_IsInf::Session<TestTag> session;
+        SOFIE_IsInf1D::Session<TestTag> session;
         auto result = session.infer(input_d);
         alpaka::wait(queue);
         alpaka::memcpy(queue, result_h, result);
@@ -644,7 +644,7 @@ TEST_F(SofieAlpakaTest, Clip)
     auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{N}));
 
     {
-        SOFIE_Clip::Session<TestTag> session("Clip_FromONNX_GPU_ALPAKA.dat");
+        SOFIE_Clip1D::Session<TestTag> session("Clip1D_FromONNX_GPU_ALPAKA.dat");
         auto result = session.infer(input_d);
         alpaka::wait(queue);
         alpaka::memcpy(queue, result_h, result);

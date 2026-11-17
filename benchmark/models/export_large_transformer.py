@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# PyTorch export that transformer_d64_h4_L6_ff128.onnx originally came from.
+# The build does not use the file this script writes, it takes the model from
+# generators/transformer_d64_h4_L6_ff128.py.
 
 import os
 import sys

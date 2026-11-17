@@ -1,11 +1,9 @@
 #include "TestAlpakaCommon.h"
 
 #include "Linear_64_FromONNX_GPU_ALPAKA.hxx"
-#include "models/onnx/references/Linear_64.ref.hxx"
 #include "LinearWithLeakyRelu_FromONNX_GPU_ALPAKA.hxx"
 #include "models/onnx/references/LinearWithLeakyRelu.ref.hxx"
 #include "LinearWithSigmoid_FromONNX_GPU_ALPAKA.hxx"
-#include "models/onnx/references/LinearWithSigmoid.ref.hxx"
 
 #include "DynamicLinear_FromONNX_GPU_ALPAKA.hxx"
 #include "DynamicMatMulBatched_FromONNX_GPU_ALPAKA.hxx"
@@ -14,18 +12,12 @@ TEST_F(SofieAlpakaTest, Linear64)
 {
    constexpr float TOLERANCE = DEFAULT_TOLERANCE;
 
-   auto A = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{6400}));
-   float *A_ptr = reinterpret_cast<float*>(alpaka::getPtrNative(A));
+   SofieReference ref = readReference("Linear_64");
+   const std::vector<float> &input = ref.f32("input0");
+   const std::vector<float> &expected = ref.f32("output0");
 
-   for (Idx i = 0; i < 6400; ++i) {
-      A_ptr[i] = 1.0;
-   }
-
-   auto A_d = alpaka::allocBuf<float, Idx>(device, Ext1D::all(Idx{6400}));
-   alpaka::memcpy(queue, A_d, A);
-   alpaka::wait(queue);
-
-   auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{640}));
+   auto A_d = makeDeviceBuf<float>(host, device, queue, input.data(), input.size());
+   auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{expected.size()}));
 
    {
       SOFIE_Linear_64::Session<TestTag> session("Linear_64_FromONNX_GPU_ALPAKA.dat");
@@ -37,10 +29,9 @@ TEST_F(SofieAlpakaTest, Linear64)
    }
 
    float* res_ptr = reinterpret_cast<float*>(alpaka::getPtrNative(result_h));
-   float *correct = Linear_64_ExpectedOutput::all_ones;
 
-   for (size_t i = 0; i < 640; ++i) {
-      EXPECT_LE(std::abs(res_ptr[i] - correct[i]), TOLERANCE);
+   for (size_t i = 0; i < expected.size(); ++i) {
+      EXPECT_LE(std::abs(res_ptr[i] - expected[i]), TOLERANCE) << "i=" << i;
    }
 }
 
@@ -86,22 +77,15 @@ TEST_F(SofieAlpakaTest, LinearWithLeakyRelu)
 
 TEST_F(SofieAlpakaTest, LinearWithSigmoid)
 {
-
    constexpr float TOLERANCE = DEFAULT_TOLERANCE;
 
-   auto A = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{48}));
-   float *A_ptr = reinterpret_cast<float*>(alpaka::getPtrNative(A));
+   SofieReference ref = readReference("LinearWithSigmoid");
+   const std::vector<float> &input = ref.f32("input0");
+   const std::vector<float> &expected = ref.f32("output0");
 
-   for (Idx i = 0; i < 48; ++i) {
-      A_ptr[i] = 1.0;
-   }
+   auto A_d = makeDeviceBuf<float>(host, device, queue, input.data(), input.size());
+   auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{expected.size()}));
 
-   auto A_d = alpaka::allocBuf<float, Idx>(device, Ext1D::all(Idx{48}));
-   alpaka::memcpy(queue, A_d, A);
-   alpaka::wait(queue);
-
-   auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{24}));
-   
    {
       SOFIE_LinearWithSigmoid::Session<TestTag> session("LinearWithSigmoid_FromONNX_GPU_ALPAKA.dat");
       auto result = session.infer(A_d);
@@ -112,9 +96,9 @@ TEST_F(SofieAlpakaTest, LinearWithSigmoid)
    }
 
    float* res_ptr = reinterpret_cast<float*>(alpaka::getPtrNative(result_h));
-   float *correct = LinearWithSigmoid_ExpectedOutput::all_ones;
-   for (size_t i = 0; i < 24; ++i) {
-      EXPECT_LE(std::abs(res_ptr[i] - correct[i]), TOLERANCE);
+
+   for (size_t i = 0; i < expected.size(); ++i) {
+      EXPECT_LE(std::abs(res_ptr[i] - expected[i]), TOLERANCE) << "i=" << i;
    }
 }
 

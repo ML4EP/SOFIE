@@ -14,7 +14,7 @@ include(FetchContent)
 #         [-DONNXRUNTIME_ROOT=/usr/local/onnxruntime] .
 #   ./bin/sofie_benchmark --onnxruntime
 #
-# Place .onnx models in benchmark/models/ and re-run cmake to register them.
+# The models are generated at build time by models/generate_models.py.
 # sofie_benchmark lands in build/bin next to every other SOFIE binary
 ################################################################################
 
@@ -113,7 +113,68 @@ else()
     set(BENCHMARK_MODEL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/${SOFIE_BENCHMARK_MODEL_DIR}")
 endif()
 
-file(GLOB BENCHMARK_ONNX_MODELS "${BENCHMARK_MODEL_DIR}/*.onnx")
+# The standard models are written into the build tree by
+# models/generate_models.py when the benchmark is built. A .onnx in the model
+# directory that the generator does not know is used as it is. With a
+# non-default model directory nothing is generated.
+set(BENCHMARK_GENERATED_MODEL_DIR "${CMAKE_CURRENT_BINARY_DIR}/models")
+set(BENCHMARK_GENERATED_NAMES "")
+set(BENCHMARK_GENERATED_ONNX_MODELS "")
+
+if(SOFIE_BENCHMARK_MODEL_DIR STREQUAL "models")
+    # Take the python3 that comes first on PATH, the one "python3 -m pip" installs into.
+    set(Python3_FIND_STRATEGY LOCATION)
+    set(Python3_FIND_UNVERSIONED_NAMES FIRST)
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    set(_bench_onnx_status 1)
+    if(Python3_EXECUTABLE)
+        execute_process(
+            COMMAND "${Python3_EXECUTABLE}" -c "import onnx, numpy"
+            RESULT_VARIABLE _bench_onnx_status
+            OUTPUT_QUIET ERROR_QUIET)
+    endif()
+    if(_bench_onnx_status EQUAL 0)
+        set(_bench_generator "${CMAKE_CURRENT_SOURCE_DIR}/models/generate_models.py")
+        execute_process(
+            COMMAND "${Python3_EXECUTABLE}" "${_bench_generator}" --list
+            OUTPUT_VARIABLE _bench_names
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            RESULT_VARIABLE _bench_list_status)
+        if(NOT _bench_list_status EQUAL 0)
+            message(FATAL_ERROR "SOFIE Benchmark: failed to list the models with generate_models.py")
+        endif()
+        string(REPLACE "\n" ";" BENCHMARK_GENERATED_NAMES "${_bench_names}")
+        foreach(_name ${BENCHMARK_GENERATED_NAMES})
+            list(APPEND BENCHMARK_GENERATED_ONNX_MODELS "${BENCHMARK_GENERATED_MODEL_DIR}/${_name}.onnx")
+        endforeach()
+        # The model list comes from these files, so cmake runs again when one changes.
+        file(GLOB _bench_generator_sources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/models/generators/*.py")
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_bench_generator}" ${_bench_generator_sources})
+        add_custom_command(
+            OUTPUT  ${BENCHMARK_GENERATED_ONNX_MODELS}
+            COMMAND "${Python3_EXECUTABLE}" "${_bench_generator}" --outdir "${BENCHMARK_GENERATED_MODEL_DIR}"
+            DEPENDS "${_bench_generator}" ${_bench_generator_sources}
+            COMMENT "SOFIE Benchmark: generating the ONNX models..."
+            VERBATIM
+        )
+    else()
+        message(WARNING
+            "SOFIE Benchmark: the onnx and numpy Python modules are not usable, so the "
+            "benchmark models cannot be generated. Only .onnx files already present in "
+            "${BENCHMARK_MODEL_DIR} are used.")
+    endif()
+endif()
+add_custom_target(sofie_benchmark_models DEPENDS ${BENCHMARK_GENERATED_ONNX_MODELS})
+
+set(BENCHMARK_ONNX_MODELS ${BENCHMARK_GENERATED_ONNX_MODELS})
+file(GLOB _bench_dir_models "${BENCHMARK_MODEL_DIR}/*.onnx")
+foreach(_onnx_file ${_bench_dir_models})
+    get_filename_component(_name "${_onnx_file}" NAME_WE)
+    if(NOT _name IN_LIST BENCHMARK_GENERATED_NAMES)
+        list(APPEND BENCHMARK_ONNX_MODELS "${_onnx_file}")
+    endif()
+endforeach()
+set(BENCHMARK_ALL_ONNX_MODELS ${BENCHMARK_ONNX_MODELS})
 
 ################################################################################
 # Dynamic-shape ("parametric") SOFIE model families
@@ -201,13 +262,14 @@ set(SOFIE_BENCHMARK_DEFAULT_RESULTS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/results")
 
 if(NOT BENCHMARK_ONNX_MODELS)
     message(STATUS
-        "SOFIE Benchmark: No .onnx models found in ${BENCHMARK_MODEL_DIR}. "
-        "Add ONNX models there and re-run cmake to enable benchmarking.")
+        "SOFIE Benchmark: no models. They are generated when the onnx and numpy "
+        "Python modules are usable and SOFIE_BENCHMARK_MODEL_DIR is the default. "
+        "Extra .onnx files can be put in ${BENCHMARK_MODEL_DIR}. Re-run cmake afterwards.")
     return()
 endif()
 
 list(LENGTH BENCHMARK_ONNX_MODELS N_MODELS)
-message(STATUS "SOFIE Benchmark: Found ${N_MODELS} model(s) in ${BENCHMARK_MODEL_DIR}")
+message(STATUS "SOFIE Benchmark: Found ${N_MODELS} model(s)")
 
 FetchContent_Declare(
     sofieBLAS
@@ -584,7 +646,15 @@ endforeach()
 # Dynamic families: one entry per swept shape, all sharing the family's one
 # .onnx file
 foreach(_stem ${SOFIE_BENCHMARK_DYNAMIC_FAMILY_STEMS})
-    set(_base_onnx "${BENCHMARK_MODEL_DIR}/${_stem}.onnx")
+    if(_stem IN_LIST BENCHMARK_GENERATED_NAMES)
+        set(_base_onnx "${BENCHMARK_GENERATED_MODEL_DIR}/${_stem}.onnx")
+    else()
+        set(_base_onnx "${BENCHMARK_MODEL_DIR}/${_stem}.onnx")
+        # A family whose base file is neither generated nor present is skipped.
+        if(NOT EXISTS "${_base_onnx}")
+            continue()
+        endif()
+    endif()
     foreach(_point ${_sweep_${_stem}})
         string(REPLACE "," ";" _point_pairs "${_point}")
         set(_name_suffix "")
@@ -665,7 +735,7 @@ add_custom_command(
     OUTPUT  ${GENERATED_HEADERS}
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}"
     COMMAND "$<TARGET_FILE:sofie_benchmark_emitter>" "${CMAKE_CURRENT_BINARY_DIR}"
-    DEPENDS sofie_benchmark_emitter ${BENCHMARK_ONNX_MODELS} ${DYNAMIC_BASE_ONNX_FILES}
+    DEPENDS sofie_benchmark_emitter sofie_benchmark_models ${BENCHMARK_ONNX_MODELS} ${DYNAMIC_BASE_ONNX_FILES}
     WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
     COMMENT "SOFIE Benchmark: generating headers for ${N_MODELS} model(s)..."
     VERBATIM
@@ -854,14 +924,15 @@ if(SOFIE_BENCHMARK_LARGE)
     endforeach()
     set(_large_regex "(${_large_regex})\\.onnx$")
 
-    file(GLOB _ALL_LARGE_ONNX "${CMAKE_CURRENT_SOURCE_DIR}/models/*.onnx")
+    set(_ALL_LARGE_ONNX ${BENCHMARK_ALL_ONNX_MODELS})
     list(FILTER _ALL_LARGE_ONNX INCLUDE REGEX "${_large_regex}")
 
     if(NOT _ALL_LARGE_ONNX)
         message(WARNING
-            "SOFIE_BENCHMARK_LARGE=ON but none of the expected large-input .onnx "
-            "files were found in benchmark/models/.  Add them there, then "
-            "re-run cmake.")
+            "SOFIE_BENCHMARK_LARGE=ON but no large-input model is available. They are "
+            "generated when the onnx and numpy Python modules are usable and "
+            "SOFIE_BENCHMARK_MODEL_DIR is the default. Their .onnx files can also be "
+            "put in ${BENCHMARK_MODEL_DIR}. Re-run cmake afterwards.")
     else()
         list(LENGTH _ALL_LARGE_ONNX N_LARGE)
         message(STATUS
@@ -971,7 +1042,7 @@ if(SOFIE_BENCHMARK_LARGE)
             OUTPUT  ${LARGE_GENERATED_HEADERS}
             COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}"
             COMMAND "$<TARGET_FILE:sofie_benchmark_large_emitter>" "${CMAKE_CURRENT_BINARY_DIR}"
-            DEPENDS sofie_benchmark_large_emitter ${_ALL_LARGE_ONNX}
+            DEPENDS sofie_benchmark_large_emitter sofie_benchmark_models ${_ALL_LARGE_ONNX}
             WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
             COMMENT "SOFIE Benchmark Large: generating headers for ${N_LARGE} large model(s)..."
             VERBATIM

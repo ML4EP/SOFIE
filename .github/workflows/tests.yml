@@ -118,6 +118,9 @@ jobs:
             cmake --build gtest-build -j15
             cmake --install gtest-build
           )
+          # onnx and numpy for generate_input_models.py (the ONNX test models)
+          dnf install -y python3-pip
+          python3 -m pip install 'onnx!=1.19.0' numpy
           echo "PATH=$PATH"                               >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}"    >> "$GITHUB_ENV"
           echo "CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH:-}" >> "$GITHUB_ENV"
@@ -140,6 +143,7 @@ jobs:
             -DALPAKA_BACKEND=${{ needs.parse-command.outputs.backend }} \
             "-DCMAKE_CUDA_ARCHITECTURES=${{ env.CUDA_ARCH }}" \
             -DCMAKE_HIP_ARCHITECTURES=native \
+            "-DPython3_EXECUTABLE=$(command -v python3)" \
             "-DFETCHCONTENT_BASE_DIR=${{ env.DEPS_CACHE }}"
       - name: Build and run tests
         working-directory: build
