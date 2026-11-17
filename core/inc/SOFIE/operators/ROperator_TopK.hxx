@@ -328,6 +328,25 @@ public:
       op += "}\n";
       op += "}\n\n";
 
+      /* CPU accelerators run every thread of a block as its own warp of size 1, so the
+         shuffle merge below would leave each thread with only its own list and the
+         per-warp lists would not fit the shared arrays sized for 32-wide warps. There,
+         every thread parks its list in shared memory and thread 0 merges them all. */
+      op += "if constexpr (alpaka::accMatchesTags<TAcc, alpaka::TagCpuSerial, alpaka::TagCpuThreads, "
+            "alpaka::TagCpuOmp2Blocks, alpaka::TagCpuOmp2Threads, alpaka::TagCpuTbbBlocks>) {\n";
+      op += "auto& tVals = alpaka::declareSharedVar<T[" + P + " * " + K + "], __COUNTER__>(acc);\n";
+      op += "auto& tInds = alpaka::declareSharedVar<int64_t[" + P + " * " + K + "], __COUNTER__>(acc);\n";
+      op += "for (int p = 0; p < " + K + "; ++p) { tVals[tid * " + K + " + p] = myV[p]; tInds[tid * " + K + " + p] = myI[p]; }\n";
+      op += "alpaka::syncBlockThreads(acc);\n";
+      op += "if (tid == 0) {\n";
+      op += "for (std::size_t t = 1; t < " + P + "u; ++t)\n";
+      op += "mergeBestK_" + fNVal + "(myV, myI, &tVals[t * " + K + "], &tInds[t * " + K + "]);\n";
+      op += "for (std::size_t s = 0; s < topKCount; ++s) {\n";
+      op += "vals[ybase + strideYAxis * s] = myV[s];\n";
+      op += "inds[ybase + strideYAxis * s] = myI[s];\n";
+      op += "}\n";
+      op += "}\n";
+      op += "} else {\n\n";
       // merge across the warp, then park each warp's list in shared memory
       op += emitWarpMerge();
       op += "if (laneId == 0) {\n";
@@ -349,6 +368,7 @@ public:
       op += "}\n";
       op += "}\n";
       op += "}\n";
+      op += "}\n"; // GPU path
       op += "}\n";
       op += "};\n";
 
