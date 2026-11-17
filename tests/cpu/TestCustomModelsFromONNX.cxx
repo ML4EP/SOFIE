@@ -1949,6 +1949,15 @@ TEST(ONNX, GatherNDNegativeIndicesTwice)
    expectNear(output, ref.f32("output0"), DEFAULT_TOLERANCE);
 }
 
+TEST(ONNX, BatchNorm5D)
+{
+   SofieReference ref = readReference("BatchNorm5D");
+
+   ASSERT_RUN(std::vector<float>, BatchNorm5D, ref.f32("input0"));
+
+   expectNear(output, ref.f32("output0"), DEFAULT_TOLERANCE);
+}
+
 TEST(ONNX, IdentityWeightBatchNorm)
 {
    SofieReference ref = readReference("IdentityWeightBatchNorm");

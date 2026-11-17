@@ -5493,6 +5493,26 @@ def make_GatherNDNegativeIndicesTwice():
     return _model(graph, opset=21, ir_version=10, producer_name="onnx-example")
 
 
+def make_BatchNorm5D():
+    # rank-5 input [N, C, D, H, W] as from BatchNorm3d, with per-channel parameters and a negative scale
+    nodes = [
+        helper.make_node("BatchNormalization", ["x", "scale", "bias", "mean", "var"], ["y"], name="bn_0"),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        "batchnorm_5d",
+        inputs=[_vi("x", FLOAT, [2, 3, 2, 2, 2])],
+        outputs=[_vi("y", FLOAT, [2, 3, 2, 2, 2])],
+        initializer=[
+            _tensor("scale", FLOAT, [3], [1.2, -0.7, 2.0]),
+            _tensor("bias", FLOAT, [3], [0.3, -0.1, 0.0]),
+            _tensor("mean", FLOAT, [3], [-0.5, 0.25, 1.0]),
+            _tensor("var", FLOAT, [3], [0.6, 1.8, 0.3]),
+        ],
+    )
+    return _model(graph, opset=13, ir_version=10, producer_name="onnx-example")
+
+
 def make_IdentityWeightBatchNorm():
     nodes = [
         helper.make_node("Identity", ["scale_source"], ["scale"], name="identity_0"),
@@ -5981,6 +6001,7 @@ MODELS = {
     "LSTMDefaults": make_LSTMDefaults,
     "LSTMInitialBias": make_LSTMInitialBias,
     "LSTMPeepholes": make_LSTMPeepholes,
+    "BatchNorm5D": make_BatchNorm5D,
     "IdentityWeightBatchNorm": make_IdentityWeightBatchNorm,
     "BatchNormEpsilon": make_BatchNormEpsilon,
     "BatchNormReluEpsilon": make_BatchNormReluEpsilon,
@@ -6814,6 +6835,7 @@ TEST_INPUTS = {
     "AliasDynShapeAcrossNewTensor": [rand_f32(51, (2, 3)), rand_f32(52, (2, 3))],
     "AliasOwnerReadAfterAlias": [rand_f32(49, (2, 3)), rand_f32(50, (2, 3))],
     "IdentityAlias": [rand_f32(41, (2, 3))],
+    "BatchNorm5D": [rand_f32(53, (2, 3, 2, 2, 2))],
     "IdentityWeightBatchNorm": [rand_f32(38, (1, 3, 2, 2))],
     "BatchNormEpsilon": [rand_f32(40, (1, 3, 2, 2))],
     "BatchNormReluEpsilon": [rand_f32(41, (1, 3, 2, 2))],
@@ -7755,6 +7777,7 @@ EXPECTED_OVERRIDES = {
     "MaxPool2d_AsymPad": _maxpool2d_reference,
     "MeanMultidirectionalBroadcast": _mean_reference,
     "ConvTranspose2dOutputShape": _convtranspose_outputshape_reference,
+    "BatchNorm5D": _batchnorm_reference,
     "IdentityWeightBatchNorm": _batchnorm_reference,
     "BatchNormEpsilon": _batchnorm_reference,
     "BatchNormReluEpsilon": _batchnorm_reference,

@@ -2,6 +2,7 @@
 
 #include "BatchNorm_FromONNX_GPU_ALPAKA.hxx"
 #include "BatchNormRelu_FromONNX_GPU_ALPAKA.hxx"
+#include "BatchNorm5D_FromONNX_GPU_ALPAKA.hxx"
 #include "LayerNorm_FromONNX_GPU_ALPAKA.hxx"
 #include "LayerNormScaleBias_FromONNX_GPU_ALPAKA.hxx"
 #include "LayerNorm3D_FromONNX_GPU_ALPAKA.hxx"
@@ -14,6 +15,8 @@
 #include "Softmax2d_FromONNX_GPU_ALPAKA.hxx"
 #include "Softmax3d_FromONNX_GPU_ALPAKA.hxx"
 #include "Softmax4d_FromONNX_GPU_ALPAKA.hxx"
+#include "models/onnx/references/BatchNorm5D.ref.hxx"
+#include "models/onnx/references/BatchNorm5D_input.ref.hxx"
 #include "models/onnx/references/Softmax1d.ref.hxx"
 #include "models/onnx/references/Softmax2d.ref.hxx"
 #include "models/onnx/references/Softmax3d.ref.hxx"
@@ -91,6 +94,34 @@ TEST_F(SofieAlpakaTest, BatchNormalizationRelu)
         float expected = std::max(0.f, input[i] * inv_std);
         EXPECT_LE(std::abs(res_ptr[i] - expected), TOLERANCE) << "i=" << i;
     }
+}
+
+// X[2,3,2,2,2] (BatchNorm3d layout): rank 5, per-channel parameters, a negative scale
+TEST_F(SofieAlpakaTest, BatchNorm5D)
+{
+    constexpr float TOLERANCE = DEFAULT_TOLERANCE;
+
+    const float* input = BatchNorm5D_Input::data;
+    constexpr std::size_t inputSize  = 2 * 3 * 2 * 2 * 2;
+    constexpr std::size_t outputSize = inputSize;
+
+    auto input_d = makeDeviceBuf<float>(host, device, queue, input, inputSize);
+    auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{outputSize}));
+
+    {
+        SOFIE_BatchNorm5D::Session<TestTag> session("BatchNorm5D_FromONNX_GPU_ALPAKA.dat");
+        auto result = session.infer(input_d);
+        alpaka::wait(queue);
+        alpaka::memcpy(queue, result_h, result);
+        alpaka::wait(queue);
+    }
+
+    const float* res = reinterpret_cast<float*>(alpaka::getPtrNative(result_h));
+    const float* expected = BatchNorm5D_ExpectedOutput::outputs;
+
+    ASSERT_EQ(outputSize, sizeof(BatchNorm5D_ExpectedOutput::outputs) / sizeof(float));
+    for (std::size_t i = 0; i < outputSize; ++i)
+        EXPECT_LE(std::abs(res[i] - expected[i]), TOLERANCE) << "i=" << i;
 }
 
 // X[N,4,2,3]: dynamic batch, static spatial (6)

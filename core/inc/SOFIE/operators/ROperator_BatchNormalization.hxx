@@ -80,7 +80,8 @@ public:
       }
 
       fShapeX = model.GetDimTensorShape(fNX);
-      if (fShapeX.size() < 2 || fShapeX.size() > 4) {
+      // X is [N, C, D1, ..., Dn]; the CPU loop and the GPU kernel take any number of spatial dims
+      if (fShapeX.size() < 2) {
          throw std::runtime_error("SOFIE BatchNormalization Op input tensor " + fNX
                                   + " has wrong shape : " + ConvertDimShapeToString(fShapeX));
       }
