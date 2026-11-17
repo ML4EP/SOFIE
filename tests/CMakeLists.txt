@@ -63,10 +63,26 @@ function(sofie_write_model_includes testsource outfile suffix)
 endfunction()
 
 function(sofie_set_driver_definitions target)
-  string(REPLACE ";" " " _blas_libs "${BLAS_LIBRARIES}")
+  # Link flags for the driver programs. A framework found by FindBLAS on macOS
+  # (Accelerate) is a directory, which the linker only accepts as -framework.
+  set(_blas_libs "")
+  foreach(_lib ${BLAS_LIBRARIES})
+    if (_lib MATCHES "^(.*)/([^/]+)\\.framework$")
+      string(APPEND _blas_libs " -F${CMAKE_MATCH_1} -framework ${CMAKE_MATCH_2}")
+    else()
+      string(APPEND _blas_libs " ${_lib}")
+    endif()
+  endforeach()
+  string(STRIP "${_blas_libs}" _blas_libs)
+  # On macOS the C++ standard headers live in the SDK, which CMake passes to its own
+  # targets with -isysroot; the driver programs compiled by the tests need it too.
+  set(_driver_flags "-std=c++20 -O1 -I${CMAKE_SOURCE_DIR}/core/inc")
+  if (APPLE AND CMAKE_OSX_SYSROOT)
+    string(APPEND _driver_flags " -isysroot ${CMAKE_OSX_SYSROOT}")
+  endif()
   target_compile_definitions(${target} PRIVATE
     SOFIE_TEST_CXX="${CMAKE_CXX_COMPILER}"
-    SOFIE_TEST_CXX_FLAGS="-std=c++20 -O1 -I${CMAKE_SOURCE_DIR}/core/inc"
+    SOFIE_TEST_CXX_FLAGS="${_driver_flags}"
     SOFIE_TEST_LINK_FLAGS="${_blas_libs}"
     SOFIE_TEST_PYTHON="${Python3_EXECUTABLE}")
 endfunction()
