@@ -34,25 +34,36 @@ The comparison backends are optional and only need to be installed when their co
 
 ## Benchmark Models
 
-By default, ONNX models are read from:
+The benchmark models are not checked in. They are described by the builder
+scripts in `benchmark/models/generators/`, and `benchmark/models/generate_models.py`
+writes them into `<build>/benchmark/models/` when the benchmark is built. This
+needs the `onnx` and `numpy` Python modules.
 
-```text
-benchmark/models/
+The builders reproduce the graphs of the original exports node for node.
+Weight tensors are filled with seeded random values, so the files are
+reproducible but do not carry trained weights.
+
+To write the models next to the scripts, for example for the `torch_models/`
+exporters used by the PyTorch AOTInductor comparison:
+
+```bash
+python3 benchmark/models/generate_models.py
 ```
 
-For example:
+Any other `.onnx` file placed in `benchmark/models/` is benchmarked as well:
 
 ```text
 benchmark/models/
-├── GNN_model.onnx
-├── simple_transformer.onnx
-├── resnet50.onnx
+├── my_model.onnx
 └── ...
 ```
 
 Re-run CMake after adding or removing ONNX files because model discovery happens at configure time.
 
-A different model directory can be selected with:
+A different model directory can be selected with the option below. Nothing is
+generated in that case, only the `.onnx` files in that directory are used, and
+a dynamic family (see the next section) whose base model is not in that
+directory is left out:
 
 ```bash
 -DSOFIE_BENCHMARK_MODEL_DIR=<path>
@@ -87,7 +98,7 @@ The `.onnx` and `.pt2` files must use the same model basename.
 
 ## Dynamic-shape SOFIE benchmarking
 
-SOFIE's GPU/alpaka code generator supports dynamic shapes end-to-end — the generated `Session` constructor and `infer()` take the shape parameters as plain runtime arguments; and ONNX Runtime/TensorRT bind the *same* concrete shape values directly against each family's dynamic `.onnx` file. An explicit `SHAPE_SWEEP` table in `benchmark/CMakeLists.txt` now drives all three backends directly, generating SOFIE's inference code once per family, directly from the original parametric `.onnx` file, and reusing it at every swept shape:
+SOFIE's GPU/alpaka code generator supports dynamic shapes end-to-end — the generated `Session` constructor and `infer()` take the shape parameters as plain runtime arguments; and ONNX Runtime/TensorRT bind the *same* concrete shape values directly against each family's dynamic `.onnx` file. An explicit shape sweep per family (the `_sweep_<stem>` lists in `benchmark/CMakeLists.txt`) now drives all three backends directly, generating SOFIE's inference code once per family, directly from the family's parametric `.onnx` file, and reusing it at every swept shape:
 
 - `gnn_h32_k2`, `gnn_h64_k4`
 - `gnn_large`
@@ -95,9 +106,9 @@ SOFIE's GPU/alpaka code generator supports dynamic shapes end-to-end — the gen
 - `transformer_d32_h2_L6_ff32`, `transformer_d64_h4_L6_ff128`
 - `punet_h32_k2_heads4_layers2`, `punet_h64_k4_heads4_layers2`
 
-Every base `.onnx` in `benchmark/models/` that actually has symbolic ONNX input dimensions is in this list. The remaining multi-size static families in that directory (`mambav2_L*`/`MAMBAV2.onnx`, `transformer_L*_B*`, `simple_transformer*`) have no symbolic dims in *any* of their exports where each size was exported independently, with no shared parametric base at all.
+Every generated model that actually has symbolic ONNX input dimensions is in this list. The remaining multi-size static families (`mambav2_L*`/`MAMBAV2.onnx`, `transformer_L*_B*`, `simple_transformer*`) have no symbolic dims in *any* of their exports where each size was exported independently, with no shared parametric base at all.
 
-The family list lives in `SOFIE_BENCHMARK_DYNAMIC_FAMILY_STEMS`, the shape points to sweep in `SHAPE_SWEEP`, both at the top of `benchmark/CMakeLists.txt`.
+The family list lives in `SOFIE_BENCHMARK_DYNAMIC_FAMILY_STEMS`, the shape points to sweep in the `_sweep_<stem>` lists, both at the top of `benchmark/CMakeLists.txt`.
 
 ---
 
@@ -166,13 +177,13 @@ export LD_LIBRARY_PATH=/path/to/TensorRT/lib:$LD_LIBRARY_PATH
 TensorRT engines are generated on first use and cached for later runs.
 
 Four of the dynamic-family base models (`gnn_h32_k2`, `gnn_h64_k4`,
-`punet_h32_k2_heads4_layers2`, `punet_h64_k4_heads4_layers2`) have their
-`/graphconvs.0/Squeeze` node patched in-place to take an explicit
+`punet_h32_k2_heads4_layers2`, `punet_h64_k4_heads4_layers2`) have a
+`/graphconvs.0/Squeeze` node that takes an explicit
 `axes=[-1]` input instead of relying on implicit "squeeze all size-1 dims"
-behavior. This was
+behavior. The original exports were patched this way and the builders
+reproduce the patched graph. This is
 needed only because **TensorRT's** ONNX parser can't infer which dims to
-squeeze for a dynamic shape. The pre-patch originals are kept alongside as `benchmark/models/*.onnx.bak`
-for reference.
+squeeze for a dynamic shape.
 
 ---
 
@@ -206,6 +217,7 @@ shape-sweep list, not the old per-shape `.onnx` files):
 
 ```bash
 pip install onnxruntime
+python3 benchmark/models/generate_models.py                    # the .onnx files the exporters read
 python3 benchmark/models/torch_models/export_aot.py            # every family
 python3 benchmark/models/torch_models/export_aot.py gnn_h32_k2 # one family
 ```
@@ -213,6 +225,10 @@ python3 benchmark/models/torch_models/export_aot.py gnn_h32_k2 # one family
 Each family's `torch_models/<family>.py` builds and verifies its own
 `torch.nn.Module` at **import** time (before `export_aot.py` calls its
 `build(shape_overrides)` for each swept shape).
+
+The MLPF exporters load the trained particleflow checkpoint, so their check
+against the generated `.onnx`, which has random weights, prints a mismatch
+warning. The other families read their weights from the generated `.onnx`.
 
 ---
 

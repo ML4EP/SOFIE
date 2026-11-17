@@ -81,9 +81,11 @@ The test executable is `TestCustomModelsFromONNXForAlpakaCuda` with
 `-DALPAKA_BACKEND=cuda` (the default), or `TestCustomModelsFromONNXForAlpakaHip`
 with `-DALPAKA_BACKEND=hip`.  The ONNX models used as test inputs are built by
 `tests/models/generators/generate_input_models.py` into the build tree when the
-tests run (the `onnx` and `numpy` Python modules are required); add a
-`make_<Name>()` function there for a new test model.  Models with symbolic
-(dynamic) input dimensions are specialised by the emitter before testing.
+tests run (the `onnx` and `numpy` Python modules are required).  For a new
+test model add a `make_<Name>()` function there and list it in the `MODELS`
+table of that file; a model that also has an entry in `TEST_INPUTS` (one array
+per graph input) gets a reference file `references/<Name>.ref`.  Models with
+symbolic (dynamic) input dimensions are specialised by the emitter before testing.
 
 ---
 
@@ -103,14 +105,14 @@ side-by-side comparison with **ONNX Runtime GPU**.
 ### Quick start
 
 ```bash
-# Place .onnx models in benchmark/models/ first
+# The benchmark models are generated at build time (needs the onnx and numpy Python modules)
 cmake -B build \
       -DSOFIE_BENCHMARK=ON \
       -DSOFIE_BENCHMARK_BACKEND=CUDA \
       -DSOFIE_BENCHMARK_CUDA_ARCH=86 \   # e.g. 86 for RTX 30xx, 80 for A100
       /path/to/SOFIE
 cmake --build build --target sofie_benchmark -j$(nproc)
-cd build/benchmark && ./sofie_benchmark
+cd build/bin && ./sofie_benchmark
 ```
 
 For a full reference of benchmark CMake flags, runtime options, the large-input
@@ -128,7 +130,7 @@ cmake -B build \
       -DSOFIE_BENCHMARK_PROFILE=ON \
       /path/to/SOFIE
 cmake --build build --target sofie_benchmark -j$(nproc)
-cd build/benchmark && ./sofie_benchmark
+cd build/bin && ./sofie_benchmark
 ```
 
 > Profiling inserts `alpaka::wait(queue)` after each operator, which serialises
@@ -174,7 +176,7 @@ SOFIE/
 │   ├── templates/  # Emitter sources configured by CMake
 │   └── gnn/        # GNN emitter examples
 ├── benchmark/      # Latency / throughput benchmark toolkit
-│   ├── models/     # Place .onnx benchmark models here
+│   ├── models/     # Model builders (generate_models.py, generators/) and PyTorch exporters (torch_models/)
 │   └── src/        # CMake-configured source templates
 ├── scripts/        # setup.sh (runtime env), check_style.sh (clang-format/tidy)
 └── cmake/          # CMake modules and config templates

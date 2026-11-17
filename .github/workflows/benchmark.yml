@@ -140,6 +140,11 @@ jobs:
           key: cmake-deps-bench-${{ hashFiles('sofie-pr/benchmark/CMakeLists.txt') }}
           restore-keys: cmake-deps-bench-
 
+      - name: Install Python modules for the model generator
+        run: |
+          python3 -m pip --version >/dev/null 2>&1 || python3 -m ensurepip --user
+          python3 -m pip install --user 'onnx!=1.19.0' numpy
+
       - name: Configure PR build
         run: |
           cmake -B sofie-pr/build -S sofie-pr \
@@ -148,6 +153,7 @@ jobs:
             -DSOFIE_BENCHMARK_BACKEND=CUDA \
             "-DSOFIE_BENCHMARK_CUDA_ARCH=${{ env.CUDA_ARCH }}" \
             "-DCMAKE_CUDA_ARCHITECTURES=${{ env.CUDA_ARCH }}" \
+            "-DPython3_EXECUTABLE=$(command -v python3)" \
             "-DFETCHCONTENT_BASE_DIR=${{ env.DEPS_CACHE }}"
 
       - name: Build PR benchmark
@@ -156,7 +162,8 @@ jobs:
       - name: Run PR benchmark
         working-directory: sofie-pr/build/benchmark
         run: |
-          ./sofie_benchmark \
+          set -euo pipefail
+          ../bin/sofie_benchmark \
             -w ${{ env.BENCH_WARMUP }} \
             -n ${{ env.BENCH_ITERS }} \
             | tee benchmark_pr.txt
@@ -190,7 +197,8 @@ jobs:
         if: github.event_name == 'issue_comment' && steps.base_support.outputs.supported == 'true'
         working-directory: sofie-main/build/benchmark
         run: |
-          ./sofie_benchmark \
+          set -euo pipefail
+          ../bin/sofie_benchmark \
             -w ${{ env.BENCH_WARMUP }} \
             -n ${{ env.BENCH_ITERS }} \
             | tee benchmark_main.txt

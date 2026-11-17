@@ -10,6 +10,10 @@ include_directories(${CMAKE_SOURCE_DIR}/parsers/inc)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Search PATH in order, not for the newest Python, and try the name python3
+# first: that is the interpreter "python3 -m pip" installs into.
+set(Python3_FIND_STRATEGY LOCATION)
+set(Python3_FIND_UNVERSIONED_NAMES FIRST)
 find_package(Python3 COMPONENTS Interpreter QUIET)
 
 function(sofie_find_python_module module)
@@ -77,10 +81,8 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
 set(USER_MODELS_DIR "")
 if (ONNX_MODELS_DIR)
   get_filename_component(USER_MODELS_DIR ${ONNX_MODELS_DIR} ABSOLUTE)
-  set(CHECKED_IN_MODELS_DIR ${USER_MODELS_DIR})
 else()
   set(ONNX_MODELS_DIR models/onnx)
-  set(CHECKED_IN_MODELS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/models/onnx)
 endif()
 
 option(ENABLE_ALPAKA_TESTS "Enable alpaka-based SOFIE tests" OFF)
@@ -106,8 +108,10 @@ set(CAPTURE_STR
         std::cerr << \"[SKIP] Multiple outputs are not supported for @1\" << std::endl;\n\
     } else if (msg.find(\"is of a data type which is not yet supported\") != std::string::npos) {\n\
         std::cerr << \"[SKIP] Operator with unsupported data type in @1: \" << msg << std::endl;\n\
-    } else if (msg.find(\"has no alpaka implementation\") != std::string::npos) {\n\
-        std::cerr << \"[SKIP] Operator without GPU implementation in @1: \" << msg << std::endl;\n\
+    } else if (msg.find(\"has no alpaka implementation\") != std::string::npos ||\n\
+               msg.find(\"is not supported on the ALPAKA backend\") != std::string::npos ||\n\
+               msg.find(\"GPU code generation requires\") != std::string::npos) {\n\
+        std::cerr << \"[SKIP] Not supported by the GPU code generation in @1: \" << msg << std::endl;\n\
     } else {\n\
         std::cerr << \"[ERROR] Failed processing @1: \" << msg << std::endl;\n\
         failures++;\n\
@@ -479,9 +483,14 @@ elseif (SOFIE_ONNX_USABLE)
     list(APPEND ONNX_MODEL_NAMES ${fname})
     list(APPEND ONNX_MODEL_PATHS ${TEST_MODELS_DIR}/${fname}.onnx)
   endforeach()
-  # Models still checked in under models/onnx that the generator does not
-  # know yet are taken from there.
-  file(GLOB _checked_in_onnx_files "${CHECKED_IN_MODELS_DIR}/*.onnx")
+else()
+  message(STATUS "The onnx and numpy Python modules are not usable: the generated ONNX models are not available and the ONNX tests based on them are disabled. Set ONNX_MODELS_DIR to use existing models.")
+endif()
+
+if (USER_MODELS_DIR OR SOFIE_ONNX_USABLE)
+  # Models still checked in under models/onnx that are not in the list yet
+  # are taken from there.
+  file(GLOB _checked_in_onnx_files "${CMAKE_CURRENT_SOURCE_DIR}/models/onnx/*.onnx")
   foreach(onnx_file ${_checked_in_onnx_files})
     get_filename_component(fname ${onnx_file} NAME_WE)
     if (NOT fname IN_LIST ONNX_MODEL_NAMES)
@@ -489,8 +498,6 @@ elseif (SOFIE_ONNX_USABLE)
       list(APPEND ONNX_MODEL_PATHS ${onnx_file})
     endif()
   endforeach()
-else()
-  message(STATUS "The onnx and numpy Python modules are not usable: the generated ONNX models are not available and the ONNX tests based on them are disabled. Set ONNX_MODELS_DIR to use existing models.")
 endif()
 
 if (ONNX_MODEL_NAMES)
