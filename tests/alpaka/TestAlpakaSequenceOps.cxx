@@ -5,6 +5,9 @@
 #include "MambaScan_FromONNX_GPU_ALPAKA.hxx"
 #include "RWKV_WKV6_FromONNX_GPU_ALPAKA.hxx"
 #include "GriffinRGLRU_FromONNX_GPU_ALPAKA.hxx"
+#include "RotaryEmbedding_FromONNX_GPU_ALPAKA.hxx"
+#include "RotaryEmbedding_Interleaved_Partial_FromONNX_GPU_ALPAKA.hxx"
+#include "RotaryEmbedding_3d_PositionIds_FromONNX_GPU_ALPAKA.hxx"
 
 #include "models/onnx/references/SDPA.ref.hxx"
 #include "models/onnx/references/SDPA_input.ref.hxx"
@@ -14,6 +17,12 @@
 #include "models/onnx/references/RWKV_WKV6_input.ref.hxx"
 #include "models/onnx/references/GriffinRGLRU.ref.hxx"
 #include "models/onnx/references/GriffinRGLRU_input.ref.hxx"
+#include "models/onnx/references/RotaryEmbedding.ref.hxx"
+#include "models/onnx/references/RotaryEmbedding_input.ref.hxx"
+#include "models/onnx/references/RotaryEmbedding_Interleaved_Partial.ref.hxx"
+#include "models/onnx/references/RotaryEmbedding_Interleaved_Partial_input.ref.hxx"
+#include "models/onnx/references/RotaryEmbedding_3d_PositionIds.ref.hxx"
+#include "models/onnx/references/RotaryEmbedding_3d_PositionIds_input.ref.hxx"
 
 
 TEST_F(SofieAlpakaTest, SDPA)
@@ -219,3 +228,28 @@ TEST_F(SofieAlpakaTest, GriffinRGLRUResetState)
     SOFIE_GriffinRGLRU::Session<TestTag> session("GriffinRGLRU_FromONNX_GPU_ALPAKA.dat");
     EXPECT_NO_THROW(session.resetState(session.queue));
 }
+
+// RotaryEmbedding (RoPE): the caches (and position_ids) are initializers, X is the only input
+#define ROTARY_EMBEDDING_TEST(NAME)                                                                   \
+   TEST_F(SofieAlpakaTest, NAME)                                                                      \
+   {                                                                                                  \
+      constexpr float TOLERANCE = 1e-5f;                                                              \
+      constexpr std::size_t size = sizeof(NAME##_Input::data) / sizeof(float);                        \
+      ASSERT_EQ(size, sizeof(NAME##_ExpectedOutput::outputs) / sizeof(float));                        \
+      auto x_d = makeDeviceBuf<float>(host, device, queue, NAME##_Input::data, size);                 \
+      auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{size}));                      \
+      {                                                                                               \
+         SOFIE_##NAME::Session<TestTag> session(#NAME "_FromONNX_GPU_ALPAKA.dat");                    \
+         auto result = session.infer(x_d);                                                            \
+         alpaka::wait(queue);                                                                         \
+         alpaka::memcpy(queue, result_h, result);                                                     \
+         alpaka::wait(queue);                                                                         \
+      }                                                                                               \
+      const float *res = reinterpret_cast<float *>(alpaka::getPtrNative(result_h));                   \
+      for (std::size_t i = 0; i < size; ++i)                                                          \
+         EXPECT_LE(std::abs(res[i] - NAME##_ExpectedOutput::outputs[i]), TOLERANCE) << "i=" << i;     \
+   }
+
+ROTARY_EMBEDDING_TEST(RotaryEmbedding)
+ROTARY_EMBEDDING_TEST(RotaryEmbedding_Interleaved_Partial)
+ROTARY_EMBEDDING_TEST(RotaryEmbedding_3d_PositionIds)

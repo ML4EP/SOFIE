@@ -55,7 +55,8 @@ enum class OperatorKind {
    SDPA=35,
    MAMBA_SCAN=36,
    RWKV_WKV6=37,
-   GRIFFIN_RGLRU=38
+   GRIFFIN_RGLRU=38,
+   ROTARY_EMBEDDING=39
 };
 
 enum class EFusionMappingType {

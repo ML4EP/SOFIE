@@ -35,6 +35,7 @@
 #include "SOFIE/operators/ROperator_EyeLike.hxx"
 #include "SOFIE/operators/ROperator_Range.hxx"
 #include "SOFIE/operators/ROperator_RMSNorm.hxx"
+#include "SOFIE/operators/ROperator_RotaryEmbedding.hxx"
 #include "SOFIE/operators/ROperator_GroupNorm.hxx"
 #include "SOFIE/operators/ROperator_CumSum.hxx"
 #include "SOFIE/operators/ROperator_SDPA.hxx"

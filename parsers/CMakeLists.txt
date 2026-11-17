@@ -71,6 +71,7 @@ set(sources_cxx
     src/ParseRMSNorm.cxx
     src/ParseRNN.cxx
     src/ParseRWKVWKV6.cxx
+    src/ParseRotaryEmbedding.cxx
     src/ParseRange.cxx
     src/ParseReduce.cxx
     src/ParseRelu.cxx

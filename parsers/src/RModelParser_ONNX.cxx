@@ -91,6 +91,7 @@ extern ParserFuncSignature ParseBitwiseNot;
 extern ParserFuncSignature ParseNonZero;
 extern ParserFuncSignature ParseScatterND;
 extern ParserFuncSignature ParseRMSNorm;
+extern ParserFuncSignature ParseRotaryEmbedding;
 extern ParserFuncSignature ParseGroupNorm;
 extern ParserFuncSignature ParseCumSum;
 extern ParserFuncSignature ParseSDPA;
@@ -357,6 +358,7 @@ RModelParser_ONNX::RModelParser_ONNX() noexcept : fOperatorsMapImpl(std::make_un
    RegisterOperator("BitwiseNot", ParseBitwiseNot);
 
    RegisterOperator("RMSNorm", ParseRMSNorm);
+   RegisterOperator("RotaryEmbedding", ParseRotaryEmbedding);
    RegisterOperator("GroupNormalization", ParseGroupNorm);
    RegisterOperator("CumSum", ParseCumSum);
    RegisterOperator("ScaledDotProductAttention", ParseSDPA);
