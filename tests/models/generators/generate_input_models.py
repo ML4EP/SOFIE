@@ -7688,6 +7688,14 @@ def _maxpool2d_reference(model, feeds):
     return [out]
 
 
+def _range_reference(model, feeds):
+    # The Range models feed start, limit and delta as 1-element tensors instead of
+    # the scalars the ONNX spec asks for, which recent onnx ReferenceEvaluators
+    # reject; Range is just arange.
+    start, limit, delta = (np.asarray(v).reshape(()) for v in feeds.values())
+    return [np.arange(start, limit, delta, dtype=start.dtype)]
+
+
 def _mean_reference(model, feeds):
     return [np.mean(np.broadcast_arrays(*feeds.values()), axis=0, dtype=np.float32)]
 
@@ -7745,6 +7753,8 @@ def _logsoftmax_reference(model, feeds):
 
 
 EXPECTED_OVERRIDES = {
+    "RangeFloat": _range_reference,
+    "RangeInt": _range_reference,
     "GRUBidirectional": _recurrent_reference,
     "LSTMBidirectional": _recurrent_reference,
     "RNNBidirectional": _recurrent_reference,
