@@ -207,6 +207,46 @@ def make_AddBroadcast7():
     return _model(graph, opset=17, ir_version=8)
 
 
+def _rmsnorm_model(name, x_shape, scale_shape, scale_vals, **attrs):
+    """RMSNormalization (opset 23) on a float tensor X with the scale given as an initializer."""
+    nodes = [
+        helper.make_node("RMSNormalization", ["X", "Scale"], ["Y"], **attrs),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        name,
+        inputs=[
+            _vi("X", FLOAT, x_shape),
+        ],
+        outputs=[
+            _vi("Y", FLOAT, x_shape),
+        ],
+        initializer=[
+            _tensor("Scale", FLOAT, scale_shape, scale_vals),
+        ],
+    )
+    return _model(graph, opset=23, ir_version=11)
+
+
+def make_RMSNormalization():
+    """Ops: RMSNormalization (default attributes, normalized over the last axis)"""
+    return _rmsnorm_model("rmsnorm_test", [2, 3, 4], [4], [0.5, -1.0, 1.5, 2.0])
+
+
+def make_RMSNormalization_Axis():
+    """Ops: RMSNormalization (axis=2 on a 4d input, scale over the two normalized axes, custom epsilon)"""
+    return _rmsnorm_model(
+        "rmsnorm_axis_test", [2, 3, 4, 5], [4, 5], np.linspace(-1.0, 1.0, 20).tolist(), axis=2, epsilon=1e-2
+    )
+
+
+def make_RMSNormalization_BroadcastScale():
+    """Ops: RMSNormalization (axis=-2, scale broadcast along the first normalized axis, integral epsilon)"""
+    return _rmsnorm_model(
+        "rmsnorm_broadcast_test", [2, 3, 4], [1, 4], [1.0, 0.5, -0.5, 2.0], axis=-2, epsilon=1.0
+    )
+
+
 def make_AveragePool1d_CeilMode_Overhang():
     nodes = [
         helper.make_node(
@@ -6092,6 +6132,9 @@ MODELS = {
     "WhereMultidirectionalBroadcast": make_WhereMultidirectionalBroadcast,
     "WhereBroadcastHighRankCond": make_WhereBroadcastHighRankCond,
     "WhereBroadcastEqualElementCount": make_WhereBroadcastEqualElementCount,
+    "RMSNormalization": make_RMSNormalization,
+    "RMSNormalization_Axis": make_RMSNormalization_Axis,
+    "RMSNormalization_BroadcastScale": make_RMSNormalization_BroadcastScale,
 }
 
 
@@ -7552,6 +7595,9 @@ TEST_INPUTS = {
             (9,),
         )
     ],
+    "RMSNormalization": [f32(np.arange(-12, 12) / 4, (2, 3, 4))],
+    "RMSNormalization_Axis": [f32(np.sin(np.arange(120)), (2, 3, 4, 5))],
+    "RMSNormalization_BroadcastScale": [f32(np.arange(-12, 12) / 4, (2, 3, 4))],
 }
 
 

@@ -1119,6 +1119,33 @@ TEST(ONNX, Concat0D) {
    expectNear(output, expected_output, DEFAULT_TOLERANCE);
 }
 
+TEST(ONNX, RMSNormalization)
+{
+   SofieReference ref = readReference("RMSNormalization");
+
+   ASSERT_RUN(std::vector<float>, RMSNormalization, ref.f32("input0"));
+
+   expectNear(output, ref.f32("output0"), DEFAULT_TOLERANCE);
+}
+
+TEST(ONNX, RMSNormalization_Axis)
+{
+   SofieReference ref = readReference("RMSNormalization_Axis");
+
+   ASSERT_RUN(std::vector<float>, RMSNormalization_Axis, ref.f32("input0"));
+
+   expectNear(output, ref.f32("output0"), DEFAULT_TOLERANCE);
+}
+
+TEST(ONNX, RMSNormalization_BroadcastScale)
+{
+   SofieReference ref = readReference("RMSNormalization_BroadcastScale");
+
+   ASSERT_RUN(std::vector<float>, RMSNormalization_BroadcastScale, ref.f32("input0"));
+
+   expectNear(output, ref.f32("output0"), DEFAULT_TOLERANCE);
+}
+
 TEST(ONNX, LayerNormalization2d)
 {
    SofieReference ref = readReference("LayerNormalization2d");

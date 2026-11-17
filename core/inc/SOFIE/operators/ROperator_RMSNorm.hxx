@@ -33,6 +33,8 @@ private:
 
    std::vector<Dim> fNormShape;
    std::vector<Dim> fAxesShape;
+   // stride of the scale along each normalized axis, "0" on the axes it is broadcast along
+   std::vector<std::string> fScaleStrides;
 
 public:
    ROperator_RMSNorm() {}
@@ -72,6 +74,31 @@ public:
       fAxesLength = ConvertDimShapeToLength(fAxesShape);
       fNormLength = ConvertDimShapeToLength(fNormShape);
       fLength     = ConvertDimShapeToLength(fShapeX);
+
+      // The scale must broadcast to the normalized shape X[axis, ..., rank-1] (ONNX
+      // RMSNormalization): left-pad it with 1 and check every other dimension.
+      if (fAxis >= fRank && fRank > 0)
+         throw std::runtime_error("SOFIE RMSNorm: axis " + std::to_string(fAttrAxis) +
+                                  " is out of range for input " + ConvertDimShapeToString(fShapeX));
+      std::vector<Dim> scaleShape = fShapeScale;
+      if (scaleShape.size() > fNormShape.size())
+         throw std::runtime_error("SOFIE RMSNorm: scale tensor " + fNScale + " with shape " +
+                                  ConvertDimShapeToString(fShapeScale) +
+                                  " has a higher rank than the normalized shape " + ConvertDimShapeToString(fNormShape));
+      scaleShape.insert(scaleShape.begin(), fNormShape.size() - scaleShape.size(), Dim{1});
+      auto scaleStrides = UTILITY::ComputeStrideFromShape(scaleShape);
+      fScaleStrides.assign(fNormShape.size(), "0");
+      for (size_t ji = 0; ji < fNormShape.size(); ++ji) {
+         const bool broadcast = !scaleShape[ji].isParam && scaleShape[ji].dim == 1;
+         if (broadcast)
+            continue;
+         if (scaleShape[ji] != fNormShape[ji])
+            throw std::runtime_error("SOFIE RMSNorm: scale tensor " + fNScale + " with shape " +
+                                     ConvertDimShapeToString(fShapeScale) +
+                                     " cannot be broadcast to the normalized shape " +
+                                     ConvertDimShapeToString(fNormShape));
+         fScaleStrides[ji] = scaleStrides[ji].GetVal();
+      }
 
       model.AddIntermediateTensor(fNY, model.GetTensorType(fNX), fShapeY);
       model.AddNeededStdLib("cmath");
@@ -129,12 +156,11 @@ public:
       out << ";\n";
       out << "size_t s_idx = ";
       {
-         auto scaleStrides = UTILITY::ComputeStrideFromShape(fNormShape);
          bool first = true;
          for (size_t j = fAxis; j < fRank; ++j) {
             size_t ji = j - fAxis;
             if (!first) out << " + ";
-            out << "n_" << j << " * " << scaleStrides[ji].GetVal();
+            out << "n_" << j << " * " << fScaleStrides[ji];
             first = false;
          }
          if (first) out << "0";
@@ -229,7 +255,7 @@ public:
          op += "if (in_range) {\n";
          if (fRank - fAxis == 1) {
             op += "norm_offset = tid * " + sz(strides[fAxis].GetVal()) + ";\n";
-            op += "s_offset    = tid * " + sz(normStrides[0].GetVal())  + ";\n";
+            op += "s_offset    = tid * " + sz(fScaleStrides[0])  + ";\n";
          } else {
             op += "std::size_t rem = tid;\n";
             for (size_t j = fAxis; j < fRank; ++j) {
@@ -237,7 +263,7 @@ public:
                op += "{ std::size_t nj = rem / " + sz(normStrides[ji].GetVal())
                   + "; rem %= " + sz(normStrides[ji].GetVal())
                   + "; norm_offset += nj * " + sz(strides[j].GetVal())
-                  + "; s_offset += nj * " + sz(normStrides[ji].GetVal()) + "; }\n";
+                  + "; s_offset += nj * " + sz(fScaleStrides[ji]) + "; }\n";
             }
          }
          op += "}\n\n";
@@ -310,7 +336,7 @@ public:
             bool first = true;
             for (size_t j = fAxis; j < fRank; ++j) {
                if (!first) op += " + ";
-               op += "n_" + std::to_string(j) + " * " + sz(normStrides[j - fAxis].GetVal());
+               op += "n_" + std::to_string(j) + " * " + sz(fScaleStrides[j - fAxis]);
                first = false;
             }
             if (fRank == fAxis) op += "0u";

@@ -357,6 +357,8 @@ RModelParser_ONNX::RModelParser_ONNX() noexcept : fOperatorsMapImpl(std::make_un
    RegisterOperator("BitwiseNot", ParseBitwiseNot);
 
    RegisterOperator("RMSNorm", ParseRMSNorm);
+   // the standard ONNX operator (opset 23) has the same inputs and attributes
+   RegisterOperator("RMSNormalization", ParseRMSNorm);
    RegisterOperator("GroupNormalization", ParseGroupNorm);
    RegisterOperator("CumSum", ParseCumSum);
    RegisterOperator("ScaledDotProductAttention", ParseSDPA);
