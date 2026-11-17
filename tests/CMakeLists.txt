@@ -454,8 +454,65 @@ SOFIE_GENERATE_EXECUTABLE(
 
   elseif (_alpaka_backend STREQUAL "sycl")
     message(FATAL_ERROR "ALPAKA_BACKEND=sycl is not implemented yet.")
+  ##########################################################################
+  # CPU backend: alpaka's std::thread accelerator (multi-thread blocks with
+  # block synchronisation and shared memory), with sofieBLAS on a CPU BLAS.
+  # It runs the alpaka tests without a GPU.
+  ##########################################################################
   elseif (_alpaka_backend STREQUAL "cpu")
-    message(FATAL_ERROR "ALPAKA_BACKEND=cpu is not implemented yet.")
+
+    message(STATUS "Enabling alpaka CPU tests")
+    find_package(Threads REQUIRED)
+
+    # the tests that drive raw CUDA/HIP streams and allocations need a GPU runtime
+    set(ALPAKA_CPU_TEST_SOURCES ${ALPAKA_TEST_SOURCES})
+    list(REMOVE_ITEM ALPAKA_CPU_TEST_SOURCES
+      alpaka/TestAlpakaExternalStream.cxx
+      alpaka/TestAlpakaCustomMemory.cxx
+    )
+
+    SOFIE_GENERATE_EXECUTABLE(
+      TestCustomModelsFromONNXForAlpakaCpu
+      ${ALPAKA_CPU_TEST_SOURCES}
+      LIBRARIES SOFIE_core GTest::gtest GTest::gtest_main BLAS::BLAS Threads::Threads
+      FIXTURES_REQUIRED sofie-compile-models-onnx-alpaka;sofie-lowrank-emit;sofie-strided-emit
+      FIXTURES_SETUP sofie-test-models-onnx-alpaka-build
+    )
+
+    target_include_directories(
+      TestCustomModelsFromONNXForAlpakaCpu PRIVATE
+      ${CMAKE_CURRENT_BINARY_DIR}
+      ${alpaka_SOURCE_DIR}/include
+      ${sofieblas_SOURCE_DIR}/include
+      ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+
+    set_target_properties(
+      TestCustomModelsFromONNXForAlpakaCpu
+      PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+    )
+
+    # sofieBLAS enables its CBLAS backend with the serial accelerator macro
+    set(_sofieblas_cpu_backend SOFIEBLAS_USE_OPENBLAS)
+    if (APPLE)
+      set(_sofieblas_cpu_backend SOFIEBLAS_USE_ACCELERATE)
+    endif()
+    target_compile_definitions(
+      TestCustomModelsFromONNXForAlpakaCpu PRIVATE
+      ALPAKA_ACC_CPU_B_SEQ_T_THREADS_ENABLED
+      ALPAKA_ACC_CPU_B_SEQ_T_SEQ_ENABLED
+      ALPAKA_HAS_STD_ATOMIC_REF
+      ${_sofieblas_cpu_backend}
+    )
+
+    SOFIE_ADD_TEST(
+      TestCustomModelsFromONNXForAlpakaCpu
+      EXEC ./TestCustomModelsFromONNXForAlpakaCpu
+      FIXTURES_REQUIRED sofie-compile-models-onnx-alpaka;sofie-lowrank-emit;sofie-test-models-onnx-alpaka-build
+      TIMEOUT 1800
+    )
   endif() # cuda backend
 endif()   # ENABLE_ALPAKA_TESTS
 
