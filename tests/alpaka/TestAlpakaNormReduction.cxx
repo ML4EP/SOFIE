@@ -5,6 +5,7 @@
 #include "RMSNormalization_FromONNX_GPU_ALPAKA.hxx"
 #include "RMSNormalization_Axis_FromONNX_GPU_ALPAKA.hxx"
 #include "RMSNormalization_BroadcastScale_FromONNX_GPU_ALPAKA.hxx"
+#include "RMSNormalization_LongBroadcastScale_FromONNX_GPU_ALPAKA.hxx"
 #include "GroupNorm_FromONNX_GPU_ALPAKA.hxx"
 #include "GroupNormBig_FromONNX_GPU_ALPAKA.hxx"
 #include "CumSum_FromONNX_GPU_ALPAKA.hxx"
@@ -18,6 +19,8 @@
 #include "models/onnx/references/RMSNormalization_Axis_input.ref.hxx"
 #include "models/onnx/references/RMSNormalization_BroadcastScale.ref.hxx"
 #include "models/onnx/references/RMSNormalization_BroadcastScale_input.ref.hxx"
+#include "models/onnx/references/RMSNormalization_LongBroadcastScale.ref.hxx"
+#include "models/onnx/references/RMSNormalization_LongBroadcastScale_input.ref.hxx"
 #include "models/onnx/references/GroupNorm.ref.hxx"
 #include "models/onnx/references/GroupNorm_input.ref.hxx"
 #include "models/onnx/references/CumSum.ref.hxx"
@@ -260,3 +263,4 @@ TEST_F(SofieAlpakaTest, CumSumExclusive)
 ONNX_RMSNORMALIZATION_TEST(RMSNormalization)
 ONNX_RMSNORMALIZATION_TEST(RMSNormalization_Axis)
 ONNX_RMSNORMALIZATION_TEST(RMSNormalization_BroadcastScale)
+ONNX_RMSNORMALIZATION_TEST(RMSNormalization_LongBroadcastScale)

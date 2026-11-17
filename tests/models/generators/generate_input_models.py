@@ -247,6 +247,14 @@ def make_RMSNormalization_BroadcastScale():
     )
 
 
+def make_RMSNormalization_LongBroadcastScale():
+    """Ops: RMSNormalization (normalized length 2048 > 1024, which takes the row-loop kernel, with a scale
+    broadcast over the first normalized axis)"""
+    return _rmsnorm_model(
+        "rmsnorm_long_broadcast_test", [2, 2, 1024], [1, 1024], np.linspace(-1.0, 1.0, 1024).tolist(), axis=-2
+    )
+
+
 def make_AveragePool1d_CeilMode_Overhang():
     nodes = [
         helper.make_node(
@@ -6135,6 +6143,7 @@ MODELS = {
     "RMSNormalization": make_RMSNormalization,
     "RMSNormalization_Axis": make_RMSNormalization_Axis,
     "RMSNormalization_BroadcastScale": make_RMSNormalization_BroadcastScale,
+    "RMSNormalization_LongBroadcastScale": make_RMSNormalization_LongBroadcastScale,
 }
 
 
@@ -7598,6 +7607,7 @@ TEST_INPUTS = {
     "RMSNormalization": [f32(np.arange(-12, 12) / 4, (2, 3, 4))],
     "RMSNormalization_Axis": [f32(np.sin(np.arange(120)), (2, 3, 4, 5))],
     "RMSNormalization_BroadcastScale": [f32(np.arange(-12, 12) / 4, (2, 3, 4))],
+    "RMSNormalization_LongBroadcastScale": [f32(np.sin(np.arange(4096) * 0.01), (2, 2, 1024))],
 }
 
 

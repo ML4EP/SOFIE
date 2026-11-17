@@ -1146,6 +1146,15 @@ TEST(ONNX, RMSNormalization_BroadcastScale)
    expectNear(output, ref.f32("output0"), DEFAULT_TOLERANCE);
 }
 
+TEST(ONNX, RMSNormalization_LongBroadcastScale)
+{
+   SofieReference ref = readReference("RMSNormalization_LongBroadcastScale");
+
+   ASSERT_RUN(std::vector<float>, RMSNormalization_LongBroadcastScale, ref.f32("input0"));
+
+   expectNear(output, ref.f32("output0"), DEFAULT_TOLERANCE);
+}
+
 TEST(ONNX, LayerNormalization2d)
 {
    SofieReference ref = readReference("LayerNormalization2d");
