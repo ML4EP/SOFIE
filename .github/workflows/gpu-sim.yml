@@ -1,0 +1,77 @@
+name: GPU tests (simulated H100)
+
+# Optional, non-required check. The hosted runners have no GPU, so this builds
+# the alpaka CUDA tests and runs them on a simulated NVIDIA H100
+# (https://github.com/pantheongpu/pantheonsim). A simulator cannot reproduce
+# hardware-specific behaviour or timing, so it complements the self-hosted GPU
+# runs in tests.yml and does not replace them.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "core/**"
+      - "parsers/**"
+      - "tests/**"
+      - "cmake/**"
+      - "CMakeLists.txt"
+      - ".github/workflows/gpu-sim.yml"
+
+concurrency:
+  group: gpu-sim-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  cuda-sim:
+    name: CUDA 13.0, simulated H100
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up the simulated GPU and CUDA toolkit
+        uses: pantheongpu/setup-pantheonsim@a1b9d4237411f9b2b0e0bb895b4d83377f336a7b # v0.1.9
+        with:
+          gpu: nvidia/h100
+          cuda-toolkit: "13.0"
+          library-path: "false"
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build libgtest-dev libopenblas-dev
+
+      # 90-virtual embeds compute_90 PTX only: the simulator JIT-compiles PTX
+      # and does not run SASS. It also needs a shared CUDA runtime.
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CUDA_COMPILER=/usr/local/cuda-13.0/bin/nvcc \
+            -DCUDAToolkit_ROOT=/usr/local/cuda-13.0 \
+            -DSOFIE_BUILD_TESTS=ON \
+            -DENABLE_ALPAKA_TESTS=ON \
+            -DALPAKA_BACKEND=cuda \
+            -DCMAKE_CUDA_ARCHITECTURES=90-virtual \
+            -DCMAKE_CUDA_RUNTIME_LIBRARY=Shared
+
+      # The alpaka tests are built by ctest itself (the *-build tests), so
+      # ctest runs under --preload. The step fails on a non-zero exit code, and
+      # unless the virtual GPU was initialized and the GoogleTest binary
+      # reported passes; skipped tests, CUDA or simulator errors also fail it.
+      - name: Build and run the alpaka CUDA tests
+        run: |
+          set -o pipefail
+          vgpu run --preload ctest --test-dir build -R Alpaka -V --no-tests=error -j3 2>&1 | tee ctest.log
+          grep -q '100% tests passed' ctest.log || { echo "::error::ctest did not pass all tests"; exit 1; }
+          grep -q 'virtual GPU platform initialized' ctest.log || { echo "::error::tests did not run on the virtual GPU"; exit 1; }
+          grep -Eq '\[  PASSED  \] [1-9][0-9]* tests?' ctest.log || { echo "::error::no GoogleTest pass summary"; exit 1; }
+          if grep -Eq '\[  SKIPPED \]|\[  FAILED  \]|VirtualGPU error|CUDA error|no CUDA-capable|\*\*\*Skipped|\*\*\*Not Run' ctest.log; then
+            echo "::error::skipped or failed tests, or a CUDA/simulator error"; exit 1
+          fi
