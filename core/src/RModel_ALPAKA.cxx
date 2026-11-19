@@ -1098,7 +1098,11 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
     fGC += "using Dim = alpaka::DimInt<1>;\n";
     fGC += "using Acc = alpaka::TagToAcc<tagAcc, Dim, Idx>;\n";
     fGC += "using DevAcc = alpaka::Dev<Acc>;\n\n";
-    fGC += "using QueueProperty = alpaka::NonBlocking;\n";
+    // On CPU accelerators the kernels run on the host threads and sofieBLAS calls a host CBLAS
+    // directly, so the queue must be blocking for a BLAS call to see the results of the kernels
+    // enqueued before it (sofieBLAS' CPU backend is built on alpaka::QueueCpuBlocking).
+    fGC += "using QueueProperty = std::conditional_t<std::is_same_v<alpaka::Platform<Acc>, alpaka::PlatformCpu>,\n"
+           "                                         alpaka::Blocking, alpaka::NonBlocking>;\n";
     fGC += "using QueueAcc = alpaka::Queue<Acc, QueueProperty>;\n\n";
     fGC += "// owning device buffer types\n";
     fGC += "using BufF1D = alpaka::Buf<Acc, float, Dim, Idx>;\n";

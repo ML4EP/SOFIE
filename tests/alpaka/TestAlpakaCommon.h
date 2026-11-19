@@ -29,15 +29,22 @@ using TestStream = hipStream_t;
 using TestRtError = hipError_t;
 constexpr TestRtError TestRtSuccess = hipSuccess;
 #define SOFIE_TEST_RT(call) hip##call
+#elif defined(ALPAKA_ACC_CPU_B_SEQ_T_THREADS_ENABLED)
+/* CPU: std::thread accelerator, which supports multi-thread blocks. There is
+   no GPU runtime, so the tests that use raw streams are not built. */
+using TestTag = alpaka::TagCpuThreads;
+#define SOFIE_TEST_NO_GPU_RUNTIME
 #else
 #error "No alpaka backend enabled for the SOFIE tests"
 #endif
 
+#ifndef SOFIE_TEST_NO_GPU_RUNTIME
 #define TestRtMalloc SOFIE_TEST_RT(Malloc)
 #define TestRtFree SOFIE_TEST_RT(Free)
 #define TestRtStreamCreateNonBlocking(s) SOFIE_TEST_RT(StreamCreateWithFlags)(s, SOFIE_TEST_RT(StreamNonBlocking))
 #define TestRtStreamSynchronize SOFIE_TEST_RT(StreamSynchronize)
 #define TestRtStreamDestroy SOFIE_TEST_RT(StreamDestroy)
+#endif
 
 using TestAcc = alpaka::TagToAcc<TestTag, Dim, Idx>;
 using TestDev = alpaka::Dev<TestAcc>;
