@@ -2,6 +2,10 @@
 
 #include "RMSNorm_FromONNX_GPU_ALPAKA.hxx"
 #include "DynamicRMSNorm_FromONNX_GPU_ALPAKA.hxx"
+#include "RMSNormalization_FromONNX_GPU_ALPAKA.hxx"
+#include "RMSNormalization_Axis_FromONNX_GPU_ALPAKA.hxx"
+#include "RMSNormalization_BroadcastScale_FromONNX_GPU_ALPAKA.hxx"
+#include "RMSNormalization_LongBroadcastScale_FromONNX_GPU_ALPAKA.hxx"
 #include "GroupNorm_FromONNX_GPU_ALPAKA.hxx"
 #include "GroupNormBig_FromONNX_GPU_ALPAKA.hxx"
 #include "CumSum_FromONNX_GPU_ALPAKA.hxx"
@@ -9,6 +13,14 @@
 
 #include "models/onnx/references/RMSNorm.ref.hxx"
 #include "models/onnx/references/RMSNorm_input.ref.hxx"
+#include "models/onnx/references/RMSNormalization.ref.hxx"
+#include "models/onnx/references/RMSNormalization_input.ref.hxx"
+#include "models/onnx/references/RMSNormalization_Axis.ref.hxx"
+#include "models/onnx/references/RMSNormalization_Axis_input.ref.hxx"
+#include "models/onnx/references/RMSNormalization_BroadcastScale.ref.hxx"
+#include "models/onnx/references/RMSNormalization_BroadcastScale_input.ref.hxx"
+#include "models/onnx/references/RMSNormalization_LongBroadcastScale.ref.hxx"
+#include "models/onnx/references/RMSNormalization_LongBroadcastScale_input.ref.hxx"
 #include "models/onnx/references/GroupNorm.ref.hxx"
 #include "models/onnx/references/GroupNorm_input.ref.hxx"
 #include "models/onnx/references/CumSum.ref.hxx"
@@ -225,3 +237,30 @@ TEST_F(SofieAlpakaTest, CumSumExclusive)
     for (std::size_t i = 0; i < outputSize; ++i)
         EXPECT_LE(std::abs(res[i] - expected[i]), TOLERANCE) << "i=" << i;
 }
+
+// standard ONNX RMSNormalization (opset 23), run through the RMSNorm kernels: full, multi-axis and
+// broadcast scales
+#define ONNX_RMSNORMALIZATION_TEST(NAME)                                                               \
+   TEST_F(SofieAlpakaTest, NAME)                                                                       \
+   {                                                                                                   \
+      constexpr float TOLERANCE = 1e-4f;                                                               \
+      constexpr std::size_t size = sizeof(NAME##_Input::data) / sizeof(float);                         \
+      ASSERT_EQ(size, sizeof(NAME##_ExpectedOutput::outputs) / sizeof(float));                         \
+      auto x_d = makeDeviceBuf<float>(host, device, queue, NAME##_Input::data, size);                  \
+      auto result_h = alpaka::allocBuf<float, Idx>(host, Ext1D::all(Idx{size}));                      \
+      {                                                                                                \
+         SOFIE_##NAME::Session<TestTag> session(#NAME "_FromONNX_GPU_ALPAKA.dat");                     \
+         auto result = session.infer(x_d);                                                             \
+         alpaka::wait(queue);                                                                          \
+         alpaka::memcpy(queue, result_h, result);                                                      \
+         alpaka::wait(queue);                                                                          \
+      }                                                                                                \
+      const float *res = reinterpret_cast<float *>(alpaka::getPtrNative(result_h));                    \
+      for (std::size_t i = 0; i < size; ++i)                                                           \
+         EXPECT_LE(std::abs(res[i] - NAME##_ExpectedOutput::outputs[i]), TOLERANCE) << "i=" << i;      \
+   }
+
+ONNX_RMSNORMALIZATION_TEST(RMSNormalization)
+ONNX_RMSNORMALIZATION_TEST(RMSNormalization_Axis)
+ONNX_RMSNORMALIZATION_TEST(RMSNormalization_BroadcastScale)
+ONNX_RMSNORMALIZATION_TEST(RMSNormalization_LongBroadcastScale)
