@@ -1119,6 +1119,33 @@ TEST(ONNX, Concat0D) {
    expectNear(output, expected_output, DEFAULT_TOLERANCE);
 }
 
+TEST(ONNX, RotaryEmbedding)
+{
+   SofieReference ref = readReference("RotaryEmbedding");
+
+   ASSERT_RUN(std::vector<float>, RotaryEmbedding, ref.f32("input0"));
+
+   expectNear(output, ref.f32("output0"), DEFAULT_TOLERANCE);
+}
+
+TEST(ONNX, RotaryEmbedding_Interleaved_Partial)
+{
+   SofieReference ref = readReference("RotaryEmbedding_Interleaved_Partial");
+
+   ASSERT_RUN(std::vector<float>, RotaryEmbedding_Interleaved_Partial, ref.f32("input0"));
+
+   expectNear(output, ref.f32("output0"), DEFAULT_TOLERANCE);
+}
+
+TEST(ONNX, RotaryEmbedding_3d_PositionIds)
+{
+   SofieReference ref = readReference("RotaryEmbedding_3d_PositionIds");
+
+   ASSERT_RUN(std::vector<float>, RotaryEmbedding_3d_PositionIds, ref.f32("input0"));
+
+   expectNear(output, ref.f32("output0"), DEFAULT_TOLERANCE);
+}
+
 TEST(ONNX, LayerNormalization2d)
 {
    SofieReference ref = readReference("LayerNormalization2d");
