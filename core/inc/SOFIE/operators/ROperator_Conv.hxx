@@ -171,7 +171,7 @@ public:
 
       if (fAttrAutopad == "NOTSET") {
          if (fAttrPads.empty()) {
-            fAttrPads = {1, 1, 1, 1, 1, 1};
+            fAttrPads = {0, 0, 0, 0, 0, 0};
          }
       } else if (fAttrAutopad == "SAME_UPPER" || fAttrAutopad == "SAME_LOWER") {
          for (size_t d = 0; d < fDim; ++d) {
@@ -200,7 +200,7 @@ public:
             std::runtime_error("SOFIE Conv Op invalid fAutopad");
       }
       // to be sure pad is vector of size 6
-      if (fDim < 3) fAttrPads.resize(6, 0);
+      fAttrPads.resize(6, 0);
 
       Dim input1 = input[2];
       Dim input2 = (fDim > 1) ? input[3] : Dim{1};
