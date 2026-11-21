@@ -948,6 +948,37 @@ def make_ConvAsymmetricPadsGrouped():
     return _model(graph, opset=14, ir_version=7, producer_name='python_script')
 
 
+def make_ConvNoPads():
+    # no pads attribute: the ONNX default is zero padding, so a 3x3 kernel on 4x4 gives 2x2
+    nodes = [
+        helper.make_node('Conv', ['x', 'W'], ['y'], kernel_shape=[3, 3]),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'ConvNoPads',
+        inputs=[_vi('x', FLOAT, [1, 1, 4, 4]), _vi('W', FLOAT, [1, 1, 3, 3])],
+        outputs=[_vi('y', FLOAT, [1, 1, 2, 2])],
+        initializer=[_tensor('W', FLOAT, [1, 1, 3, 3], [1.0] * 9)],
+    )
+    return _model(graph, opset=14, ir_version=7, producer_name='python_script')
+
+
+def make_ConvMaxPool3dValid():
+    # auto_pad=VALID (no padding) on a 3D input, for both Conv and MaxPool
+    nodes = [
+        helper.make_node('Conv', ['x', 'W'], ['c'], kernel_shape=[1, 1, 1], auto_pad='VALID'),
+        helper.make_node('MaxPool', ['c'], ['y'], kernel_shape=[2, 2, 2], auto_pad='VALID'),
+    ]
+    graph = helper.make_graph(
+        nodes,
+        'ConvMaxPool3dValid',
+        inputs=[_vi('x', FLOAT, [1, 1, 4, 4, 4]), _vi('W', FLOAT, [1, 1, 1, 1, 1])],
+        outputs=[_vi('y', FLOAT, [1, 1, 3, 3, 3])],
+        initializer=[_tensor('W', FLOAT, [1, 1, 1, 1, 1], [2.0])],
+    )
+    return _model(graph, opset=14, ir_version=7, producer_name='python_script')
+
+
 def make_ConvWithPadding():
     nodes = [
         helper.make_node('Conv', ['x', 'W'], ['y'], kernel_shape=[3, 3], pads=[1, 1, 1, 1]),
@@ -5923,6 +5954,8 @@ MODELS = {
     "ConvAsymmetricPads2d": make_ConvAsymmetricPads2d,
     "ConvAsymmetricPads3d": make_ConvAsymmetricPads3d,
     "ConvAsymmetricPadsGrouped": make_ConvAsymmetricPadsGrouped,
+    "ConvNoPads": make_ConvNoPads,
+    "ConvMaxPool3dValid": make_ConvMaxPool3dValid,
     "ConvWithAutopadSameLower": make_ConvWithAutopadSameLower,
     "ConvWithAutopadSameUpper": make_ConvWithAutopadSameUpper,
     "ConvWithDilation": make_ConvWithDilation,
@@ -6722,6 +6755,8 @@ TEST_INPUTS = {
     "ConvAsymmetricPads2d": [f32(np.arange(0.0, 25.0), (1, 1, 5, 5))],
     "ConvAsymmetricPads3d": [f32(np.arange(0.0, 27.0), (1, 1, 3, 3, 3))],
     "ConvAsymmetricPadsGrouped": [f32(np.arange(0.0, 50.0), (1, 2, 5, 5))],
+    "ConvNoPads": [f32(np.arange(0.0, 16.0), (1, 1, 4, 4))],
+    "ConvMaxPool3dValid": [f32(np.arange(0.0, 64.0), (1, 1, 4, 4, 4))],
     "ConvWithAutopadSameLower": [f32(np.arange(0.0, 25.0), (1, 1, 5, 5))],
     "ConvWithAutopadSameUpper": [f32(np.arange(0.0, 25.0), (1, 1, 5, 5))],
     "ConvWithDilation": [f32(np.arange(0.0, 49.0), (1, 1, 7, 7))],

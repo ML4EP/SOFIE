@@ -159,7 +159,7 @@ public:
             std::runtime_error("SOFIE" + Name() + "Op invalid Autopad value : " + fAttrAutopad);
       }
       // to be sure pad is vector of size 6
-      if (fDim < 3) fAttrPads.resize(6, 0);
+      fAttrPads.resize(6, 0);
 
       size_t input1 = input[0][2];
       size_t input2 = (fDim > 1) ? input[0][3] : 1;

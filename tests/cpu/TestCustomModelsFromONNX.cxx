@@ -339,6 +339,24 @@ TEST(ONNX, ConvAsymmetricPadsGrouped)
    expectNear(output, ref.f32("output0"), DEFAULT_TOLERANCE);
 }
 
+TEST(ONNX, ConvNoPads)
+{
+   SofieReference ref = readReference("ConvNoPads");
+
+   ASSERT_RUN(std::vector<float>, ConvNoPads, ref.f32("input0"));
+
+   expectNear(output, ref.f32("output0"), DEFAULT_TOLERANCE);
+}
+
+TEST(ONNX, ConvMaxPool3dValid)
+{
+   SofieReference ref = readReference("ConvMaxPool3dValid");
+
+   ASSERT_RUN(std::vector<float>, ConvMaxPool3dValid, ref.f32("input0"));
+
+   expectNear(output, ref.f32("output0"), DEFAULT_TOLERANCE);
+}
+
 TEST(ONNX, MaxPool1d)
 {
    SofieReference ref = readReference("MaxPool1d");
