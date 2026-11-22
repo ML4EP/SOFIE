@@ -63,10 +63,26 @@ function(sofie_write_model_includes testsource outfile suffix)
 endfunction()
 
 function(sofie_set_driver_definitions target)
-  string(REPLACE ";" " " _blas_libs "${BLAS_LIBRARIES}")
+  set(_link_flags "")
+  foreach(_lib ${BLAS_LIBRARIES})
+    if(_lib MATCHES "([^/]+)\\.framework$")
+      get_filename_component(_dir "${_lib}" DIRECTORY)
+      get_filename_component(_name "${_lib}" NAME_WE)
+      list(APPEND _link_flags "-F${_dir} -framework ${_name}")
+    else()
+      list(APPEND _link_flags "${_lib}")
+    endif()
+  endforeach()
+  string(REPLACE ";" " " _blas_libs "${_link_flags}")
+
+  set(_cxx_flags "-std=c++20 -O1 -I${CMAKE_SOURCE_DIR}/core/inc")
+  if(APPLE AND CMAKE_OSX_SYSROOT)
+    string(APPEND _cxx_flags " -isysroot ${CMAKE_OSX_SYSROOT}")
+  endif()
+
   target_compile_definitions(${target} PRIVATE
     SOFIE_TEST_CXX="${CMAKE_CXX_COMPILER}"
-    SOFIE_TEST_CXX_FLAGS="-std=c++20 -O1 -I${CMAKE_SOURCE_DIR}/core/inc"
+    SOFIE_TEST_CXX_FLAGS="${_cxx_flags}"
     SOFIE_TEST_LINK_FLAGS="${_blas_libs}"
     SOFIE_TEST_PYTHON="${Python3_EXECUTABLE}")
 endfunction()
