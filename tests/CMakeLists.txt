@@ -75,9 +75,14 @@ function(sofie_set_driver_definitions target)
   endforeach()
   string(REPLACE ";" " " _blas_libs "${_link_flags}")
 
+  set(_cxx_flags "-std=c++20 -O1 -I${CMAKE_SOURCE_DIR}/core/inc")
+  if(APPLE AND CMAKE_OSX_SYSROOT)
+    string(APPEND _cxx_flags " -isysroot ${CMAKE_OSX_SYSROOT}")
+  endif()
+
   target_compile_definitions(${target} PRIVATE
     SOFIE_TEST_CXX="${CMAKE_CXX_COMPILER}"
-    SOFIE_TEST_CXX_FLAGS="-std=c++20 -O1 -I${CMAKE_SOURCE_DIR}/core/inc"
+    SOFIE_TEST_CXX_FLAGS="${_cxx_flags}"
     SOFIE_TEST_LINK_FLAGS="${_blas_libs}"
     SOFIE_TEST_PYTHON="${Python3_EXECUTABLE}")
 endfunction()
