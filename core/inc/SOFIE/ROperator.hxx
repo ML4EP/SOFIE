@@ -117,9 +117,6 @@ public:
    virtual std::string Header() { return "";}
    virtual std::string GetFusableOutputTensorName() { return "";}
    virtual std::string GetBlasConfig() { return ""; }
-   // most operators issue a single cuBLASLt GEMM call and so need at most one layout
-   // config; operators that chain multiple GEMM calls of different shapes (e.g. a
-   // low-rank factorized Gemm) override this to register one config per call.
    virtual std::vector<std::string> GetBlasConfigs() {
       auto c = GetBlasConfig();
       if (c.empty())
@@ -130,14 +127,8 @@ public:
 
    // Quantization graph-analysis hooks.
    virtual bool IsQuantizationBoundary() const { return false; }
-   virtual std::string GetQuantizationSourceTensor() const
-   {
-      if (fInputTensorNames.empty())
-         return {};
-      return std::string(fInputTensorNames.front());
-   }
 
-   // Rewires this operator to read and write code tensors in place of its float tensors.
+   // Rewires the operator to read and write code tensors in place of its float tensors.
    // Overridden by operators that move codes unchanged (Reshape, Transpose).
    virtual void RewireLowPrecisionCarrier(const std::string & /*nameInput*/,
                                           const std::string & /*nameOutput*/)
@@ -164,9 +155,10 @@ public:
          " reports it can fuse its output onto a grid but does not implement FuseOutputOnGrid");
    }
 
-   // Returns whether this operator decodes a carrier operand at the load, which removes the
-   // feeding dequantize. Consumer-side counterpart of CanFuseOutputOnGrid.
-   virtual bool CanFuseDequantizedInput() const { return false; }
+   // Returns whether this operator can decode a carrier operand on `grid` at the load, which
+   // removes the feeding dequantize. Consumer-side counterpart of CanFuseOutputOnGrid. Each
+   // operator lists the grids its decode implements, so supporting a new grid is local to it.
+   virtual bool CanFuseDequantizedInput(const QuantizationGrid & /*grid*/) const { return false; }
 
    // Rebinds the input `from` to read `carrier`, decoding on `grid` at the load. Returns
    // whether an input matched; on false the dequantize stays in place.

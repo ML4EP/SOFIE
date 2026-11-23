@@ -13,7 +13,7 @@
 #endif
 
 #include "SOFIE/RModel.hxx"
-#include "SOFIE/RModelCodegenPass.hxx"
+#include "SOFIE/RModelPlugin.hxx"
 #include "SOFIE/RModelProfilerGPU.hxx"
 #include "SOFIE/SOFIE_common.hxx"
 #include "SOFIE/ROperator_Gemm.hxx"
@@ -42,7 +42,7 @@ void RModel::ComputeEltwiseFusionGroups() {
    // Includes only operators emitted as parsed; a lowered or suppressed operator emits no
    // float kernel to fuse. Readers are counted over the emitted view.
    auto emittedAsParsed = [this](size_t i) {
-      return !IsOperatorLowered(i) && fLoweredConsumedOperatorIndices.count(i) == 0;
+      return !IsOperatorLowered(i) && GetEmittedOperatorAt(i) != nullptr;
    };
 
    // Build tensor -> consumer op indices map
@@ -130,7 +130,7 @@ void RModel::FuseGemmActivations_GPU() {
    // Includes only operators emitted as parsed, and counts readers over the emitted view, as
    // in ComputeEltwiseFusionGroups. A lowered Gemm keeps its Relu.
    auto emittedAsParsed = [this](size_t i) {
-      return !IsOperatorLowered(i) && fLoweredConsumedOperatorIndices.count(i) == 0;
+      return !IsOperatorLowered(i) && GetEmittedOperatorAt(i) != nullptr;
    };
    std::unordered_map<std::string, size_t> consumerCount;
    for (size_t i = 0; i < fOperators.size(); ++i)
@@ -272,12 +272,11 @@ void RModel::GenerateGPU_ALPAKA_Buffers()
       // Follows the emitted operator view, so outputs of suppressed Q/DQ/QONNX source operators
       // never enter the plan.
       for (std::size_t opIndex = 0; opIndex < fOperators.size(); ++opIndex) {
-         if (fSkipOperators.count(opIndex) || fLoweredConsumedOperatorIndices.count(opIndex))
+         if (fSkipOperators.count(opIndex))
             continue;
-         const auto lowered = fLoweredOperators.find(opIndex);
-         const ROperator *op = lowered == fLoweredOperators.end()
-                                 ? fOperators[opIndex].get()
-                                 : lowered->second.get();
+         const ROperator *op = GetEmittedOperatorAt(opIndex);
+         if (op == nullptr)
+            continue;
          for (const auto &input : op->GetOpInputTensors())
             recordUse(std::string(input), false);
          for (const auto &output : op->GetOpOutputTensors())
@@ -508,9 +507,9 @@ void RModel::GenerateOutput_GPU_ALPAKA() {
       if (fVerbose)
          std::cout << "Generating code for operator .... " << op_idx << std::endl;
 
-      if (fSkipOperators.count(op_idx) || fLoweredConsumedOperatorIndices.count(op_idx) != 0) continue;
-      auto loweredIt = fLoweredOperators.find(op_idx);
-      ROperator *op = (loweredIt != fLoweredOperators.end()) ? loweredIt->second.get() : fOperators[op_idx].get();
+      if (fSkipOperators.count(op_idx)) continue;
+      ROperator *op = GetEmittedOperatorAt(op_idx);
+      if (op == nullptr) continue;
 
       auto gIt = fOpToFusionGroupIdx.find(op_idx);
       size_t gIdx = (gIt != fOpToFusionGroupIdx.end()) ? gIt->second : SIZE_MAX;
@@ -687,9 +686,8 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
 
    fGC += "\n//--- ALPAKA Kernels\n";
    for (size_t id = 0; id < fOperators.size(); id++) {
-      if (fLoweredConsumedOperatorIndices.count(id) != 0) continue;
-      auto loweredIt = fLoweredOperators.find(id);
-      ROperator *op = (loweredIt != fLoweredOperators.end()) ? loweredIt->second.get() : fOperators[id].get();
+      ROperator *op = GetEmittedOperatorAt(id);
+      if (op == nullptr) continue;
       if (op->GetKind() == OperatorKind::GEMM || op->GetKind() == OperatorKind::CONV ||
           op->GetKind() == OperatorKind::QUANTIZED_GEMM || op->GetKind() == OperatorKind::QUANTIZED_CONV) {
          OpNeedsBlas = true;
@@ -855,16 +853,15 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
          MoveInitializedTensorsToBuffers_ALPAKA();
          GenerateDynamicTensorInfo_GPU_ALPAKA();
          for (size_t id = 0; id < fOperators.size(); id++) {
-            if (fSkipOperators.count(id) || fLoweredConsumedOperatorIndices.count(id) != 0) continue;
-            auto loweredIt = fLoweredOperators.find(id);
-            ROperator *op = (loweredIt != fLoweredOperators.end()) ? loweredIt->second.get() : fOperators[id].get();
+            if (fSkipOperators.count(id)) continue;
+            ROperator *op = GetEmittedOperatorAt(id);
+            if (op == nullptr) continue;
             fGC += op->GenerateInitCode_GPU_ALPAKA();
             if (op->GetKind() == OperatorKind::GEMM || op->GetKind() == OperatorKind::CONV) {
                // GetBlasConfigs() returns one entry per distinct GEMM call shape the
                // operator's Generate_GPU_ALPAKA() will issue (usually one; a low-rank
                // factorized Gemm issues two chained calls of different shapes and so
-               // needs two configs registered). Empty entries (e.g. gemmStridedBatched,
-               // legacy cuBLAS path) need no cuBLASLt layout registration.
+               // needs two configs registered).
                for (auto &blasCfg : op->GetBlasConfigs()) {
                   if (!blasCfg.empty())
                      fGC += "\nblas.addOperationConfig(" + blasCfg + ");\n";
@@ -914,9 +911,8 @@ void RModel::GenerateSessionCode_GPU_ALPAKA() {
    fusedGroupsEmitted.clear();
 
    for (size_t id = 0; id < fOperators.size(); id++) {
-      if (fLoweredConsumedOperatorIndices.count(id) != 0) continue;
-      auto loweredIt = fLoweredOperators.find(id);
-      ROperator *op = (loweredIt != fLoweredOperators.end()) ? loweredIt->second.get() : fOperators[id].get();
+      ROperator *op = GetEmittedOperatorAt(id);
+      if (op == nullptr) continue;
       // As in the kernel-struct loop above: fused activation ops must still declare their
       // member variable even though their Generate_GPU_ALPAKA call is skipped.
 
@@ -1032,18 +1028,13 @@ void RModel::GenerateGPU_ALPAKA(std::underlying_type_t<Options> options, int bat
       static_cast<std::underlying_type_t<Options>>(Options::kTextWeightFile);
    if ((options & explicitFileWeightPolicy) != 0)
       fUseWeightFile = true;
-   auto *pass = InstalledCodegenPass();
-   if ((options & explicitWeightPolicy) == 0 && pass && pass->RequiresWeightFile(*this)) {
-      fUseWeightFile = true;
-      fWeightFile = WeightFileType::Binary;
-   }
-   if (pass)
-      pass->ContributeSupportHeaders(*this, ECodegenTarget::ALPAKA);
+   auto *plugin = ActiveModelPlugin();
+   if (plugin)
+      plugin->PrepareGeneration(*this, EGenerationTarget::ALPAKA);
+   if ((options & explicitWeightPolicy) == 0)
+      SelectDefaultWeightFile();
    if (fWeightFile == WeightFileType::Binary)
       AddNeededCustomHeader("SOFIE/RWeightFile.hxx");
-   if (pass) {
-      pass->BuildLoweredView(*this, ECodegenTarget::ALPAKA);
-   }
    FuseGemmActivations_GPU();   // must run before elementwise fusion (redirects tensors)
    ComputeEltwiseFusionGroups();
 
@@ -1051,10 +1042,6 @@ void RModel::GenerateGPU_ALPAKA(std::underlying_type_t<Options> options, int bat
    if (!fIsSubGraph) {
       fGC.clear();
       GenerateHeaderInfo_GPU_ALPAKA(hgname);
-      if (pass) {
-         for (const auto &line : pass->DiagnosticComments(*this))
-            fGC += line + "\n";
-      }
    }
 
    if (fVerbose)
@@ -1065,6 +1052,14 @@ void RModel::GenerateGPU_ALPAKA(std::underlying_type_t<Options> options, int bat
    if (!fIsSubGraph) {
       fGC += ("} //SOFIE_" + fName + "\n");
       fGC += "\n#endif  // " + hgname + "\n";
+      // Support code goes at global scope, ahead of the model namespace, and may depend on what
+      // the model code calls, so it is inserted once that code exists.
+      if (plugin) {
+         const auto support = plugin->SupportCode(*this, fGC);
+         const auto modelNamespace = fGC.find("\nnamespace SOFIE_" + fName + "{\n");
+         if (!support.empty() && modelNamespace != std::string::npos)
+            fGC.insert(modelNamespace, support);
+      }
    }
 }
 

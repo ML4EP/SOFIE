@@ -209,8 +209,7 @@ def emit_matmul_mlp():
 
 
 def emit_fp8_qdq_matmul_relu_float():
-    # A Relu on a float-carried FP8 output with no boundary behind it: nothing to clamp
-    # against, so it rides the cuBLASLt epilogue's hasRelu.
+    # A Relu on a float-carried FP8 output with no boundary behind it
     m, k, n = 8, 16, 8
     w_codes = [(float((i * 7 + 5) % 11) - 5.0) for i in range(k * n)]
     emit_fp8(

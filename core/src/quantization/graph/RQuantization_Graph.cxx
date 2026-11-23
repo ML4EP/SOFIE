@@ -1,6 +1,7 @@
 #include "SOFIE/quantization/graph/RQuantization_Graph.hxx"
 
 #include "SOFIE/RQuantization.hxx"
+#include "SOFIE/quantization/utils/RQuantization_Utils.hxx"
 
 #include <algorithm>
 #include <stdexcept>
@@ -19,74 +20,9 @@ ROperator &QuantModelAccess::Operator(std::size_t index)
    return *fModel.fOperators.at(index);
 }
 
-const ROperator &QuantModelAccess::Operator(std::size_t index) const
-{
-   return *fModel.fOperators.at(index);
-}
-
 const std::vector<std::string> &QuantModelAccess::GraphOutputs() const
 {
    return fModel.fOutputTensorNames;
-}
-
-std::vector<std::unique_ptr<ROperator>> QuantModelAccess::TakeOperators()
-{
-   if (fModel.fIsInitialized)
-      throw std::runtime_error("SOFIE quantization: the parsed operator list can only be rewritten before Initialize");
-   auto operators = std::move(fModel.fOperators);
-   fModel.fOperators.clear();
-   // Clears the usage table, which holds string_views into the operators being taken.
-   fModel.fIntermediateTensorFrequencyLookup.clear();
-   return operators;
-}
-
-void QuantModelAccess::SetOperators(std::vector<std::unique_ptr<ROperator>> operators)
-{
-   fModel.fOperators.clear();
-   fModel.fIntermediateTensorFrequencyLookup.clear();
-   // AddOperator records each runtime input's last use, matching the parser.
-   for (auto &op : operators)
-      fModel.AddOperator(std::move(op));
-}
-
-void QuantModelAccess::ResetLoweredView()
-{
-   fModel.fLoweredOperators.clear();
-   fModel.fLoweredConsumedOperatorIndices.clear();
-}
-
-void QuantModelAccess::InstallLowered(std::size_t anchor, std::unique_ptr<ROperator> op)
-{
-   if (anchor >= fModel.fOperators.size())
-      throw std::runtime_error("SOFIE quantization: lowered operator anchor out of range");
-   for (const auto &lib : op->GetStdLibs())
-      fModel.AddNeededStdLib(lib);
-   fModel.AddBlasRoutines(op->GetBlasRoutines());
-   fModel.fLoweredOperators[anchor] = std::move(op);
-}
-
-void QuantModelAccess::Suppress(std::size_t index)
-{
-   fModel.fLoweredConsumedOperatorIndices.insert(index);
-}
-
-const ROperator *QuantModelAccess::Emitted(std::size_t index) const
-{
-   return fModel.GetEmittedOperatorAt(index);
-}
-
-ROperator *QuantModelAccess::Emitted(std::size_t index)
-{
-   if (fModel.fLoweredConsumedOperatorIndices.count(index) != 0)
-      return nullptr;
-   if (auto it = fModel.fLoweredOperators.find(index); it != fModel.fLoweredOperators.end())
-      return it->second.get();
-   return index < fModel.fOperators.size() ? fModel.fOperators[index].get() : nullptr;
-}
-
-void QuantModelAccess::EliminateDeadOperators()
-{
-   fModel.EliminateDeadOperators();
 }
 
 void QuantModelAccess::RenameInitializer(const std::string &from, const std::string &to)
@@ -99,6 +35,11 @@ void QuantModelAccess::RenameInitializer(const std::string &from, const std::str
    auto tensor = std::move(it->second);
    fModel.fInitializedTensors.erase(it);
    fModel.fInitializedTensors.emplace(to, std::move(tensor));
+}
+
+bool QuantModelAccess::HasSubGraphs() const
+{
+   return !fModel.fSubGraphs.empty();
 }
 
 bool QuantModelAccess::IsGraphInput(const std::string &tensor) const
@@ -144,7 +85,7 @@ QuantGraphView::QuantGraphView(QuantModelAccess &access,
    for (const auto &output : access.GraphOutputs())
       fGraphOutputs.insert(output);
    for (std::size_t index = 0; index < fOperatorCount; ++index) {
-      const ROperator *op = access.Emitted(index);
+      const ROperator *op = std::as_const(access.Model()).GetEmittedOperatorAt(index);
       if (op == nullptr)
          continue;
       for (const auto &output : op->GetOpOutputTensors())
@@ -180,11 +121,6 @@ bool QuantGraphView::IsConstant(const std::string &tensor) const
 std::vector<std::size_t> QuantGraphView::Shape(const std::string &tensor) const
 {
    return fAccess.Model().GetTensorShape(tensor);
-}
-
-ETensorType QuantGraphView::Type(const std::string &tensor) const
-{
-   return fAccess.Model().GetTensorType(tensor);
 }
 
 const TensorQuantState &QuantGraphView::State(const std::string &tensor) const
@@ -236,25 +172,30 @@ void QuantRewriter::AddScratch(const std::string &name, ETensorType type, std::v
    fScratch.emplace_back(name, type, std::move(shape));
 }
 
+std::vector<std::string> QuantRewriter::ConstantNames() const
+{
+   std::vector<std::string> names;
+   for (const auto &constant : fConstants)
+      names.push_back(constant.name);
+   return names;
+}
+
 void QuantRewriter::Commit(QuantModelAccess &access)
 {
    auto &model = access.Model();
    for (auto &constant : fConstants) {
       if (model.IsInitializedTensor(constant.name))
          continue;   // Shared by two lowered operators (e.g. one weight read twice).
-      if (ConvertShapeToLength(constant.shape) > kQuantizedFoldedConstantEmbedMaxLength)
-         model.AddInitializedTensor(constant.name, constant.type, constant.shape, std::move(constant.data));
-      else
-         model.AddConstantTensor(constant.name, constant.type, constant.shape, std::move(constant.data));
+      AddFoldedConstant(model, constant.name, constant.type, constant.shape, std::move(constant.data));
    }
    for (auto &[name, type, shape] : fScratch)
       model.AddIntermediateTensor(name, type, shape);
    for (auto &[index, edit] : fMutations)
       edit(access.Operator(index));
    for (auto &[anchor, op] : fReplacements)
-      access.InstallLowered(anchor, std::move(op));
+      access.InstallLoweredOperator(anchor, std::move(op));
    for (auto index : fSuppressed)
-      access.Suppress(index);
+      access.SuppressOperator(index);
    for (const auto &[tensor, type] : fRetypes)
       access.SetTensorType(tensor, type);
    for (const auto &[name, origin] : fAliases)

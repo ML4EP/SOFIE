@@ -11,7 +11,7 @@
 //             OfferedOutputForms  Lists the forms in which the operator writes output j onto a grid.
 //   Lower     Lower               Builds or rewires the operator for the decided forms.
 //
-// A handler sees the operator in focus (QuantOpView), the whole graph (QuantGraphView) and a
+// A handler sees the operator in from the perspective of a QuantOpView, the whole graph (QuantGraphView) and a
 // negotiation oracle that reports on its neighbours. It never edits the model; Lower proposes
 // edits through a QuantRewriter. An operator with no registered handler gets FloatOnlyHandler.
 

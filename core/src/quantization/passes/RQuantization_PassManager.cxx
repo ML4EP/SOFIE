@@ -2,12 +2,12 @@
 
 namespace SOFIE {
 
-QuantWorkflow::QuantWorkflow(RModel &model, const QuantOpHandlerRegistry &registry)
+QuantWorkflowState::QuantWorkflowState(RModel &model, const QuantOpHandlerRegistry &registry)
    : fAccess(model), fRegistry(registry)
 {
 }
 
-void QuantPassManager::Run(QuantWorkflow &workflow) const
+void QuantPassManager::Run(QuantWorkflowState &workflow) const
 {
    for (const auto &pass : fPasses)
       pass->Run(workflow);

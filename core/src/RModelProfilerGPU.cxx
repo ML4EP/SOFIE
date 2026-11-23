@@ -1,5 +1,5 @@
 #include "SOFIE/RModelProfilerGPU.hxx"
-#include "SOFIE/RModelCodegenPass.hxx"
+#include "SOFIE/RModelPlugin.hxx"
 #include "SOFIE/SOFIE_common.hxx"
 
 namespace SOFIE {

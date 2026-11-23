@@ -1,7 +1,9 @@
 #ifndef SOFIE_RMODEL
 #define SOFIE_RMODEL
 
+#include <functional>
 #include <unordered_set>
+#include <utility>
 
 #include "SOFIE/RModel_Base.hxx"
 #include "SOFIE/SOFIE_common.hxx"
@@ -50,8 +52,9 @@ private:
 
    std::vector<std::unique_ptr<ROperator>> fOperators;
 
-   // transient lowered operator view while the parsed fOperators graph remains intact.
-   // let code generation use synthetic operators for proven regions.
+   // Lowered view (transient): operators code generation emits in place of parsed ones, and
+   // parsed operators it skips. fOperators stays intact, so indices are stable and the view can
+   // be reset and rebuilt for another code generation.
    std::unordered_map<std::size_t, std::unique_ptr<ROperator>> fLoweredOperators;
    std::set<std::size_t> fLoweredConsumedOperatorIndices;
 
@@ -87,13 +90,23 @@ private:
    /// GPU-only pass: fuse GEMM→LeakyReLU (and GEMM→ReLU where not already
    /// handled by the ONNX parser) into a single in-place kernel sequence.
    void FuseGemmActivations_GPU();
+   // Replaces the operator list before Initialize: `update` receives the current operators
+   // and returns the list to use instead. The tensor-usage table is rebuilt from the result.
+   void UpdateOperators(const std::function<std::vector<std::unique_ptr<ROperator>>(
+                            std::vector<std::unique_ptr<ROperator>>)> &rewrite);
+   // Lowered view, for passes that run after Initialize. Code generation emits `op` in place
+   // of the operator at `index` and skips suppressed operators; the parsed operators stay.
+   void InstallLoweredOperator(std::size_t index, std::unique_ptr<ROperator> op);
+   void SuppressOperator(std::size_t index);
+   // Clears the lowered view, so a new code generation starts from the parsed operators.
+   void ResetLoweredOperators();
+   // Suppresses operators none of whose outputs is read or is a graph output.
+   void EliminateDeadOperators();
+   // Picks the weight file when the options name none: none without weights, binary when a
+   // weight holds low-precision codes, else the default text file.
+   void SelectDefaultWeightFile();
    // The quantization workflow's single accessor to this model's operator list and tensors.
    friend class QuantModelAccess;
-   // Stops emitting operators whose outputs nobody reads. Not quantization specific.
-   void EliminateDeadOperators();
-   // Puts a batched MatMul's B operand in [.., N, K] by re-permuting the Transpose that
-   // produces it and setting transB. Runs before Initialize so shape inference follows.
-   void CanonicaliseBatchedMatMulOperands();
 
 public:
    // Rule of five: explicitly define move semantics, disallow copy
@@ -129,8 +142,8 @@ public:
    {
       return fLoweredOperators.find(index) != fLoweredOperators.end();
    }
-   // The operator emitted at this index: the lowered region if one replaced the original,
-   // which reads an int8 carrier where the original read a float. Null if suppressed.
+   // Returns the operator emitted at this index: its lowered replacement if one is installed,
+   // otherwise the parsed operator. Null if the operator is suppressed.
    const ROperator * GetEmittedOperatorAt(std::size_t index) const
    {
       if (fLoweredConsumedOperatorIndices.count(index) != 0)
@@ -139,6 +152,12 @@ public:
          return it->second.get();
       return index < fOperators.size() ? fOperators[index].get() : nullptr;
    }
+   ROperator * GetEmittedOperatorAt(std::size_t index)
+   {
+      return const_cast<ROperator *>(std::as_const(*this).GetEmittedOperatorAt(index));
+   }
+
+   using OperatorList = std::vector<std::unique_ptr<ROperator>>;
 
    // get the values for the tensor representing a shape
    const std::vector<Dim> & GetShapeTensorValues(const std::string & tensor_name) const;

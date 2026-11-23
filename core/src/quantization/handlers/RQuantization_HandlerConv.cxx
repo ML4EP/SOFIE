@@ -12,9 +12,11 @@ namespace {
 constexpr std::size_t kConvColumnBudgetBytes = 256ULL * 1024ULL * 1024ULL;
 
 struct ConvPlan {
-   bool fp8 = false;
+   EQuantGemmFamily family = EQuantGemmFamily::Int8;
    QuantizedConvConfig shape;   // geometry only
    QuantSpec x, w;
+
+   const QuantGemmTraits &Traits() const { return GemmTraits(family); }
 };
 
 const ROperator_Conv<float> &ConvOf(const QuantContext &ctx)
@@ -64,13 +66,13 @@ std::optional<ConvPlan> PlanConv(const QuantContext &ctx)
       s.strideW = strides[0], s.dilationW = dilations[0], s.padW = pads[0];
    }
 
-   if (IsE4M3Grid(plan.x) && IsE4M3Grid(plan.w)) {
-      plan.fp8 = true;
-      return plan;
-   }
-   // int8: signed per-tensor input (any zero point), weight per-tensor or per output channel.
-   if (!IsSignedInt8Grid(plan.x) || !plan.x.IsPerTensor() || !IsSignedInt8Grid(plan.w))
+   const auto family = SelectGemmFamily(plan.x, plan.w);
+   if (!family)
       return std::nullopt;
+   plan.family = *family;
+   if (!plan.Traits().integerAccumulate)
+      return plan;
+   // Integer families: per-tensor input (any zero point), weight per-tensor or per output channel.
    if (!plan.w.IsPerTensor() && (plan.w.axis != 0 || plan.w.ChannelCount() != s.OC))
       return std::nullopt;
    return plan;
@@ -120,8 +122,11 @@ bool ConvHandler::Lower(const QuantContext &ctx, const LoweringDecision &decisio
       return Decline(ctx, "conv: input or weight is not carried as codes (" + decision.inputs[0].tensor + ", " +
                              decision.inputs[1].tensor + ")");
    const std::string name = ctx.op.Output(0) + "_qconv";
+   const auto &traits = plan->Traits();
    QuantizedConvConfig config = plan->shape;
-   config.fp8 = plan->fp8;
+   config.family = plan->family;
+   config.xSpec = plan->x;
+   config.wSpec = plan->w;
    config.x = decision.inputs[0].tensor;
    config.w = decision.inputs[1].tensor;
    config.y = decision.outputs[0].tensor;
@@ -153,7 +158,7 @@ bool ConvHandler::Lower(const QuantContext &ctx, const LoweringDecision &decisio
 
    const double sx = plan->x.Scale();
    bool symmetricWeight = true;
-   if (plan->fp8) {
+   if (!traits.integerAccumulate) {
       config.scale = sx * plan->w.Scale();
    } else {
       config.inputZeroPoint = plan->x.ZeroPoint();
@@ -181,34 +186,35 @@ bool ConvHandler::Lower(const QuantContext &ctx, const LoweringDecision &decisio
    // Uses im2col + library GEMM for everything but depthwise, with symmetric weights, within
    // budget. The window is padded to the vendor alignment so the fast kernels stay available;
    // sofieBLAS runs an unaligned output plane (the GEMM's m) on its native fallback kernels.
-   const std::size_t alignment = plan->fp8 ? 16 : 4;
+   const std::size_t alignment = traits.kAlignment;
    const std::size_t Kp = (Kg + alignment - 1) / alignment * alignment;
-   const std::size_t columnBytes = config.N * config.groups * config.OH * config.OW * Kp;
+   const std::size_t columnElements = config.N * config.groups * config.OH * config.OW * Kp;
    const bool depthwise = OCg == 1 && Kg == config.KH * config.KW;
-   if (symmetricWeight && !depthwise && columnBytes <= kConvColumnBudgetBytes) {
+   if (symmetricWeight && !depthwise && columnElements * GetTypeSize(traits.operandType) <= kConvColumnBudgetBytes) {
       config.Kp = Kp;
-      // Weights as [groups, OCg, Kp] codes, zero beyond Kg (contributes nothing).
-      const auto weights = ReadConstant<std::uint8_t>(ctx, config.w);   // raw bytes, int8 or E4M3
-      std::vector<std::uint8_t> matrix(OC * Kp, 0);
+      // Weights as [groups, OCg, Kp] codes, zero beyond Kg (contributes nothing: integer 0 or
+      // the float8 +0 byte).
+      const auto weights = ReadCodes(ctx, config.w);
+      std::vector<double> matrix(OC * Kp, 0.0);
       std::vector<std::int32_t> columnSums(OC, 0);
       for (std::size_t oc = 0; oc < OC; ++oc)
          for (std::size_t kk = 0; kk < Kg; ++kk) {
             matrix[oc * Kp + kk] = weights[oc * Kg + kk];
-            columnSums[oc] += static_cast<std::int8_t>(weights[oc * Kg + kk]);
+            if (traits.integerAccumulate)
+               columnSums[oc] += static_cast<std::int32_t>(weights[oc * Kg + kk]);
          }
       config.weightMatrix = name + "_matrix";
-      rewriter.AddConstant(config.weightMatrix, plan->fp8 ? ETensorType::FLOAT8E4M3FN : ETensorType::INT8,
-                           {config.groups, OCg, Kp}, ToBuffer(matrix));
-      if (!plan->fp8 && config.inputZeroPoint != 0) {
+      rewriter.AddConstant(config.weightMatrix, traits.operandType, {config.groups, OCg, Kp},
+                           PackCodes(traits.operandType, matrix));
+      if (traits.integerAccumulate && config.inputZeroPoint != 0) {
          config.columnSums = name + "_colsum";
          rewriter.AddConstant(config.columnSums, ETensorType::INT32, {OC}, ToBuffer(columnSums));
       }
       config.columns = name + "_col";
       config.accumulator = name + "_acc";
-      rewriter.AddScratch(config.columns, plan->fp8 ? ETensorType::FLOAT8E4M3FN : ETensorType::INT8, {columnBytes});
-      rewriter.AddScratch(config.accumulator, plan->fp8 ? ETensorType::FLOAT : ETensorType::INT32,
-                          {config.N * OC * config.OH * config.OW});
-      if (plan->fp8) {
+      rewriter.AddScratch(config.columns, traits.operandType, {columnElements});
+      rewriter.AddScratch(config.accumulator, traits.accumulatorType, {config.N * OC * config.OH * config.OW});
+      if (traits.scalesInLibrary) {
          config.scaleX = name + "_sx";
          config.scaleW = name + "_sw";
          rewriter.AddConstant(config.scaleX, ETensorType::FLOAT, {1}, ToBuffer(std::vector<float>{static_cast<float>(sx)}));

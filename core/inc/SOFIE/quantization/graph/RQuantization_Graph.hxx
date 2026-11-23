@@ -21,6 +21,7 @@
 #include <string>
 #include <tuple>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace SOFIE {
@@ -30,26 +31,24 @@ public:
    explicit QuantModelAccess(RModel &model) : fModel(model) {}
 
    RModel &Model() { return fModel; }
-   const RModel &Model() const { return fModel; }
 
    std::size_t OperatorCount() const;
    ROperator &Operator(std::size_t index);
-   const ROperator &Operator(std::size_t index) const;
    const std::vector<std::string> &GraphOutputs() const;
+   bool HasSubGraphs() const;
 
-   // Rewrite the parsed list during the Normalize phase only (before Initialize). Setting the
-   // list rebuilds the model's tensor-usage table, which refers into operator storage.
-   std::vector<std::unique_ptr<ROperator>> TakeOperators();
-   void SetOperators(std::vector<std::unique_ptr<ROperator>> operators);
-
-   // Manage the lowered view (after Initialize): replacements and suppressions over the parsed list.
-   void ResetLoweredView();
-   void InstallLowered(std::size_t anchor, std::unique_ptr<ROperator> op);
-   void Suppress(std::size_t index);
-   // Returns the operator emitted at `index`: its replacement, the original, or null if suppressed.
-   const ROperator *Emitted(std::size_t index) const;
-   ROperator *Emitted(std::size_t index);
-   void EliminateDeadOperators();
+   // Forward to RModel's private graph rewriting (see RModel.hxx).
+   void UpdateOperators(const std::function<RModel::OperatorList(RModel::OperatorList)> &rewrite)
+   {
+      fModel.UpdateOperators(rewrite);
+   }
+   void InstallLoweredOperator(std::size_t index, std::unique_ptr<ROperator> op)
+   {
+      fModel.InstallLoweredOperator(index, std::move(op));
+   }
+   void SuppressOperator(std::size_t index) { fModel.SuppressOperator(index); }
+   void ResetLoweredOperators() { fModel.ResetLoweredOperators(); }
+   void EliminateDeadOperators() { fModel.EliminateDeadOperators(); }
 
    // Renames an initializer; valid in the Normalize phase only.
    void RenameInitializer(const std::string &from, const std::string &to);
@@ -69,13 +68,12 @@ public:
    explicit QuantGraphView(QuantModelAccess &access, const std::unordered_map<std::string, TensorQuantState> *states = nullptr);
 
    std::size_t OperatorCount() const { return fOperatorCount; }
-   const ROperator *Op(std::size_t index) const { return fAccess.Emitted(index); }
+   const ROperator *Op(std::size_t index) const { return std::as_const(fAccess.Model()).GetEmittedOperatorAt(index); }
    std::optional<std::size_t> Producer(const std::string &tensor) const;
    const std::vector<std::size_t> &Consumers(const std::string &tensor) const;
    bool IsGraphOutput(const std::string &tensor) const { return fGraphOutputs.count(tensor) != 0; }
    bool IsConstant(const std::string &tensor) const;
    std::vector<std::size_t> Shape(const std::string &tensor) const;
-   ETensorType Type(const std::string &tensor) const;
    // Returns the tensor's quant state; Float with no grid for an unknown tensor.
    const TensorQuantState &State(const std::string &tensor) const;
    const RModel &Model() const { return fAccess.Model(); }
@@ -118,6 +116,8 @@ public:
    // Adds scratch the lowered operator writes and reads within one inference (int32 accumulators).
    void AddScratch(const std::string &name, ETensorType type, std::vector<std::size_t> shape);
 
+   // Returns the names of the constants this edit adds.
+   std::vector<std::string> ConstantNames() const;
    void Commit(QuantModelAccess &access);
    void Discard();
 

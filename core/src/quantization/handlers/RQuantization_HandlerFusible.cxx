@@ -5,12 +5,12 @@
 
 namespace SOFIE {
 
-// Accepts codes on input 0, decoded at the load, when the operator's hook supports it. The
-// hooks implement the decode for per-tensor E4M3 operands only.
+// Accepts codes on input 0, decoded at the load, when the operator's hook supports the grid.
 QuantForms FusibleFloatHandler::AcceptedInputForms(const QuantContext &ctx, std::size_t input) const
 {
    const auto &state = ctx.op.InputState(input);
-   if (input != 0 || !state.HasGrid() || !IsE4M3Grid(*state.spec) || !ctx.op.op.CanFuseDequantizedInput())
+   if (input != 0 || !state.HasGrid() || !IsKernelGrid(*state.spec) ||
+       !ctx.op.op.CanFuseDequantizedInput(ToQuantizationGrid(*state.spec)))
       return {EQuantForm::Float};
    return {EQuantForm::Codes, EQuantForm::Float};
 }
@@ -37,7 +37,8 @@ bool FusibleFloatHandler::Lower(const QuantContext &ctx, const LoweringDecision 
    const std::string original = ctx.op.Input(0);
    const auto &input = decision.inputs[0];
    const bool decodeInput = input.form == EQuantForm::Codes;
-   if (decodeInput && (!input.spec || !ctx.op.op.CanFuseDequantizedInput()))
+   if (decodeInput &&
+       (!input.spec || !IsKernelGrid(*input.spec) || !ctx.op.op.CanFuseDequantizedInput(ToQuantizationGrid(*input.spec))))
       return false;
    for (std::size_t i = 1; i < decision.inputs.size(); ++i)
       if (decision.inputs[i].form == EQuantForm::Codes)

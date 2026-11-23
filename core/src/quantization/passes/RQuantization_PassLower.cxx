@@ -3,10 +3,11 @@
 #include "SOFIE/quantization/frontend/ROperator_QuantBoundary.hxx"
 
 #include <set>
+#include <utility>
 
 namespace SOFIE {
 
-void LowerPass::Run(QuantWorkflow &workflow)
+void LowerPass::Run(QuantWorkflowState &workflow)
 {
    auto &plan = workflow.Plan();
    auto &report = workflow.Report();
@@ -39,10 +40,13 @@ void LowerPass::Run(QuantWorkflow &workflow)
          DecidePass().Run(workflow);
          continue;
       }
-      for (auto &rewriter : edits)
+      for (auto &rewriter : edits) {
+         for (auto &name : rewriter.ConstantNames())
+            plan.loweredConstants.insert(std::move(name));
          rewriter.Commit(workflow.Access());
+      }
       for (auto index : plan.eliminatedBoundaries)
-         workflow.Access().Suppress(index);
+         workflow.Access().SuppressOperator(index);
       report.operatorsLowered += plan.decisions.size();
       report.boundariesEliminated += plan.eliminatedBoundaries.size();
       return;
@@ -50,23 +54,39 @@ void LowerPass::Run(QuantWorkflow &workflow)
    throw std::runtime_error("SOFIE quantization lowering did not converge");
 }
 
-void FinalizePass::Run(QuantWorkflow &workflow)
+void FinalizePass::Run(QuantWorkflowState &workflow)
 {
    auto &access = workflow.Access();
    access.EliminateDeadOperators();
 
-   // Erases constants a boundary folded or read (baked codes, their decoded floats) that no
-   // emitted operator reads, so they are neither embedded nor written to the weight file.
+   // Erases the constants the workflow made obsolete, when no emitted operator reads them, so they
+   // are neither embedded, uploaded, nor written to the weight file:
+   //  - those a boundary folded or read (baked codes, their decoded floats, and the scale /
+   //    zero-point / bit-width initializers its spec was resolved from);
+   //  - those a lowered or suppressed operator read in the parsed graph (e.g. a float bias the
+   //    lowered GEMM folded, the bounds of an absorbed Clip);
+   //  - those the lowering added and a later choice left unread.
+   // A constant no parsed operator read is left alone: the workflow did not make it obsolete.
    {
       auto view = workflow.View();
-      std::set<std::string> candidates;
+      const auto &model = std::as_const(access.Model());
+      std::set<std::string> candidates(workflow.Plan().loweredConstants.begin(),
+                                       workflow.Plan().loweredConstants.end());
       for (std::size_t index = 0; index < access.OperatorCount(); ++index) {
+         if (model.IsOperatorLowered(index) || model.GetEmittedOperatorAt(index) == nullptr)
+            for (const auto &input : access.Operator(index).GetOpInputTensors())
+               candidates.insert(std::string(input));
          const auto *boundary = dynamic_cast<const ROperator_QuantBoundary *>(&access.Operator(index));
          if (boundary == nullptr)
             continue;
          candidates.insert(boundary->GetInputTensor());
          if (boundary->IsOutputConstant())
             candidates.insert(boundary->GetOutputTensor());
+         // The spec carries these values; boundary kernels embed them as literals or tables.
+         const auto &params = boundary->GetParameters();
+         for (const auto *parameter : {&params.scaleTensor, &params.zeroPointTensor, &params.bitWidthTensor})
+            if (!parameter->empty())
+               candidates.insert(*parameter);
       }
       std::set<std::string> read;
       for (std::size_t index = 0; index < view.OperatorCount(); ++index) {

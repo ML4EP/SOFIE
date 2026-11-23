@@ -6,8 +6,9 @@
 // generated code for those conversions. Frontends, specs, handlers and lowering live in the
 // quantization library, core/inc/SOFIE/quantization/.
 //
-// The emitted code calls SOFIE::QuantCodec (quantization/spec/RQuantization_Codec.hxx), a portable
-// header the quantization workflow adds to every quantized model's includes.
+// The emitted code calls SOFIE::QuantCodec (quantization/spec/RQuantization_Codec.hxx). The
+// quantization workflow copies the functions a model calls into its generated header, so the
+// generated code includes no SOFIE header for them.
 
 #include <cmath>
 #include <cstddef>

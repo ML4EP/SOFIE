@@ -117,17 +117,17 @@ public:
 
 
    // Returns whether the carrier input can decode at the load, removing the DequantizeLinear
-   // kernel and its float round trip. Gated as CanFuseClip.
-   bool CanFuseDequantizedInput() const override
+   // kernel and its float round trip. Gated as CanFuseClip. Accepts per-tensor E4M3 only: an
+   // affine grid adds a zero point, and E5M2 has its own decode.
+   bool CanFuseDequantizedInput(const QuantizationGrid &grid) const override
    {
-      return SoftmaxUsesRegisterResidentRows();
+      return SoftmaxUsesRegisterResidentRows() && IsPerTensorE4M3(grid);
    }
 
    bool FuseDequantizedInput(const std::string &from, const std::string &carrier,
                              const QuantizationGrid &grid) override
    {
-      // Accepts per-tensor E4M3 only: an affine grid adds a zero point, and E5M2 has its own decode.
-      if (!IsPerTensorE4M3(grid) || fNX != from || fInputGrid)
+      if (!CanFuseDequantizedInput(grid) || fNX != from || fInputGrid)
          return false;
       fNX = carrier;
       fInputGrid = grid;

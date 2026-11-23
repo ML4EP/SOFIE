@@ -4,26 +4,30 @@
 // Quantized Conv1D / Conv2D (NCHW, groups, padding, stride, dilation) on codes.
 //
 //   direct:  one thread per output element accumulates (x - zpX)(w - zpW) over its window
-//            (int8, exact in 64-bit integers) or decoded E4M3 products (double), then stores.
+//            (integer families, exact in 64-bit integers) or decoded float products (double),
+//            then stores.
 //            Handles every shape; the only path for depthwise and asymmetric weights.
 //   im2col:  per batch entry, the input windows are laid out as col[group][P][Kp] (Kp = the
-//            window length padded to the library's alignment), then one strided-batched
-//            sofieBLAS call over the groups computes acc[group][OCg][P] = Wg . col^T
+//            window length padded to the library's alignment), then the GEMM family's
+//            strided-batched sofieBLAS call over the groups computes acc[group][OCg][P] = Wg . col^T
 //            ('t','n', m = P, n = OCg, k = Kp), which is NCHW; the epilogue kernel scales,
 //            corrects the input zero point through the weight's column sums, adds the bias
 //            and stores. The handler plans this path only for shapes the library has kernels for.
 
 #include "SOFIE/quantization/lowered/ROperator_QuantLowered.hxx"
+#include "SOFIE/quantization/lowered/RQuantization_GemmFamily.hxx"
+#include "SOFIE/quantization/spec/RQuantization_CodeFormat.hxx"
 
 namespace SOFIE {
 
 struct QuantizedConvConfig {
-   bool fp8 = false;
+   EQuantGemmFamily family = EQuantGemmFamily::Int8;
+   QuantSpec xSpec, wSpec;        // Operand grids
    std::size_t N = 1, C = 0, H = 1, W = 1, OC = 0, OH = 1, OW = 1, KH = 1, KW = 1, groups = 1;
    std::size_t strideH = 1, strideW = 1, padH = 0, padW = 0, dilationH = 1, dilationW = 1;
    std::string x, w, y;           // X codes, W codes [OC, Cg, KH, KW], output
    QuantStorePlan store;
-   // Scales: int8 per-tensor alpha*sX*sW literal or per-channel float [OC]; float8 sX*sW.
+   // Scales: per-tensor sX*sW literal, or per-channel float [OC] (integer families only).
    double scale = 1.0;
    std::string weightScales;
    std::int64_t inputZeroPoint = 0;
@@ -34,18 +38,18 @@ struct QuantizedConvConfig {
    std::string columnSums;        // Weight column sums, int32 [OC]; set when inputZeroPoint != 0
    std::string columns, accumulator;
    std::size_t Kp = 0;
-   std::string scaleX, scaleW;    // float8 operand scales, as device scalars for the library
+   std::string scaleX, scaleW;    // Operand scales as device scalars, for families with scalesInLibrary
 };
 
 class ROperator_QuantizedConv final : public ROperator_QuantLowered {
    QuantizedConvConfig fC;
 
+   const QuantGemmTraits &Traits() const { return GemmTraits(fC.family); }
+
    std::size_t Cg() const { return fC.C / fC.groups; }
    std::size_t OCg() const { return fC.OC / fC.groups; }
    std::size_t P() const { return fC.OH * fC.OW; }
    std::size_t Kg() const { return Cg() * fC.KH * fC.KW; }
-   static std::string Null(const char *type) { return "static_cast<" + std::string(type) + " const *>(nullptr)"; }
-   std::string OrNull(const std::string &t, const char *type) const { return t.empty() ? Null(type) : Ptr(t); }
    static std::string L(std::size_t v) { return std::to_string(v); }
 
    // Emits the loop that accumulates one output element's window products into `sum`;
@@ -68,9 +72,9 @@ class ROperator_QuantizedConv final : public ROperator_QuantLowered {
            " + static_cast<std::size_t>(ih)) * " + L(fC.W) + " + static_cast<std::size_t>(iw);\n";
       s += I + "         std::size_t const wi = ((oc * " + L(Cg()) + " + c) * " + L(fC.KH) + " + kh) * " + L(fC.KW) +
            " + kw;\n";
-      if (fC.fp8) {
-         s += I + "         sum += SOFIE::QuantCodec::DecodeE4M3(static_cast<std::uint8_t>(x[xi])) * "
-                  "SOFIE::QuantCodec::DecodeE4M3(static_cast<std::uint8_t>(w[wi]));\n";
+      if (!Traits().integerAccumulate) {
+         s += I + "         sum += " + QuantUnscaledCodeExpression(fC.xSpec, "x[xi]") + " * " +
+              QuantUnscaledCodeExpression(fC.wSpec, "w[wi]") + ";\n";
       } else {
          const std::string wz = fC.weightZeroPoints.empty() ? "" : " - static_cast<long long>(weightZeroPoints[oc])";
          s += I + "         sum += (static_cast<long long>(x[xi]) - " + std::to_string(fC.inputZeroPoint) +
@@ -87,29 +91,36 @@ class ROperator_QuantizedConv final : public ROperator_QuantLowered {
 
    bool HasMatrixPath() const { return !fC.weightMatrix.empty(); }
 
+   // Returns the per-batch-entry call acc[group] = Wg . col[group]^T, batched over the groups.
    std::string MatrixCall() const
    {
-      const std::string m = L(P()), n = L(OCg()), k = L(fC.Kp);
-      const std::string strideA = L(P() * fC.Kp), strideB = L(OCg() * fC.Kp), strideC = L(OCg() * P());
-      const std::string col = Ptr(fC.columns) + " + b * " + L(fC.groups * P() * fC.Kp);
-      const std::string acc = Ptr(fC.accumulator) + " + b * " + L(fC.OC * P());
-      if (fC.fp8) {
-         const std::string t = "typename std::remove_reference_t<decltype(blas)>::";
-         return "blas.matmulFp8Fp32StridedBatched('t', 'n', " + m + ", " + n + ", " + k + ", 1.0f, reinterpret_cast<" +
-                t + "Fp8E4M3Type const *>(" + col + "), " + Ptr(fC.scaleX) + ", " + strideA + "LL, reinterpret_cast<" +
-                t + "Fp8E4M3Type const *>(" + Ptr(fC.weightMatrix) + "), " + Ptr(fC.scaleW) + ", " + strideB +
-                "LL, static_cast<" + t + "Bf16Type const *>(nullptr), " + acc + ", " + strideC + "LL, " +
-                L(fC.groups) + ", Epilogue::Default)";
+      QuantGemmCall call;
+      call.m = L(P());
+      call.n = L(OCg());
+      call.k = L(fC.Kp);
+      call.a = Ptr(fC.columns) + " + b * " + L(fC.groups * P() * fC.Kp);
+      call.b = Ptr(fC.weightMatrix);
+      call.d = Ptr(fC.accumulator) + " + b * " + L(fC.OC * P());
+      call.batched = true;
+      call.strideA = L(P() * fC.Kp);
+      call.strideB = L(OCg() * fC.Kp);
+      call.strideD = L(OCg() * P());
+      call.batch = fC.groups;
+      if (Traits().scalesInLibrary) {
+         call.scaleA = Ptr(fC.scaleX);
+         call.scaleB = Ptr(fC.scaleW);
       }
-      return "blas.int8MatmulStridedBatched('t', 'n', " + m + ", " + n + ", " + k + ", " + col + ", " + strideA +
-             "LL, " + Ptr(fC.weightMatrix) + ", " + strideB + "LL, " + acc + ", " + strideC + "LL, " + L(fC.groups) + ")";
+      return QuantGemmAccumulateCall(Traits(), call);
    }
 
 public:
    explicit ROperator_QuantizedConv(QuantizedConvConfig config) : fC(std::move(config))
    {
       fKind = OperatorKind::QUANTIZED_CONV;
-      fInputTensorNames = {fC.x, fC.w};
+      // The matrix path reads the repacked weightMatrix in place of the weight codes.
+      fInputTensorNames = {fC.x};
+      if (!HasMatrixPath())
+         fInputTensorNames.push_back(fC.w);
       for (const auto *t : {&fC.weightScales, &fC.weightZeroPoints, &fC.bias, &fC.weightMatrix, &fC.columnSums,
                             &fC.scaleX, &fC.scaleW})
          if (!t->empty())
@@ -125,14 +136,14 @@ public:
    {
       opName = "op_" + opName;
       const std::string I = SP + SP + SP;
-      const std::string accType = fC.fp8 ? "double" : "long long";
+      const std::string accType = Traits().integerAccumulate ? "long long" : "double";
       // Decomposes `idx` into (n, oc, oh, ow) of the NCHW output and the group g.
       const std::string coords = I + "std::size_t const ow = idx % " + L(fC.OW) + ";\n" + I + "std::size_t const oh = (idx / " +
                                  L(fC.OW) + ") % " + L(fC.OH) + ";\n" + I + "std::size_t const oc = (idx / " + L(P()) +
                                  ") % " + L(fC.OC) + ";\n" + I + "std::size_t const n = idx / " + L(fC.OC * P()) + ";\n" +
                                  I + "std::size_t const g = oc / " + L(OCg()) + ";\n";
       const std::string bias = fC.bias.empty() ? "" : " + static_cast<double>(bias[oc])";
-      const std::string sumScale = fC.fp8 ? ExactDoubleLiteral(fC.scale) : ScaleExpr();
+      const std::string sumScale = Traits().integerAccumulate ? ScaleExpr() : ExactDoubleLiteral(fC.scale);
 
       std::string op;
       if (!HasMatrixPath()) {
@@ -161,7 +172,8 @@ public:
          op += I + "std::size_t const p = (idx / " + L(fC.Kp) + ") % " + L(P()) + ";\n";
          op += I + "std::size_t const g = (idx / " + L(fC.Kp * P()) + ") % " + L(fC.groups) + ";\n";
          op += I + "std::size_t const n = idx / " + L(fC.Kp * P() * fC.groups) + ";\n";
-         const std::string outside = fC.fp8 ? "0" : std::to_string(fC.inputZeroPoint);
+         // Padding reads as zero: the input zero point for integer codes, the +0 byte for float8.
+         const std::string outside = Traits().integerAccumulate ? std::to_string(fC.inputZeroPoint) : "0";
          op += I + "if (kk >= " + L(Kg()) + ") { col[idx] = static_cast<TCol>(" + outside + "); return; }\n";
          op += I + "std::size_t const kw = kk % " + L(fC.KW) + ", kh = (kk / " + L(fC.KW) + ") % " + L(fC.KH) +
                ", c = kk / " + L(fC.KW * fC.KH) + ";\n";
@@ -187,7 +199,8 @@ public:
          std::string sum = "static_cast<double>(accumulator[idx])";
          if (!fC.columnSums.empty())
             sum = "(" + sum + " - " + std::to_string(fC.inputZeroPoint) + ".0 * static_cast<double>(columnSums[oc]))";
-         op += I + "double v = " + (fC.fp8 ? std::string("1.0") : ScaleExpr()) + " * " + sum + bias + ";\n";
+         op += I + "double v = " + (Traits().scalesInLibrary ? std::string("1.0") : ScaleExpr()) + " * " + sum + bias +
+               ";\n";
          op += fC.store.Statements("v", "y[idx]", I);
          op += SP + SP + "}\n" + SP + "};\n";
       }
@@ -207,9 +220,9 @@ public:
    {
       opName = "op_" + opName;
       const std::size_t outputs = fC.N * fC.OC * P();
-      std::string out = "\n//------ QUANTIZED_CONV " + opName + " (" + (fC.fp8 ? "e4m3" : "int8") + ", groups " +
+      std::string out = "\n//------ QUANTIZED_CONV " + opName + " (" + Traits().label + ", groups " +
                         L(fC.groups) + ", " + L(fC.OC) + "x" + L(Cg()) + "x" + L(fC.KH) + "x" + L(fC.KW) + ")\n";
-      if (HasMatrixPath() && fC.fp8)
+      if (HasMatrixPath() && Traits().requiresOcpFloat8)
          out += RequireOcpFloat8();
       if (!HasMatrixPath())
          return out + Launch1D(opName, "quantizedConvDirectKernel_" + opName, outputs,

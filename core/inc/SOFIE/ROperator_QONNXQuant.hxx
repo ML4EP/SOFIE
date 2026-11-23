@@ -42,7 +42,6 @@ public:
    }
 
    bool IsQuantizationBoundary() const override { return true; }
-   std::string GetQuantizationSourceTensor() const override { return fNX; }
 
    const std::string &GetInputTensor() const { return fNX; }
    const std::string &GetScaleTensor() const { return fNScale; }

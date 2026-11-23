@@ -2,7 +2,7 @@
 // SOFIE_core alone, so it fails the moment base references a symbol the package defines.
 
 #include "SOFIE/RModel.hxx"
-#include "SOFIE/RModelCodegenPass.hxx"
+#include "SOFIE/RModelPlugin.hxx"
 #include "SOFIE/ROperator_Relu.hxx"
 
 #include <cstdio>
@@ -11,8 +11,8 @@
 
 int main()
 {
-   if (SOFIE::InstalledCodegenPass() != nullptr) {
-      std::printf("a codegen pass is installed; base was expected to link without one\n");
+   if (SOFIE::ActiveModelPlugin() != nullptr) {
+      std::printf("a model plugin is installed; base was expected to link without one\n");
       return 1;
    }
 
@@ -24,7 +24,7 @@ int main()
    model.Generate();
 
    if (model.ReturnGenerated().empty()) {
-      std::printf("generation produced nothing with no pass installed\n");
+      std::printf("generation produced nothing with no plugin installed\n");
       return 1;
    }
    return 0;

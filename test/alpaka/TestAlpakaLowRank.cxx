@@ -12,7 +12,7 @@ constexpr size_t kM = 4, kK = 64, kN = 32, kRank = 16;
 
 // GPU counterpart of TestLowRankFactorization.cxx: validates that the chained
 // low-rank Gemm codegen emitted by Generate_GPU_ALPAKA (two blas.matmul/blas.gemm
-// calls through an intermediate device buffer, plus the two cuBLASLt layout
+// calls through an intermediate device buffer, plus the two sofieBLAS layout
 // configs registered for their distinct shapes) computes the same thing as
 // reconstructing A*B on the host from the factors actually baked into the Session.
 TEST_F(SofieAlpakaTest, LowRankMatchesFactorReconstruction)

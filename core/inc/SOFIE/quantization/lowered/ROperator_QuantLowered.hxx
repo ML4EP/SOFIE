@@ -37,14 +37,21 @@ struct QuantStorePlan {
    static QuantStorePlan For(const QuantBinding &binding);
    // Returns the statements that convert `valueVar` (a double) into the value stored in `dest`.
    std::string Statements(const std::string &valueVar, const std::string &dest, const std::string &indent) const;
-   // Returns true when the store is exactly "round(v / scale) saturated to int8" (zero point 0,
-   // full range, nearest-even, no clamp), which a BLAS int8-output epilogue computes.
-   bool IsPlainInt8Codes() const;
+   // Returns true when the store is exactly "round(v / scale) saturated to `type`" (zero point 0,
+   // full range, nearest-even, no clamp), which a BLAS epilogue writing `type` computes.
+   bool IsPlainCodes(ETensorType type) const;
 };
 
 class ROperator_QuantLowered : public ROperator {
 protected:
    static std::string Ptr(const std::string &tensor) { return "alpaka::getPtrNative(deviceBuf_" + tensor + ")"; }
+   // Returns a typed null pointer expression, passed for an absent optional kernel operand.
+   static std::string Null(const char *type) { return "static_cast<" + std::string(type) + " const *>(nullptr)"; }
+   // Returns Ptr(tensor), or Null(type) when `tensor` is empty (the operand is absent).
+   static std::string OrNull(const std::string &tensor, const char *type)
+   {
+      return tensor.empty() ? Null(type) : Ptr(tensor);
+   }
 
    // Emits a compile-time check placed before a float8 BLAS call. SOFIE's codec writes OCP E4M3FN
    // bytes, which a FNUZ-only HIP target (sofieBLAS reports Fp8IsFnuz) decodes differently; the

@@ -4,7 +4,7 @@
 
 namespace SOFIE {
 
-void AnnotatePass::Run(QuantWorkflow &workflow)
+void AnnotatePass::Run(QuantWorkflowState &workflow)
 {
    auto &states = workflow.States();
    states.clear();

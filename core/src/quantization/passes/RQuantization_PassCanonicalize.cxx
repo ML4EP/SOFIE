@@ -6,7 +6,7 @@
 
 namespace SOFIE {
 
-void CanonicalizePass::Run(QuantWorkflow &workflow)
+void CanonicalizePass::Run(QuantWorkflowState &workflow)
 {
    auto &model = workflow.Access().Model();
    auto view = workflow.View();

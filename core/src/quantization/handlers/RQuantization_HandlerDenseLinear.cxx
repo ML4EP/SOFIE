@@ -11,11 +11,13 @@ namespace {
 // Plan derived from the graph and shared by the Decide queries and Lower, so every form
 // offered to Decide is one Lower can build.
 struct DensePlan {
-   bool fp8 = false;
+   EQuantGemmFamily family = EQuantGemmFamily::Int8;
    std::size_t batch = 1, M = 0, N = 0, K = 0;
    bool weightConstant = false;
    bool weightNK = true;   // weight stored as [.., N, K]; a constant [K, N] is re-laid out
    QuantSpec x, w;
+
+   const QuantGemmTraits &Traits() const { return GemmTraits(family); }
 };
 
 const ROperator_Gemm<float> &GemmOf(const QuantContext &ctx)
@@ -66,13 +68,13 @@ std::optional<DensePlan> PlanDense(const QuantContext &ctx)
       plan.batch = ConvertShapeToLength(xShape) / (plan.M * plan.K);
    }
 
-   if (IsE4M3Grid(plan.x) && IsE4M3Grid(plan.w)) {
-      plan.fp8 = true;
-      return plan;
-   }
-   // int8: signed codes on both sides, the weight symmetric, per-tensor or per output channel.
-   if (!IsSignedInt8Grid(plan.x) || !plan.x.IsPerTensor() || !IsSignedInt8Grid(plan.w))
+   const auto family = SelectGemmFamily(plan.x, plan.w);
+   if (!family)
       return std::nullopt;
+   plan.family = *family;
+   if (!plan.Traits().integerAccumulate)
+      return plan;
+   // Integer families: the weight symmetric, per-tensor or per output channel.
    for (std::size_t c = 0; c < std::max<std::size_t>(plan.w.ChannelCount(), 1); ++c)
       if (plan.w.ZeroPoint(c) != 0)
          return std::nullopt;
@@ -95,13 +97,12 @@ std::string FusedEpilogueName(bool bias, bool relu)
 }
 
 // Returns the weight codes as [N, K], re-laid out from a [K, N] constant when needed.
-template <typename T>
-std::vector<T> WeightNK(const QuantContext &ctx, const std::string &tensor, const DensePlan &plan)
+std::vector<double> WeightNK(const QuantContext &ctx, const std::string &tensor, const DensePlan &plan)
 {
-   auto codes = ReadConstant<T>(ctx, tensor);
+   auto codes = ReadCodes(ctx, tensor);
    if (plan.weightNK)
       return codes;
-   std::vector<T> nk(codes.size());
+   std::vector<double> nk(codes.size());
    for (std::size_t k = 0; k < plan.K; ++k)
       for (std::size_t n = 0; n < plan.N; ++n)
          nk[n * plan.K + k] = codes[k * plan.N + n];
@@ -150,11 +151,12 @@ bool DenseLinearHandler::Lower(const QuantContext &ctx, const LoweringDecision &
    const auto &gemm = GemmOf(ctx);
    const std::string name = ctx.op.Output(0) + "_qdense";
    const double alpha = gemm.GetAlpha();
-   if (plan->fp8 && alpha != 1.0)
-      return Decline(ctx, "float8 Gemm with alpha != 1");
+   const auto &traits = plan->Traits();
+   if (traits.scalesInLibrary && alpha != 1.0)
+      return Decline(ctx, std::string(traits.label) + " Gemm with alpha != 1");
 
    QuantizedDenseLinearConfig config;
-   config.fp8 = plan->fp8;
+   config.family = plan->family;
    config.batch = plan->batch;
    config.M = plan->M;
    config.N = plan->N;
@@ -164,10 +166,9 @@ bool DenseLinearHandler::Lower(const QuantContext &ctx, const LoweringDecision &
    config.strideY = static_cast<long long>(plan->M * plan->N);
    config.x = decision.inputs[0].tensor;
    config.y = decision.outputs[0].tensor;
-   // The vendor kernels require K and N aligned to 4 (int8), or K to 16 and N to 4 (float8).
-   // sofieBLAS runs other shapes correctly on its native kernels, which are much slower; the
-   // report records this to explain a slow layer.
-   if (plan->fp8 ? (plan->K % 16 != 0 || plan->N % 4 != 0) : (plan->K % 4 != 0 || plan->N % 4 != 0))
+   // sofieBLAS runs shapes the vendor kernels reject correctly on its native kernels, which are
+   // much slower; the report records this to explain a slow layer.
+   if (plan->K % traits.kAlignment != 0 || plan->N % traits.nAlignment != 0)
       ctx.report.Record("lower", ctx.op.op.Name(),
                         "K=" + std::to_string(plan->K) + " N=" + std::to_string(plan->N) +
                            " are not vendor-aligned; sofieBLAS may run this layer on its native kernels");
@@ -177,24 +178,16 @@ bool DenseLinearHandler::Lower(const QuantContext &ctx, const LoweringDecision &
    config.w = weight;
    std::vector<std::int64_t> columnSums;
    if (plan->weightConstant) {
-      if (plan->fp8) {
-         auto nk = WeightNK<std::uint8_t>(ctx, weight, *plan);
-         if (!plan->weightNK) {
-            config.w = weight + "_nk";
-            rewriter.AddConstant(config.w, ETensorType::FLOAT8E4M3FN, {plan->N, plan->K}, ToBuffer(nk));
-         }
-      } else {
-         auto nk = WeightNK<std::int8_t>(ctx, weight, *plan);
-         if (plan->x.ZeroPoint() != 0) {
-            columnSums.assign(plan->N, 0);
-            for (std::size_t n = 0; n < plan->N; ++n)
-               for (std::size_t k = 0; k < plan->K; ++k)
-                  columnSums[n] += nk[n * plan->K + k];
-         }
-         if (!plan->weightNK) {
-            config.w = weight + "_nk";
-            rewriter.AddConstant(config.w, ETensorType::INT8, {plan->N, plan->K}, ToBuffer(nk));
-         }
+      const auto nk = WeightNK(ctx, weight, *plan);
+      if (traits.integerAccumulate && plan->x.ZeroPoint() != 0) {
+         columnSums.assign(plan->N, 0);
+         for (std::size_t n = 0; n < plan->N; ++n)
+            for (std::size_t k = 0; k < plan->K; ++k)
+               columnSums[n] += static_cast<std::int64_t>(nk[n * plan->K + k]);
+      }
+      if (!plan->weightNK) {
+         config.w = weight + "_nk";
+         rewriter.AddConstant(config.w, traits.operandType, {plan->N, plan->K}, PackCodes(traits.operandType, nk));
       }
    }
 
@@ -225,10 +218,15 @@ bool DenseLinearHandler::Lower(const QuantContext &ctx, const LoweringDecision &
       return Decline(ctx, "fused activation other than Relu");
    }
 
-   // Per-element scale: the library applies the float8 scales; the int8 scales are folded here.
+   // The library's codes-output epilogue, when the stored value is exactly its arithmetic. It
+   // reads the fused alpha and offset; the accumulate path reads the scales, column sums and bias.
+   const bool fusedOutput = traits.fusedCodesOutput && config.store.IsPlainCodes(traits.operandType) &&
+                            (plan->batch == 1 || plan->w.IsPerTensor());
+
+   // Per-element scale: folded here, unless the library applies the operand scales.
    const double sx = plan->x.Scale();
    auto weightScale = [&](std::size_t n) { return plan->w.IsPerTensor() ? plan->w.Scale() : plan->w.Scale(n); };
-   if (plan->fp8) {
+   if (traits.scalesInLibrary) {
       config.scale = 1.0;
       config.scaleX = name + "_sx";
       config.scaleW = name + "_sw";
@@ -237,27 +235,15 @@ bool DenseLinearHandler::Lower(const QuantContext &ctx, const LoweringDecision &
                            ToBuffer(std::vector<float>{static_cast<float>(plan->w.Scale())}));
    } else if (plan->w.IsPerTensor()) {
       config.scale = alpha * sx * plan->w.Scale();
-   } else {
+   } else if (!fusedOutput) {
       std::vector<float> scales(plan->N);
       for (std::size_t n = 0; n < plan->N; ++n)
          scales[n] = static_cast<float>(alpha * sx * weightScale(n));
       config.weightScales = name + "_scales";
       rewriter.AddConstant(config.weightScales, ETensorType::FLOAT, {plan->N}, ToBuffer(scales));
    }
-   if (!columnSums.empty()) {
-      std::vector<std::int32_t> sums(columnSums.begin(), columnSums.end());
-      config.inputZeroPoint = plan->x.ZeroPoint();
-      config.columnSums = name + "_colsum";
-      rewriter.AddConstant(config.columnSums, ETensorType::INT32, {plan->N}, ToBuffer(sums));
-   }
-   if (!bias.empty()) {
-      std::vector<float> values(bias.begin(), bias.end());
-      config.bias = name + "_bias";
-      rewriter.AddConstant(config.bias, ETensorType::FLOAT, {plan->N}, ToBuffer(values));
-   }
 
-   // The int8 library epilogue, when the stored value is exactly its arithmetic.
-   if (!plan->fp8 && config.store.IsPlainInt8Codes() && (plan->batch == 1 || plan->w.IsPerTensor())) {
+   if (fusedOutput) {
       const double sy = config.store.spec->Scale();
       const bool hasOffset = !bias.empty() || !columnSums.empty();
       if (hasOffset) {
@@ -282,13 +268,21 @@ bool DenseLinearHandler::Lower(const QuantContext &ctx, const LoweringDecision &
          rewriter.AddConstant(config.fusedAlphaVector, ETensorType::FLOAT, {plan->N}, ToBuffer(alphas));
       }
       config.fusedEpilogue = FusedEpilogueName(hasOffset, config.store.relu);
-   }
-
-   // The accumulator for the epilogue kernel, unless the library call writes the output itself.
-   if (config.fusedEpilogue.empty()) {
+   } else {
+      if (!columnSums.empty()) {
+         std::vector<std::int32_t> sums(columnSums.begin(), columnSums.end());
+         config.inputZeroPoint = plan->x.ZeroPoint();
+         config.columnSums = name + "_colsum";
+         rewriter.AddConstant(config.columnSums, ETensorType::INT32, {plan->N}, ToBuffer(sums));
+      }
+      if (!bias.empty()) {
+         std::vector<float> values(bias.begin(), bias.end());
+         config.bias = name + "_bias";
+         rewriter.AddConstant(config.bias, ETensorType::FLOAT, {plan->N}, ToBuffer(values));
+      }
+      // The accumulator for the epilogue kernel.
       config.accumulator = name + "_acc";
-      rewriter.AddScratch(config.accumulator, plan->fp8 ? ETensorType::FLOAT : ETensorType::INT32,
-                          {plan->batch * plan->M * plan->N});
+      rewriter.AddScratch(config.accumulator, traits.accumulatorType, {plan->batch * plan->M * plan->N});
    }
 
    auto op = std::make_unique<ROperator_QuantizedDenseLinear>(std::move(config));

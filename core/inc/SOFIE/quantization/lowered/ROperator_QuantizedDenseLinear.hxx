@@ -3,96 +3,86 @@
 
 // Quantized dense linear operator: Y = op(X . W^T) on codes, for Gemm and MatMul. Row-major
 // Y[M,N] = X[M,K] . W[N,K]^T is computed as the column-major D[N x M] = op(W)[N x K] . op(X)[K x M]
-// with ('t','n'), the 'TN' layout the int8 and float8 BLAS kernels require; W is stored [N,K].
+// with ('t','n'), the 'TN' layout the quantized BLAS kernels require; W is stored [N,K]. The GEMM
+// family (RQuantization_GemmFamily.hxx) fixes the operand codes and the library call:
 //
-//   int8   fused:   one blas.int8Matmul / int8MatmulVectorAlpha / ...StridedBatched call writes
-//                   the int8 codes with a float scale, an output-unit bias and the library's
-//                   Relu epilogue; requires a plain int8 store (per-channel weights use
-//                   int8MatmulVectorAlpha)
-//   int8   unfused: int8 x int8 -> int32 accumulator, then the epilogue kernel
-//   float8:         blas.matmulFp8Fp32 (A/B scales as device scalars) -> float, then the
-//                   epilogue kernel
+//   fused:    families with fusedCodesOutput (int8): one blas.int8Matmul / int8MatmulVectorAlpha /
+//             ...StridedBatched call writes the codes with a float scale, an output-unit bias and
+//             the library's Relu epilogue; requires a plain full-range store (per-channel weights
+//             use int8MatmulVectorAlpha)
+//   unfused:  the family's accumulate call (int8 -> int32, e4m3 -> float with the A/B scales as
+//             device scalars), then the epilogue kernel
 // The epilogue kernel computes v = scale * (acc - zpX * colsum[n]) + bias[n] in double and
 // stores it through the QuantStorePlan.
 
 #include "SOFIE/quantization/lowered/ROperator_QuantLowered.hxx"
+#include "SOFIE/quantization/lowered/RQuantization_GemmFamily.hxx"
 
 namespace SOFIE {
 
 struct QuantizedDenseLinearConfig {
-   bool fp8 = false;
+   EQuantGemmFamily family = EQuantGemmFamily::Int8;
    std::size_t batch = 1, M = 0, N = 0, K = 0;
    long long strideX = 0, strideW = 0, strideY = 0;   // per batch entry, in elements
    std::string x, w, y;                               // X codes, W codes [.., N, K], output
-   std::string accumulator;                           // Scratch: int32 (int8) or float (float8);
+   std::string accumulator;                           // Scratch of the family's accumulator type;
                                                       // empty when the fused call writes the output
    // Epilogue kernel operands; an empty name marks an absent operand.
-   double scale = 1.0;            // Per-tensor alpha*sX*sW (int8); 1 for float8, which the library scales
+   double scale = 1.0;            // Per-tensor alpha*sX*sW; 1 when the library applies the scales
    std::string weightScales;      // Per-channel alpha*sX*sW[n], float [N]
    std::int64_t inputZeroPoint = 0;
    std::string columnSums;        // Weight column sums, int32 [N]; set when inputZeroPoint != 0
    std::string bias;              // beta * bias, float [N]
    QuantStorePlan store;
-   // int8 fused path; an empty fusedEpilogue disables it.
+   // Fused codes-output path; an empty fusedEpilogue disables it.
    std::string fusedEpilogue;     // "Epilogue::Default" / "Bias" / "Relu" / "ReluBias"
    double fusedAlpha = 1.0;       // Per-tensor alpha*sX*sW/sY
    std::string fusedAlphaVector;  // Per-channel alpha*sX*sW[n]/sY, float [N]
    std::string fusedBias;         // Output-unit bias with zero-point correction, float [N]
-   // float8 operand scales, as float [1] device scalars.
+   // Operand scales as float [1] device scalars, for families with scalesInLibrary.
    std::string scaleX, scaleW;
 };
 
 class ROperator_QuantizedDenseLinear final : public ROperator_QuantLowered {
    QuantizedDenseLinearConfig fC;
 
-   static std::string Null(const char *type) { return "static_cast<" + std::string(type) + " const *>(nullptr)"; }
-   std::string OrNull(const std::string &tensor, const char *type) const { return tensor.empty() ? Null(type) : Ptr(tensor); }
-   std::string Dims() const
-   {
-      return "'t', 'n', " + std::to_string(fC.N) + ", " + std::to_string(fC.M) + ", " + std::to_string(fC.K);
-   }
+   const QuantGemmTraits &Traits() const { return GemmTraits(fC.family); }
 
-   std::string Fp8Ptr(const std::string &tensor) const
+
+   // Returns the call's operands with D = `d`: W as A and X as B, batched over the leading dims.
+   QuantGemmCall Call(const std::string &d) const
    {
-      return "reinterpret_cast<typename std::remove_reference_t<decltype(blas)>::Fp8E4M3Type const *>(" +
-             Ptr(tensor) + ")";
+      QuantGemmCall call;
+      call.m = std::to_string(fC.N);
+      call.n = std::to_string(fC.M);
+      call.k = std::to_string(fC.K);
+      call.a = Ptr(fC.w);
+      call.b = Ptr(fC.x);
+      call.d = d;
+      call.batched = fC.batch > 1;
+      call.strideA = std::to_string(fC.strideW);
+      call.strideB = std::to_string(fC.strideX);
+      call.strideD = std::to_string(fC.strideY);
+      call.batch = fC.batch;
+      if (Traits().scalesInLibrary) {
+         call.scaleA = Ptr(fC.scaleW);
+         call.scaleB = Ptr(fC.scaleX);
+      }
+      return call;
    }
 
    std::string FusedCall() const
    {
-      const std::string bias = OrNull(fC.fusedBias, "float");
-      if (fC.batch > 1)
-         return "blas.int8MatmulStridedBatched(" + Dims() + ", " + ExactDoubleLiteral(fC.fusedAlpha) + "f, " +
-                Ptr(fC.w) + ", " + std::to_string(fC.strideW) + "LL, " + Ptr(fC.x) + ", " + std::to_string(fC.strideX) +
-                "LL, " + bias + ", " + Ptr(fC.y) + ", " + std::to_string(fC.strideY) + "LL, " +
-                std::to_string(fC.batch) + ", " + fC.fusedEpilogue + ")";
+      QuantGemmFusedOutput fused;
+      fused.alpha = ExactDoubleLiteral(fC.fusedAlpha) + "f";
       if (!fC.fusedAlphaVector.empty())
-         return "blas.int8MatmulVectorAlpha(" + Dims() + ", " + Ptr(fC.fusedAlphaVector) + ", " + Ptr(fC.w) + ", " +
-                Ptr(fC.x) + ", " + bias + ", " + Ptr(fC.y) + ", " + fC.fusedEpilogue + ")";
-      return "blas.int8Matmul(" + Dims() + ", " + ExactDoubleLiteral(fC.fusedAlpha) + "f, " + Ptr(fC.w) + ", " +
-             Ptr(fC.x) + ", " + bias + ", " + Ptr(fC.y) + ", " + fC.fusedEpilogue + ")";
+         fused.alphaVector = Ptr(fC.fusedAlphaVector);
+      fused.bias = OrNull(fC.fusedBias, "float");
+      fused.epilogue = fC.fusedEpilogue;
+      return QuantGemmFusedCodesCall(Traits(), Call(Ptr(fC.y)), fused);
    }
 
-   std::string AccumulateCall() const
-   {
-      const std::string acc = Ptr(fC.accumulator);
-      if (fC.fp8) {
-         const std::string bf16Null =
-            "static_cast<typename std::remove_reference_t<decltype(blas)>::Bf16Type const *>(nullptr)";
-         if (fC.batch > 1)
-            return "blas.matmulFp8Fp32StridedBatched(" + Dims() + ", 1.0f, " + Fp8Ptr(fC.w) + ", " + Ptr(fC.scaleW) +
-                   ", " + std::to_string(fC.strideW) + "LL, " + Fp8Ptr(fC.x) + ", " + Ptr(fC.scaleX) + ", " +
-                   std::to_string(fC.strideX) + "LL, " + bf16Null + ", " + acc + ", " + std::to_string(fC.strideY) +
-                   "LL, " + std::to_string(fC.batch) + ", Epilogue::Default)";
-         return "blas.matmulFp8Fp32(" + Dims() + ", 1.0f, " + Fp8Ptr(fC.w) + ", " + Ptr(fC.scaleW) + ", " +
-                Fp8Ptr(fC.x) + ", " + Ptr(fC.scaleX) + ", " + bf16Null + ", " + acc + ", Epilogue::Default)";
-      }
-      if (fC.batch > 1)
-         return "blas.int8MatmulStridedBatched(" + Dims() + ", " + Ptr(fC.w) + ", " + std::to_string(fC.strideW) +
-                "LL, " + Ptr(fC.x) + ", " + std::to_string(fC.strideX) + "LL, " + acc + ", " +
-                std::to_string(fC.strideY) + "LL, " + std::to_string(fC.batch) + ")";
-      return "blas.int8Matmul(" + Dims() + ", " + Ptr(fC.w) + ", " + Ptr(fC.x) + ", " + acc + ")";
-   }
+   std::string AccumulateCall() const { return QuantGemmAccumulateCall(Traits(), Call(Ptr(fC.accumulator))); }
 
 public:
    explicit ROperator_QuantizedDenseLinear(QuantizedDenseLinearConfig config) : fC(std::move(config))
@@ -145,10 +135,10 @@ public:
    std::string Generate_GPU_ALPAKA(std::string opName) override
    {
       opName = "op_" + opName;
-      std::string out = "\n//------ QUANTIZED_DENSE_LINEAR " + opName + " (" + (fC.fp8 ? "e4m3" : "int8") +
+      std::string out = "\n//------ QUANTIZED_DENSE_LINEAR " + opName + " (" + Traits().label +
                         ", batch " + std::to_string(fC.batch) + ", M=" + std::to_string(fC.M) +
                         " N=" + std::to_string(fC.N) + " K=" + std::to_string(fC.K) + ")\n";
-      if (fC.fp8)
+      if (Traits().requiresOcpFloat8)
          out += RequireOcpFloat8();
       if (fC.accumulator.empty())
          return out + SP + FusedCall() + ";\n";

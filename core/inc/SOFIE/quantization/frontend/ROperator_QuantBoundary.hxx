@@ -11,7 +11,9 @@
 #include "SOFIE/RModel.hxx"
 #include "SOFIE/ROperator.hxx"
 #include "SOFIE/SOFIE_common.hxx"
+#include "SOFIE/quantization/spec/RQuantization_CodeFormat.hxx"
 #include "SOFIE/quantization/spec/RQuantization_Spec.hxx"
+#include "SOFIE/quantization/utils/RQuantization_Utils.hxx"
 
 #include <cstdint>
 #include <optional>
@@ -42,9 +44,6 @@ struct QuantBoundaryParameters {
 QuantSpec ResolveQuantSpec(RModel &model, const QuantBoundaryParameters &params,
                            const std::vector<std::size_t> &shape);
 
-// Returns the stride for the per-element channel of a per-channel spec: (index / stride) % channels.
-std::size_t QuantSpecChannelStride(const QuantSpec &spec, const std::vector<std::size_t> &shape);
-
 class ROperator_QuantBoundary : public ROperator {
 protected:
    std::string fNX;
@@ -67,7 +66,7 @@ protected:
    {
       fShape = model.GetTensorShape(fNX);
       fSpec = ResolveQuantSpec(model, fParams, fShape);
-      model.AddNeededCustomHeader("SOFIE/quantization/spec/RQuantization_Codec.hxx");
+      model.AddNeededStdLib("cmath");
       model.AddNeededStdLib("cstdint");
    }
 
@@ -131,15 +130,13 @@ protected:
 
    virtual const char *KernelTag() const = 0;
 
-   int RoundingCode() const { return static_cast<int>(fSpec.rounding); }
-
 public:
    bool IsQuantizationBoundary() const override { return true; }
-   std::string GetQuantizationSourceTensor() const override { return fNX; }
 
    const std::string &GetInputTensor() const { return fNX; }
    const std::string &GetOutputTensor() const { return fNY; }
    const QuantSpec &GetSpec() const { return fSpec; }
+   const QuantBoundaryParameters &GetParameters() const { return fParams; }
    const std::vector<std::size_t> &GetShape() const { return fShape; }
 
    // Marks this boundary's output as equal to `tensor`, which another operator computes.
@@ -168,11 +165,8 @@ class ROperator_QuantEncode final : public ROperator_QuantBoundary {
 
    std::string EncodeExpr(const std::string &value, const std::string &channel) const
    {
-      if (fSpec.IsFloatingPoint())
-         return "SOFIE::QuantCodec::EncodeE4M3Scaled(static_cast<double>(" + value + "), " + ScaleExpr(channel) + ")";
-      return "SOFIE::QuantCodec::EncodeInteger(static_cast<double>(" + value + "), " + ScaleExpr(channel) + ", " +
-             ZeroPointExpr(channel) + ", " + ExactDoubleLiteral(fSpec.codeMin) + ", " +
-             ExactDoubleLiteral(fSpec.codeMax) + ", " + std::to_string(RoundingCode()) + ")";
+      return QuantEncodeExpression(fSpec, "static_cast<double>(" + value + ")", ScaleExpr(channel),
+                                   ZeroPointExpr(channel));
    }
 
    void FoldConstant(RModel &model);
@@ -248,10 +242,7 @@ class ROperator_QuantDecode final : public ROperator_QuantBoundary {
 
    std::string DecodeExpr(const std::string &code, const std::string &channel) const
    {
-      if (fSpec.IsFloatingPoint())
-         return "SOFIE::QuantCodec::DecodeE4M3(static_cast<std::uint8_t>(" + code + ")) * " + ScaleExpr(channel);
-      return "SOFIE::QuantCodec::DecodeInteger(static_cast<double>(" + code + "), " + ScaleExpr(channel) + ", " +
-             ZeroPointExpr(channel) + ")";
+      return QuantDecodeExpression(fSpec, code, ScaleExpr(channel), ZeroPointExpr(channel));
    }
 
    void FoldConstant(RModel &model);

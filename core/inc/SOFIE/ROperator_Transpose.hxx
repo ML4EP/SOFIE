@@ -47,7 +47,7 @@ public:
    const std::string &GetInputTensor() const { return fNData; }
    const std::string &GetOutputTensor() const { return fNOutput; }
    // Only legal before Initialize: the output shape is derived from the perm there, and
-   // nothing has been inferred downstream yet. See RModel::CanonicaliseBatchedMatMulOperands.
+   // nothing has been inferred downstream yet.
    void SetPerm(std::vector<int_t> perm) { fAttrPerm = std::move(perm); }
 
    // Rewires this transpose onto the quantized carrier for

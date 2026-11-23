@@ -17,7 +17,9 @@
 namespace SOFIE {
 
 // Mapping from a code to a value. Integer grids are affine; float8 grids carry only a scale,
-// since the format fixes their code set.
+// since the format fixes their code set. Integer covers every bit width and signedness: those
+// are QuantSpec fields, and the code format decides which widths
+// SOFIE can store.
 enum class EQuantEncoding { Undefined = 0, Integer = 1, FP8E4M3 = 2, FP8E5M2 = 3 };
 
 enum class EQuantRounding { NearestEven = 0, Floor = 1, Truncate = 2 };
@@ -35,10 +37,6 @@ struct QuantSpec {
    double codeMin = 0.0;
    double codeMax = 0.0;
    EQuantRounding rounding = EQuantRounding::NearestEven;
-   // Initializers that hold the parameters, so generated code reads per-channel parameters from
-   // device buffers instead of embedding them.
-   std::string scaleTensor;
-   std::string zeroPointTensor;
 
    bool IsDefined() const { return encoding != EQuantEncoding::Undefined && !scales.empty(); }
    bool IsFloatingPoint() const

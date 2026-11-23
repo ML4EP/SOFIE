@@ -18,8 +18,8 @@ public:
 };
 
 // Moves elements without reading them, so codes pass through unchanged on the same grid.
-// `carriesCodes` marks operators whose implementation can be repointed at a carrier
-// (ROperator::RewireLowPrecisionCarrier); the others forward only the grid annotation.
+// `carriesCodes` marks operators whose implementation can be repointed at a carrier;
+// the others forward only the grid annotation.
 class ValuePreservingHandler final : public IQuantOpHandler {
 public:
    explicit ValuePreservingHandler(bool carriesCodes) : fCarriesCodes(carriesCodes) {}
@@ -33,8 +33,7 @@ private:
    bool fCarriesCodes;
 };
 
-// Keeps values on their grid (Relu: max(x, 0) with 0 = zero point; Clip with on-grid
-// bounds). Runs in float itself; an arithmetic producer absorbs it into its epilogue.
+// Keeps values on their grid. Runs in float itself; an arithmetic producer absorbs it into its epilogue.
 class GridPreservingHandler final : public IQuantOpHandler {
 public:
    const char *Name() const override { return "grid-preserving"; }
@@ -42,7 +41,7 @@ public:
 };
 
 // Float operators that decode an E4M3 operand at their load and encode their result onto a
-// grid at their store (ROperator::FuseDequantizedInput / FuseOutputOnGrid): Softmax, LayerNorm.
+// grid at their store (ROperator::FuseDequantizedInput / FuseOutputOnGrid)
 class FusibleFloatHandler final : public IQuantOpHandler {
 public:
    const char *Name() const override { return "fusible-float"; }
@@ -54,7 +53,7 @@ public:
 // ---- families -------------------------------------------------------------------------
 
 // Elementwise Add / Mul: operands in any form (codes decoded on their grid), any per-tensor
-// output grid. Lowered to ROperator_QuantizedElementwise (an Alpaka kernel).
+// output grid. Lowered to ROperator_QuantizedElementwise as an Alpaka kernel.
 class ElementwiseHandler final : public IQuantOpHandler {
 public:
    explicit ElementwiseHandler(bool multiply) : fMultiply(multiply) {}
@@ -78,7 +77,7 @@ public:
    bool Lower(const QuantContext &ctx, const LoweringDecision &decision, QuantRewriter &rewriter) const override;
 };
 
-// Gemm and MatMul (MatMul is parsed into a Gemm): int8 x int8 through sofieBLAS int8Matmul
+// Gemm and MatMul: int8 x int8 through sofieBLAS int8Matmul
 // (int8 output with the library epilogue where it applies), E4M3 x E4M3 through
 // matmulFp8Fp32, strided-batched for two runtime operands. Absorbs a following
 // [encode, decode,] Relu / Clip into its epilogue. Lowered to ROperator_QuantizedDenseLinear.

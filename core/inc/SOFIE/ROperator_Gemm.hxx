@@ -91,7 +91,7 @@ namespace SOFIE{
       int_t GetTransB() const { return fAttrTransB; }
       // Only legal before Initialize, which is where the operand shapes are read.
       void SetTransB(int_t transB) { fAttrTransB = transB; }
-      // Set by CanonicaliseBatchedMatMulOperands, distinguishing a re-permuted batched
+      // Set by the quantization frontends' batched-operand canonicalisation, distinguishing a re-permuted batched
       // operand from an ordinary rank-2 Gemm with transB=1.
       void MarkBatchedOperandBCanonicalised() { fBatchedOperandBCanonicalised = true; }
       bool IsBatchedOperandBCanonicalised() const { return fBatchedOperandBCanonicalised; }

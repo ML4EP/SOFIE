@@ -4,20 +4,30 @@
 // Provides portable encode/decode of quantization codes as constexpr arithmetic with no vendor
 // intrinsics. The same functions run on the host (constant folding at code-generation time) and in
 // Alpaka kernels on every backend, through --expt-relaxed-constexpr on CUDA and natively on HIP and CPU.
+//
+// This file is also the source of the codec in generated code: the build embeds its text in the
+// quantization library, and generation copies the guarded blocks the model calls (and the blocks
+// those call) into the generated header, so generated code does not include SOFIE headers. Every
+// function therefore sits in its own SOFIE_QUANT_CODEC_<Name> guard, which also lets several
+// generated headers and this file share a translation unit.
 
 #include <cmath>
 #include <cstdint>
 
 // Marks a codec function callable from host code and from GPU device code.
+#ifndef SOFIE_QUANT_CODEC_FN
 #if defined(__CUDACC__) || defined(__HIPCC__)
 #define SOFIE_QUANT_CODEC_FN __host__ __device__ constexpr
 #else
 #define SOFIE_QUANT_CODEC_FN constexpr
 #endif
+#endif // SOFIE_QUANT_CODEC_FN
 
 namespace SOFIE {
 namespace QuantCodec {
 
+#ifndef SOFIE_QUANT_CODEC_RoundHalfEven
+#define SOFIE_QUANT_CODEC_RoundHalfEven
 // Rounds half to even (the ONNX QuantizeLinear rounding) without <cmath>, which is not constexpr.
 SOFIE_QUANT_CODEC_FN double RoundHalfEven(double value)
 {
@@ -33,24 +43,36 @@ SOFIE_QUANT_CODEC_FN double RoundHalfEven(double value)
       rounded += 1.0;
    return negative ? -rounded : rounded;
 }
+#endif // SOFIE_QUANT_CODEC_RoundHalfEven
 
+#ifndef SOFIE_QUANT_CODEC_Floor
+#define SOFIE_QUANT_CODEC_Floor
 SOFIE_QUANT_CODEC_FN double Floor(double value)
 {
    const double truncated = static_cast<double>(static_cast<std::int64_t>(value));
    return truncated > value ? truncated - 1.0 : truncated;
 }
+#endif // SOFIE_QUANT_CODEC_Floor
 
+#ifndef SOFIE_QUANT_CODEC_Truncate
+#define SOFIE_QUANT_CODEC_Truncate
 SOFIE_QUANT_CODEC_FN double Truncate(double value)
 {
    return static_cast<double>(static_cast<std::int64_t>(value));
 }
+#endif // SOFIE_QUANT_CODEC_Truncate
 
+#ifndef SOFIE_QUANT_CODEC_Round
+#define SOFIE_QUANT_CODEC_Round
 // Rounds with mode 0 = nearest-even, 1 = floor, 2 = truncate (the order of EQuantRounding).
 SOFIE_QUANT_CODEC_FN double Round(double value, int rounding)
 {
    return rounding == 1 ? Floor(value) : (rounding == 2 ? Truncate(value) : RoundHalfEven(value));
 }
+#endif // SOFIE_QUANT_CODEC_Round
 
+#ifndef SOFIE_QUANT_CODEC_EncodeInteger
+#define SOFIE_QUANT_CODEC_EncodeInteger
 // Encodes onto the integer grid value = (code - zeroPoint) * scale, saturating to [codeMin, codeMax].
 SOFIE_QUANT_CODEC_FN double EncodeInteger(double value, double scale, double zeroPoint, double codeMin, double codeMax,
                                int rounding = 0)
@@ -59,12 +81,18 @@ SOFIE_QUANT_CODEC_FN double EncodeInteger(double value, double scale, double zer
    code = code < codeMin ? codeMin : code;
    return code > codeMax ? codeMax : code;
 }
+#endif // SOFIE_QUANT_CODEC_EncodeInteger
 
+#ifndef SOFIE_QUANT_CODEC_DecodeInteger
+#define SOFIE_QUANT_CODEC_DecodeInteger
 SOFIE_QUANT_CODEC_FN double DecodeInteger(double code, double scale, double zeroPoint)
 {
    return (code - zeroPoint) * scale;
 }
+#endif // SOFIE_QUANT_CODEC_DecodeInteger
 
+#ifndef SOFIE_QUANT_CODEC_DecodeE4M3
+#define SOFIE_QUANT_CODEC_DecodeE4M3
 // Decodes an OCP E4M3 (e4m3fn) byte: 1 sign, 4 exponent (bias 7) and 3 mantissa bits, no
 // infinities, S.1111.111 is NaN. The largest finite magnitude is 448.
 SOFIE_QUANT_CODEC_FN double DecodeE4M3(std::uint8_t bits)
@@ -84,7 +112,10 @@ SOFIE_QUANT_CODEC_FN double DecodeE4M3(std::uint8_t bits)
       power *= 0.5;
    return sign * (1.0 + static_cast<double>(mantissa) / 8.0) * power;
 }
+#endif // SOFIE_QUANT_CODEC_DecodeE4M3
 
+#ifndef SOFIE_QUANT_CODEC_EncodeE4M3
+#define SOFIE_QUANT_CODEC_EncodeE4M3
 // Encodes to E4M3 with round-to-nearest-even, saturating to the largest finite value (the ONNX
 // saturate default and the __nv_fp8_e4m3 conversion). NaN encodes to NaN.
 SOFIE_QUANT_CODEC_FN std::uint8_t EncodeE4M3(double value)
@@ -121,7 +152,10 @@ SOFIE_QUANT_CODEC_FN std::uint8_t EncodeE4M3(double value)
       return static_cast<std::uint8_t>(sign | 0x7Eu);
    return static_cast<std::uint8_t>(sign | (static_cast<unsigned>(exponent + 7) << 3) | (mantissa - 8u));
 }
+#endif // SOFIE_QUANT_CODEC_EncodeE4M3
 
+#ifndef SOFIE_QUANT_CODEC_EncodeE4M3Scaled
+#define SOFIE_QUANT_CODEC_EncodeE4M3Scaled
 // Encodes onto a scaled E4M3 grid: divides in double, rounds to float (the value a float tensor
 // holds), then applies the saturating encode. Every float8 encode in generated code, boundary or
 // fused, uses this function.
@@ -129,6 +163,7 @@ SOFIE_QUANT_CODEC_FN std::uint8_t EncodeE4M3Scaled(double value, double scale)
 {
    return EncodeE4M3(static_cast<double>(static_cast<float>(value / scale)));
 }
+#endif // SOFIE_QUANT_CODEC_EncodeE4M3Scaled
 
 } // namespace QuantCodec
 } // namespace SOFIE

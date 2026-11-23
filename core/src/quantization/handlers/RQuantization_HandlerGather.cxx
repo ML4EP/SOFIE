@@ -8,8 +8,8 @@ namespace SOFIE {
 
 namespace {
 
-// Returns whether `state` is a table this lowering reads: constant, integer of at most 8 bits
-// or E4M3, per-tensor or symmetric per-channel (one scale per channel, decoded per element).
+// Returns whether `state` is a table this lowering reads: constant codes on a kernel code format,
+// per-tensor or symmetric per-channel (one scale per channel, decoded per element).
 bool IsGatherTable(const TensorQuantState &state)
 {
    if (!state.HasGrid() || !state.constant)
@@ -20,15 +20,13 @@ bool IsGatherTable(const TensorQuantState &state)
    for (std::size_t c = 0; c < spec.ChannelCount(); ++c)
       if (spec.ZeroPoint(c) != 0)
          return false;
-   return spec.encoding == EQuantEncoding::Integer && spec.bitWidth <= 8;
+   return HasKernelCodes(spec);
 }
 
 std::size_t GatherAxis(const QuantContext &ctx)
 {
    const auto &gather = dynamic_cast<const ROperator_Gather &>(ctx.op.op);
-   const auto rank = static_cast<std::int64_t>(ctx.Graph().Shape(ctx.op.Input(0)).size());
-   const auto axis = gather.GetAxis();
-   return static_cast<std::size_t>(axis < 0 ? axis + rank : axis);
+   return NormalizeAxis(gather.GetAxis(), ctx.Graph().Shape(ctx.op.Input(0)).size(), "SOFIE quantized Gather");
 }
 
 } // namespace
@@ -74,8 +72,7 @@ bool GatherTableHandler::Lower(const QuantContext &ctx, const LoweringDecision &
    if (!table.spec->IsPerTensor()) {
       channelScales = table.tensor + "_channel_scales";
       channelCount = table.spec->ChannelCount();
-      for (std::size_t i = static_cast<std::size_t>(table.spec->axis) + 1; i < tableShape.size(); ++i)
-         channelStride *= tableShape[i];
+      channelStride = QuantSpecChannelStride(*table.spec, tableShape);
       std::vector<float> scales(channelCount);
       for (std::size_t c = 0; c < channelCount; ++c)
          scales[c] = static_cast<float>(table.spec->Scale(c));

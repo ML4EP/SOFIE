@@ -9,7 +9,7 @@ namespace {
 // Negotiation oracle that handlers query for the forms readers accept and the bindings decided so far.
 class Negotiation final : public IQuantNegotiation {
 public:
-   Negotiation(QuantWorkflow &workflow, const QuantGraphView &view) : fWorkflow(workflow), fView(view) {}
+   Negotiation(QuantWorkflowState &workflow, const QuantGraphView &view) : fWorkflow(workflow), fView(view) {}
 
    QuantContext Context(std::size_t index) const
    {
@@ -70,7 +70,7 @@ public:
    }
 
 private:
-   QuantWorkflow &fWorkflow;
+   QuantWorkflowState &fWorkflow;
    const QuantGraphView &fView;
 };
 
@@ -86,7 +86,7 @@ const ROperator_QuantDecode *SoleDecodeReader(const QuantGraphView &view, const 
 
 } // namespace
 
-void DecidePass::Run(QuantWorkflow &workflow)
+void DecidePass::Run(QuantWorkflowState &workflow)
 {
    auto &plan = workflow.Plan();
    plan.Clear();

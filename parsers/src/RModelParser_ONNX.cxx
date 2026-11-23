@@ -557,9 +557,9 @@ RModel RModelParser_ONNX::Parse(std::string filename, bool verbose)
    fVerbose = verbose;
 
 #ifdef SOFIE_WITH_QUANTIZATION
-   // The parser writes quantization metadata onto a model, so it is what makes code
-   // generation read it. Naming the entry point also keeps the linker from dropping it.
-   InstallQuantizationCodegenPass();
+   // A no-op once the library's static registrar has run; the call itself keeps the linker
+   // (--as-needed) from dropping SOFIE_quantization, without which the registrar never runs.
+   InstallQuantizationWorkflow();
 #endif
 
    fTensorTypeMap.clear();

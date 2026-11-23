@@ -1,7 +1,7 @@
 #ifndef SOFIE_RQUANTIZATION_PASSES
 #define SOFIE_RQUANTIZATION_PASSES
 
-// Quantization workflow passes, the QuantWorkflow state they share, and the two pipelines that
+// Quantization workflow passes, the QuantWorkflowState state they share, and the two pipelines that
 // fix their order:
 //
 //   Analysis (once, after Initialize)        Lowering (per code generation)
@@ -10,10 +10,10 @@
 //                                               Lower         handlers build/rewire, commit
 //                                               Finalize      dead code, pruning, frontier
 //
-// A pass reads the model through QuantWorkflow's views and edits it only by committing a
+// A pass reads the model through QuantWorkflowState's views and edits it only by committing a
 // QuantRewriter, which keeps each pass independently testable.
 
-#include "SOFIE/RModelCodegenPass.hxx"
+#include "SOFIE/RModelPlugin.hxx"
 #include "SOFIE/quantization/diagnostics/RQuantization_Diagnostics.hxx"
 #include "SOFIE/quantization/graph/RQuantization_Graph.hxx"
 #include "SOFIE/quantization/handlers/RQuantization_Handler.hxx"
@@ -35,6 +35,7 @@ struct QuantPlan {
    std::set<std::size_t> pinnedFloat;                        // operators whose handler declined to lower
    std::set<std::size_t> absorbed;                           // operators inside an absorption
    std::unordered_map<std::string, std::size_t> producerOverride;   // tensor -> absorbing operator
+   std::set<std::string> loweredConstants;                   // constants the committed lowering added
 
    void Clear()
    {
@@ -43,14 +44,15 @@ struct QuantPlan {
       decisions.clear();
       absorbed.clear();
       producerOverride.clear();
+      loweredConstants.clear();
    }
 };
 
 // State shared by one workflow run: the model, its handlers, the per-tensor states from
 // Annotate, the plan from Decide, and the report.
-class QuantWorkflow {
+class QuantWorkflowState {
 public:
-   QuantWorkflow(RModel &model, const QuantOpHandlerRegistry &registry);
+   QuantWorkflowState(RModel &model, const QuantOpHandlerRegistry &registry);
 
    QuantModelAccess &Access() { return fAccess; }
    const QuantOpHandlerRegistry &Registry() const { return fRegistry; }
@@ -74,7 +76,7 @@ class IQuantPass {
 public:
    virtual ~IQuantPass() = default;
    virtual const char *Name() const = 0;
-   virtual void Run(QuantWorkflow &workflow) = 0;
+   virtual void Run(QuantWorkflowState &workflow) = 0;
 };
 
 class QuantPassManager {
@@ -84,7 +86,7 @@ public:
       fPasses.push_back(std::move(pass));
       return *this;
    }
-   void Run(QuantWorkflow &workflow) const;
+   void Run(QuantWorkflowState &workflow) const;
 
 private:
    std::vector<std::unique_ptr<IQuantPass>> fPasses;
@@ -97,14 +99,14 @@ private:
 class CanonicalizePass final : public IQuantPass {
 public:
    const char *Name() const override { return "canonicalize"; }
-   void Run(QuantWorkflow &workflow) override;
+   void Run(QuantWorkflowState &workflow) override;
 };
 
 // Assigns every tensor its TensorQuantState: boundaries define grids, handlers propagate them.
 class AnnotatePass final : public IQuantPass {
 public:
    const char *Name() const override { return "annotate"; }
-   void Run(QuantWorkflow &workflow) override;
+   void Run(QuantWorkflowState &workflow) override;
 };
 
 // Runs absorption, then negotiates each tensor's form between its producer and readers: a
@@ -113,7 +115,7 @@ public:
 class DecidePass final : public IQuantPass {
 public:
    const char *Name() const override { return "decide"; }
-   void Run(QuantWorkflow &workflow) override;
+   void Run(QuantWorkflowState &workflow) override;
 };
 
 // Asks each handler with a non-float decision to lower. A declining handler's operator is
@@ -121,7 +123,7 @@ public:
 class LowerPass final : public IQuantPass {
 public:
    const char *Name() const override { return "lower"; }
-   void Run(QuantWorkflow &workflow) override;
+   void Run(QuantWorkflowState &workflow) override;
 };
 
 // Removes unread operators and constants no emitted operator reads, lists the boundaries that
@@ -129,7 +131,7 @@ public:
 class FinalizePass final : public IQuantPass {
 public:
    const char *Name() const override { return "finalize"; }
-   void Run(QuantWorkflow &workflow) override;
+   void Run(QuantWorkflowState &workflow) override;
 };
 
 QuantPassManager MakeQuantAnalysisPipeline();

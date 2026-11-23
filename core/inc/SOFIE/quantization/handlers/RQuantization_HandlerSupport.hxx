@@ -1,43 +1,22 @@
 #ifndef SOFIE_RQUANTIZATION_HANDLERSUPPORT
 #define SOFIE_RQUANTIZATION_HANDLERSUPPORT
 
-// Helpers shared by the family handlers: kernel-grid predicates, constant readers, and the
-// absorption walk after an arithmetic operator.
+// Helpers shared by the family handlers that need a QuantContext: declining a lowering, reading constants through the context, and the epilogue absorption
+// walk after an arithmetic operator. Context-free helpers live in RQuantization_Utils.hxx.
 
 #include "SOFIE/RModel.hxx"
 #include "SOFIE/quantization/handlers/RQuantization_Handler.hxx"
 #include "SOFIE/quantization/lowered/ROperator_QuantLowered.hxx"
+#include "SOFIE/quantization/spec/RQuantization_CodeFormat.hxx"
+#include "SOFIE/quantization/utils/RQuantization_Utils.hxx"
 
-#include <cstring>
-#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
 namespace SOFIE {
 
-// Returns whether a generated kernel can decode or encode codes on `spec`: per-tensor integer
-// of at most 8 bits (int8 / uint8 storage) or per-tensor E4M3.
-inline bool IsKernelGrid(const QuantSpec &spec)
-{
-   if (!spec.IsDefined() || !spec.IsPerTensor())
-      return false;
-   if (spec.encoding == EQuantEncoding::FP8E4M3)
-      return true;
-   return spec.encoding == EQuantEncoding::Integer && spec.bitWidth <= 8;
-}
-
-inline bool IsSignedInt8Grid(const QuantSpec &spec)
-{
-   return spec.encoding == EQuantEncoding::Integer && spec.bitWidth == 8 && spec.isSigned;
-}
-
-inline bool IsE4M3Grid(const QuantSpec &spec)
-{
-   return spec.encoding == EQuantEncoding::FP8E4M3 && spec.IsPerTensor();
-}
-
-// Records why a lowering cannot proceed (SOFIE_QUANT_TRACE prints it) and returns false, so
+// Records why a lowering cannot proceed and returns false, so
 // the driver pins the operator to float.
 inline bool Decline(const QuantContext &ctx, const std::string &reason)
 {
@@ -45,8 +24,7 @@ inline bool Decline(const QuantContext &ctx, const std::string &reason)
    return false;
 }
 
-// Returns the model behind a context for reading initializer data (RModel's readers are
-// non-const).
+// Returns the model behind a context for reading initializer data
 inline RModel &MutableModel(const QuantContext &ctx)
 {
    return const_cast<RModel &>(ctx.Graph().Model());
@@ -58,19 +36,18 @@ std::vector<T> ReadConstant(const QuantContext &ctx, const std::string &tensor)
    return MutableModel(ctx).GetTensorData<T>(tensor);
 }
 
-template <typename T>
-std::shared_ptr<void> ToBuffer(const std::vector<T> &values)
+// Returns a constant's codes as whole numbers or raw bytes, whatever
+// their storage type.
+inline std::vector<double> ReadCodes(const QuantContext &ctx, const std::string &tensor)
 {
-   std::shared_ptr<void> data(malloc(values.size() * sizeof(T)), free);
-   std::memcpy(data.get(), values.data(), values.size() * sizeof(T));
-   return data;
+   return ReadCodes(MutableModel(ctx), tensor);
 }
 
 // Epilogue an arithmetic operator absorbs after its single output `start`:
 //   [Encode -> Decode on one grid]  (the output's fake quant)   then
 //   Relu | Clip (constant bounds), possibly both,
 // each the sole reader of the previous tensor. Nothing is absorbed without a Relu or Clip:
-// a bare boundary pair is a form decision, not an absorption.
+// a bare boundary pair is a form decision.
 struct AbsorbedEpilogue {
    QuantAbsorption absorption;
    std::optional<QuantSpec> snap;

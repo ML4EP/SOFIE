@@ -18,16 +18,17 @@ Headers are under `core/inc/SOFIE/quantization/<module>/`, sources under
 
 | Module | Holds | Key types |
 |---|---|---|
-| `spec/` | The one vocabulary: the grid a tensor lives on and the form it takes; the portable codec | `QuantSpec`, `EQuantForm`, `TensorQuantState`, `QuantCodec::*` |
+| `spec/` | The one vocabulary: the grid a tensor lives on and the form it takes; the portable codec; code formats (storage, packing and generated encode/decode per encoding) | `QuantSpec`, `EQuantForm`, `TensorQuantState`, `QuantCodec::*`, `HasKernelCodes` / `IsKernelGrid`, `QuantEncodeExpression` / `QuantDecodeExpression`, `PackCodes` |
+| `utils/` | Context-free helpers every module shares: host buffers, axis normalization and per-channel axis resolution, initializer readers, registering folded constants | `ToBuffer`, `NormalizeAxis`, `ResolvePerChannelAxis`, `QuantSpecChannelStride`, `ReadInitializerAsDouble`, `ReadCodes`, `AddFoldedConstant` |
 | `frontend/` | Format adapters and the canonical boundary operators they emit | `IQuantFrontend`, `QdqFrontend`, `QonnxFrontend`, `NativeLowPrecisionFrontend`, `ROperator_QuantEncode`, `ROperator_QuantDecode` |
 | `graph/` | The only access to `RModel` internals; read-only views; transactional edits | `QuantModelAccess`, `QuantGraphView`, `QuantOpView`, `QuantRewriter` |
 | `handlers/` | One handler per operator type, the registry mapping types to handlers | `IQuantOpHandler`, `QuantOpHandlerRegistry`, the family handlers |
-| `lowered/` | The operators handlers build: generated Alpaka kernels plus sofieBLAS calls | `ROperator_QuantizedDenseLinear`, `ROperator_QuantizedConv`, `ROperator_QuantizedElementwise`, `ROperator_QuantizedGather` |
+| `lowered/` | The operators handlers build: generated Alpaka kernels plus sofieBLAS calls; the GEMM families they multiply with | `ROperator_QuantizedDenseLinear`, `ROperator_QuantizedConv`, `ROperator_QuantizedElementwise`, `ROperator_QuantizedGather`, `EQuantGemmFamily`, `QuantGemmTraits` |
 | `passes/` | The workflow state and the passes | `QuantPlan`, `IQuantPass`, `QuantPassManager` |
 | `diagnostics/` | Environment options and the report written into generated code | `QuantizationOptions`, `QuantWorkflowReport` |
-| `integration/` | The `RModelCodegenPass` that code generation calls; the installer | `QuantizationWorkflowPass`, `InstallQuantizationCodegenPass` |
+| `integration/` | The `RModelPlugin` that code generation calls; the installer | `QuantizationWorkflow`, `InstallQuantizationWorkflow` |
 
-Dependencies point one way: `spec` ← `frontend`, `graph` ← `handlers`, `lowered` ←
+Dependencies point one way: `spec` ← `utils` ← `frontend`, `graph` ← `handlers`, `lowered` ←
 `passes` ← `integration`. `SOFIE_core` does not depend on any of it; the parse-only holders
 `ROperator_ONNXQuantizeLinear`, `ROperator_ONNXDequantizeLinear` and `ROperator_QONNXQuant`
 live in core so the parser can build them, and throw if they ever reach code generation.
@@ -36,25 +37,32 @@ live in core so the parser can build them, and throw if they ever reach code gen
 
 ```
 RModelParser_ONNX::Parse
-  builds parse-only Q/DQ / QONNX holders, installs QuantizationWorkflowPass
+  builds parse-only Q/DQ / QONNX holders, installs QuantizationWorkflow
 
 RModel::Initialize
-  Normalize ── frontends ────────────── Q/DQ, QONNX, native FP8  →  QuantEncode / QuantDecode
+  OnParsed ────── frontends ────────────── Q/DQ, QONNX, native FP8  →  QuantEncode / QuantDecode
+                  batched MatMul operands ─ B re-laid as [.., N, K] (quantized models only)
   (operators initialize: specs resolve, constant boundaries fold to codes / floats)
-  Analyze ──── Annotate ─────────────── every tensor gets a TensorQuantState
+  OnInitialized ─ Annotate ─────────────── every tensor gets a TensorQuantState
 
-Generate / GenerateGPU_ALPAKA
-  BuildLoweredView
-     Canonicalize ── duplicate decodes and same-grid decode→encode become views (Alpaka)
+GenerateGPU_ALPAKA (Generate, the C++ generator, rejects quantized models here)
+  PrepareGeneration
+     Canonicalize ── duplicate decodes and same-grid decode→encode become views
      Decide ──────── absorption, then form negotiation between producers and readers
      Lower ───────── handlers build or rewire operators; decliners are pinned to float
-     Finalize ────── dead code, unused folded constants, summary line
-  DiagnosticComments ── the report, written at the top of the generated header
+     Finalize ────── dead code; constants the lowering made obsolete; summary line
+  (RModel picks the weight file: binary when a weight holds int8 / uint8 / float8 codes)
+  SupportCode ─── the summary line, and the QuantCodec functions the generated code calls,
+                  copied from spec/RQuantization_Codec.hxx ahead of the model namespace
 ```
+
+Generated code includes no quantization header: the build embeds the text of
+`RQuantization_Codec.hxx` in the library, and `SupportCode` copies only the guarded blocks the
+model calls (with the blocks those call).
 
 ### Canonical form
 
-After `Normalize` the graph holds only float operators plus `QuantEncode` (float → codes)
+After `OnParsed` the graph holds only float operators plus `QuantEncode` (float → codes)
 and `QuantDecode` (codes → float):
 
 - ONNX Q/DQ map one to one.
@@ -117,7 +125,7 @@ Registered handlers (`handlers/RQuantization_HandlerRegistry.cxx`):
 
 What each arithmetic family lowers:
 
-- **Dense linear**: signed int8 per-tensor input (any zero point; a non-zero one needs a
+- **Dense linear** (GEMM families `Int8`, `E4M3`): signed int8 per-tensor input (any zero point; a non-zero one needs a
   constant weight for the column sums), symmetric int8 weight per tensor or per output
   channel; or E4M3 input and weight. Any K and N lower: the vendor kernels need K and N
   aligned to 4 (K to 16 for float8), and sofieBLAS runs other shapes on its native kernels,
@@ -153,10 +161,33 @@ plus native epilogue to fully native kernels. Give the operator `OperatorKind::Q
 `BlasOptions{.quantization = true}`, without which the quantized calls throw. A float8 BLAS call
 should emit `RequireOcpFloat8()` first (a compile-time refusal on FNUZ-only AMD targets).
 
-**A new grid** (another bit width or float format). Extend `QuantSpec`/`EQuantEncoding` and
-`QuantCodec` (keep it `constexpr` and `__host__ __device__`), then teach `IsKernelGrid` and the
-family planners which grids they accept. Frontends need no change unless the format has a new
-ONNX spelling.
+**Another integer space** (uint8 activations, int4 weights, int16, ...). Every integer grid is
+`EQuantEncoding::Integer`; its bit width, signedness and code range are `QuantSpec` fields, and
+one codec serves them all. Only two places decide what is supported, and handlers never test a
+bit width:
+
+1. *Storage* (`spec/RQuantization_CodeFormat`). `IsBakeableCodeType`, `PackCodes` and
+   `UnpackCodes` list the tensor types SOFIE can bake and read (today INT8, UINT8,
+   FLOAT8E4M3FN). Every integer grid of at most 8 bits already uses them. For int16 / int32, add
+   the type there. `IsKernelGrid` / `HasKernelCodes` then accept the grid, so Elementwise, Gather,
+   carriers, boundary folding and the weight file handle it with no further change.
+2. *Matrix products* (`lowered/RQuantization_GemmFamily`). Dense and Conv ask
+   `SelectGemmFamily(x, w)` for a family and read everything else from `QuantGemmTraits`: operand
+   and accumulator types, alignment, integer accumulation (zero-point correction, padding),
+   library-applied scales, a fused codes-output epilogue. To add a family, give it an enum value
+   and a traits row, return it from `SelectGemmFamily`, and emit its sofieBLAS call in
+   `QuantGemmAccumulateCall` (and in `QuantGemmFusedCodesCall` if it has one). Signed int2..int7
+   grids already store int8 values and would only need `SelectGemmFamily` widened.
+
+Core float operators that decode a carrier at their load declare which grids they accept in
+`CanFuseDequantizedInput(grid)` (today per-tensor E4M3), so adding integer decode to one of them
+is local to that operator.
+
+**A new float encoding.** Add an `EQuantEncoding` value and its `QuantCodec` functions (keep
+them `SOFIE_QUANT_CODEC_FN`, each in its own `#ifndef SOFIE_QUANT_CODEC_<Name>` guard, which is
+how generation finds and copies them), then add a case to each switch in
+`RQuantization_CodeFormat.cxx`. Frontends need no change unless the format has a new ONNX
+spelling.
 
 **A new format.** Add an `IQuantFrontend` that rewrites its nodes into `QuantEncode` /
 `QuantDecode` with `QuantBoundaryParameters` and register it in `QuantFrontends()`.

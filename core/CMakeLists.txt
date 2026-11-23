@@ -18,7 +18,7 @@ set(sources_headers
    SOFIE/RModel_Base.hxx
    SOFIE/RModel.hxx
    SOFIE/RModelExtension.hxx
-   SOFIE/RModelCodegenPass.hxx
+   SOFIE/RModelPlugin.hxx
    SOFIE/RModelProfiler.hxx
    SOFIE/RModelProfilerGPU.hxx
    SOFIE/RWeightFile.hxx
@@ -85,6 +85,8 @@ set(sources_headers
 set(sources_quantization_headers
    SOFIE/quantization/spec/RQuantization_Spec.hxx
    SOFIE/quantization/spec/RQuantization_Codec.hxx
+   SOFIE/quantization/spec/RQuantization_CodeFormat.hxx
+   SOFIE/quantization/utils/RQuantization_Utils.hxx
    SOFIE/quantization/frontend/ROperator_QuantBoundary.hxx
    SOFIE/quantization/frontend/RQuantization_Frontend.hxx
    SOFIE/quantization/graph/RQuantization_Graph.hxx
@@ -92,6 +94,7 @@ set(sources_quantization_headers
    SOFIE/quantization/handlers/RQuantization_Handlers.hxx
    SOFIE/quantization/handlers/RQuantization_HandlerSupport.hxx
    SOFIE/quantization/lowered/ROperator_QuantLowered.hxx
+   SOFIE/quantization/lowered/RQuantization_GemmFamily.hxx
    SOFIE/quantization/lowered/ROperator_QuantizedDenseLinear.hxx
    SOFIE/quantization/lowered/ROperator_QuantizedConv.hxx
    SOFIE/quantization/lowered/ROperator_QuantizedElementwise.hxx
@@ -108,6 +111,8 @@ list(TRANSFORM sources_quantization_headers PREPEND "inc/")
 # The quantization library's translation units.
 set(sources_quantization_cxx
     src/quantization/spec/RQuantization_Spec.cxx
+    src/quantization/spec/RQuantization_CodeFormat.cxx
+    src/quantization/utils/RQuantization_Utils.cxx
     src/quantization/frontend/RQuantization_Frontend.cxx
     src/quantization/frontend/RQuantization_FrontendQDQ.cxx
     src/quantization/frontend/RQuantization_FrontendQONNX.cxx
@@ -122,6 +127,7 @@ set(sources_quantization_cxx
     src/quantization/handlers/RQuantization_HandlerGather.cxx
     src/quantization/handlers/RQuantization_HandlerFusible.cxx
     src/quantization/lowered/ROperator_QuantLowered.cxx
+    src/quantization/lowered/RQuantization_GemmFamily.cxx
     src/quantization/passes/RQuantization_PassManager.cxx
     src/quantization/passes/RQuantization_PassCanonicalize.cxx
     src/quantization/passes/RQuantization_PassAnnotate.cxx
@@ -134,7 +140,7 @@ set(sources_quantization_cxx
 set(sources_cxx
     src/RModel_Base.cxx
     src/RModel.cxx
-    src/RModelCodegenPass.cxx
+    src/RModelPlugin.cxx
     src/RWeightFile.cxx
     src/RModelProfiler.cxx
     src/RModelProfilerGPU.cxx
@@ -177,6 +183,14 @@ set(SOFIE_INSTALL_TARGETS SOFIE_core)
 if(SOFIE_WITH_QUANTIZATION)
   add_library(SOFIE_quantization SHARED)
   target_sources(SOFIE_quantization PRIVATE ${sources_quantization_headers} ${sources_quantization_cxx})
+  # Embeds the codec header's text, which generation copies into quantized models' headers so
+  # generated code needs no SOFIE include. Reconfigures when the header changes.
+  set(SOFIE_QUANT_CODEC_HEADER ${CMAKE_CURRENT_SOURCE_DIR}/inc/SOFIE/quantization/spec/RQuantization_Codec.hxx)
+  file(READ ${SOFIE_QUANT_CODEC_HEADER} SOFIE_QUANT_CODEC_TEXT)
+  configure_file(src/quantization/spec/RQuantization_CodecText.cxx.in
+                 ${CMAKE_CURRENT_BINARY_DIR}/RQuantization_CodecText.cxx @ONLY)
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${SOFIE_QUANT_CODEC_HEADER})
+  target_sources(SOFIE_quantization PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/RQuantization_CodecText.cxx)
   target_link_libraries(SOFIE_quantization PUBLIC SOFIE_core)
   list(APPEND SOFIE_INSTALL_TARGETS SOFIE_quantization)
 endif()

@@ -14,10 +14,7 @@
 #include "SOFIE/RModelProfiler.hxx"
 #include "SOFIE/RWeightFile.hxx"
 #include "SOFIE/SOFIE_common.hxx"
-#include "SOFIE/ROperator_Cast.hxx"
-#include "SOFIE/ROperator_Gemm.hxx"
-#include "SOFIE/RModelCodegenPass.hxx"
-#include "SOFIE/ROperator_Transpose.hxx"
+#include "SOFIE/RModelPlugin.hxx"
 
 #include <unordered_map>
 
@@ -61,82 +58,57 @@ std::string TensorMember(std::string const &name)
 
 } // namespace
 
-void RModel::CanonicaliseBatchedMatMulOperands()
+void RModel::SelectDefaultWeightFile()
 {
-   // Same reasoning as EliminateDeadOperators: a subgraph body can reference an outer
-   // tensor invisibly, so the single-consumer guards below would not be sound.
-   if (!fSubGraphs.empty())
+   if (!fUseSession || fWeightFile != WeightFileType::Text)
       return;
-
-   // Runs before the operator Initialize loop, where connectivity exists but shapes do
-   // not, so ordinary shape inference derives every downstream shape from the new perm.
-   std::unordered_map<std::string, std::size_t> producer;
-   std::unordered_map<std::string, std::size_t> readers;
-   for (std::size_t index = 0; index < fOperators.size(); ++index) {
-      for (const auto &output : fOperators[index]->GetOpOutputTensors())
-         producer[std::string(output)] = index;
-      for (const auto &input : fOperators[index]->GetOpInputTensors())
-         ++readers[std::string(input)];
+   // Weights may have been added or erased since Initialize
+   fUseWeightFile = false;
+   for (const auto &[name, tensor] : fInitializedTensors) {
+      if (!tensor.IsWeightTensor())
+         continue;
+      fUseWeightFile = true;
+      // Code tensors (int8 / uint8 / float8) are stored byte-exact; the text format is meant for
+      // float weights and flushes subnormal floats to zero.
+      const auto type = tensor.type();
+      if (type == ETensorType::INT8 || type == ETensorType::UINT8 || IsFP8TensorType(type))
+         fWeightFile = WeightFileType::Binary;
    }
-   const std::set<std::string> graphOutputs(fOutputTensorNames.begin(), fOutputTensorNames.end());
+}
 
-   for (std::size_t index = 0; index < fOperators.size(); ++index) {
-      auto *gemm = dynamic_cast<ROperator_Gemm<float> *>(fOperators[index].get());
-      // A bias would take this off the strided-batched branch, and a transpose already
-      // set means somebody else owns the layout.
-      if (gemm == nullptr || gemm->GetTransA() != 0 || gemm->GetTransB() != 0 || gemm->HasBias())
-         continue;
+void RModel::UpdateOperators(
+   const std::function<std::vector<std::unique_ptr<ROperator>>(std::vector<std::unique_ptr<ROperator>>)> &rewrite)
+{
+   if (fIsInitialized)
+      throw std::runtime_error("SOFIE: the operator list can only be rewritten before Initialize");
+   // The usage table holds string_views into the operators being handed to `rewrite`.
+   fIntermediateTensorFrequencyLookup.clear();
+   auto rewritten = rewrite(std::move(fOperators));
+   fOperators.clear();
+   // AddOperator records each runtime input's last use, as during parsing.
+   for (auto &op : rewritten)
+      AddOperator(std::move(op));
+}
 
-      // Walks back from the B operand, through any low-precision staging, to the Transpose
-      // that lays it out. Every tensor on the way must be read only here.
-      std::string cursor = gemm->GetWeightTensorName();
-      ROperator_Transpose<float> *transpose = nullptr;
-      // Shorter than kQuantizationWalkMaxHops: staging places at most two operators between
-      // the operand and its Transpose.
-      constexpr int kStagingWalkMaxHops = 3;
-      for (int hop = 0; hop < kStagingWalkMaxHops && !cursor.empty(); ++hop) {
-         if (readers[cursor] != 1 || graphOutputs.count(cursor) != 0)
-            break;
-         auto found = producer.find(cursor);
-         if (found == producer.end())
-            break;
-         auto *op = fOperators[found->second].get();
-         if (auto *candidate = dynamic_cast<ROperator_Transpose<float> *>(op)) {
-            transpose = candidate;
-            break;
-         }
-         // A quantization boundary (frontend or canonical encode/decode) only retypes the
-         // operand; the walk continues behind it.
-         if (op->IsQuantizationBoundary()) {
-            cursor = op->GetQuantizationSourceTensor();
-            continue;
-         }
-         // A Cast stages the operand in a native low-precision graph, as a fake-quant pair does
-         // in the int8 form; both retype without moving elements.
-         if (dynamic_cast<ROperator_Cast *>(op) != nullptr) {
-            const auto castInputs = op->GetOpInputTensors();
-            if (castInputs.empty())
-               break;
-            cursor = std::string(castInputs[0]);
-            continue;
-         }
-         break;
-      }
-      if (transpose == nullptr)
-         continue;
+void RModel::InstallLoweredOperator(std::size_t index, std::unique_ptr<ROperator> op)
+{
+   if (index >= fOperators.size())
+      throw std::runtime_error("SOFIE: lowered operator index " + std::to_string(index) + " is out of range");
+   AddBlasRoutines(op->GetBlasRoutines());
+   for (const auto &lib : op->GetStdLibs())
+      AddNeededStdLib(lib);
+   fLoweredOperators[index] = std::move(op);
+}
 
-      auto perm = transpose->GetPerm();
-      // Rank 2 is the dense path, which already hands cuBLASLt a [N,K] weight.
-      if (perm.size() < 3)
-         continue;
+void RModel::SuppressOperator(std::size_t index)
+{
+   fLoweredConsumedOperatorIndices.insert(index);
+}
 
-      // B arrives as [.., K, N]; swapping the last two perm entries yields [.., N, K] at
-      // identical cost, with transB restoring the semantics. cuBLASLt accepts only this.
-      std::swap(perm[perm.size() - 2], perm[perm.size() - 1]);
-      transpose->SetPerm(std::move(perm));
-      gemm->SetTransB(1);
-      gemm->MarkBatchedOperandBCanonicalised();
-   }
+void RModel::ResetLoweredOperators()
+{
+   fLoweredOperators.clear();
+   fLoweredConsumedOperatorIndices.clear();
 }
 
 void RModel::EliminateDeadOperators()
@@ -149,14 +121,8 @@ void RModel::EliminateDeadOperators()
    const std::set<std::string> graphOutputs(fOutputTensorNames.begin(), fOutputTensorNames.end());
 
    // Counts consumers over the emitted operators, which differ from fOperators where a
-   // lowered region replaces an operator and suppresses those it absorbs.
-   auto emitted = [this](std::size_t index) -> const ROperator * {
-      if (fLoweredConsumedOperatorIndices.count(index) != 0)
-         return nullptr;
-      if (auto lowered = fLoweredOperators.find(index); lowered != fLoweredOperators.end())
-         return lowered->second.get();
-      return fOperators[index].get();
-   };
+   // lowered operator replaces one and suppresses those it absorbs.
+   auto emitted = [this](std::size_t index) { return std::as_const(*this).GetEmittedOperatorAt(index); };
 
    // To a fixpoint: dropping one operator can strand the operator that fed it.
    bool changed = true;
@@ -182,8 +148,7 @@ void RModel::EliminateDeadOperators()
             return readers[name] == 0 && graphOutputs.count(name) == 0;
          });
          if (dead) {
-            // Suppresses the operator through the same channel as the lowering.
-            fLoweredConsumedOperatorIndices.insert(index);
+            SuppressOperator(index);
             changed = true;
          }
       }
@@ -786,10 +751,8 @@ void RModel::Initialize(const std::map<std::string, size_t> & inputParams, bool 
       PrintDynamicTensors();
    }
 
-   if (auto *pass = InstalledCodegenPass())
-      pass->Normalize(*this);
-
-   CanonicaliseBatchedMatMulOperands();
+   if (auto *plugin = ActiveModelPlugin())
+      plugin->OnParsed(*this);
 
    // Go through model and initialize each operator
    int i = 0;
@@ -827,8 +790,8 @@ void RModel::Initialize(const std::map<std::string, size_t> & inputParams, bool 
       i++;
    }
 
-   if (auto *pass = InstalledCodegenPass())
-      pass->Analyze(*this);
+   if (auto *plugin = ActiveModelPlugin())
+      plugin->OnInitialized(*this);
 
    // Checks whether tensors flagged as not writable are used by runtime operators.
    // Integer initializers are embedded in the generated code, except quantized storage
@@ -841,9 +804,8 @@ void RModel::Initialize(const std::map<std::string, size_t> & inputParams, bool 
             std::cout << "Initialized tensor " << it.first << " is flagged as not writable but is used by non constant operators, set it as writable \n";
          }
       }
-      const bool isFileBackedQuantizedStorage =
-         InstalledCodegenPass() != nullptr && InstalledCodegenPass()->HasExternalStorage(*this, it.first);
-      if (it.second.type() != ETensorType::FLOAT && !isFileBackedQuantizedStorage) {
+      const bool ownedByPlugin = ActiveModelPlugin() != nullptr && ActiveModelPlugin()->OwnsStorage(*this, it.first);
+      if (it.second.type() != ETensorType::FLOAT && !ownedByPlugin) {
          it.second.SetConstant();
       }
    }
@@ -1607,15 +1569,10 @@ void RModel::GenerateSessionCode()
    for (size_t op_idx = 0; op_idx < fOperators.size(); ++op_idx) {
       if (fVerbose)
          std::cout << "Generating code for operator .... " << op_idx << std::endl;
-      if (!fProfile && fLoweredConsumedOperatorIndices.count(op_idx) != 0) {
-         continue;
-      }
       if (fProfile) {
          allOperatorCode += RModelProfiler::GenerateOperatorCode(*fOperators[op_idx], op_idx);
-      } else if (auto lowered = fLoweredOperators.find(op_idx); lowered != fLoweredOperators.end()) {
-         allOperatorCode += lowered->second->Generate(std::to_string(op_idx));
-      } else {
-         allOperatorCode += fOperators[op_idx]->Generate(std::to_string(op_idx));
+      } else if (ROperator *op = GetEmittedOperatorAt(op_idx)) {
+         allOperatorCode += op->Generate(std::to_string(op_idx));
       }
    }
 
@@ -1709,18 +1666,12 @@ void RModel::Generate(std::underlying_type_t<Options> options, int batchSize, lo
 
    // initialize the model including all operators and sub-graphs
    Initialize(batchSize, verbose);
-   auto *pass = InstalledCodegenPass();
-   if ((options & explicitWeightPolicy) == 0 && pass && pass->RequiresWeightFile(*this)) {
-      fUseWeightFile = true;
-      fWeightFile = WeightFileType::Binary;
-   }
-   if (pass)
-      pass->ContributeSupportHeaders(*this, ECodegenTarget::CPU);
+   if (auto *plugin = ActiveModelPlugin())
+      plugin->PrepareGeneration(*this, EGenerationTarget::CPU);
+   if ((options & explicitWeightPolicy) == 0)
+      SelectDefaultWeightFile();
    if (fWeightFile == WeightFileType::Binary)
       AddNeededCustomHeader("SOFIE/RWeightFile.hxx");
-   if (pass) {
-      pass->BuildLoweredView(*this, ECodegenTarget::CPU);
-   }
 
    // if having dynamic tensor we need to have a Session
    if (!fDynamicTensorInfos.empty()) {

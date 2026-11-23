@@ -1,12 +1,13 @@
 #ifndef SOFIE_ROPERATOR_QUANTIZEDGATHER
 #define SOFIE_ROPERATOR_QUANTIZEDGATHER
 
-// Quantized Gather from a table held as codes (an embedding table of int8 / float8 weights).
+// Quantized Gather from a table held as codes (an embedding table of integer / float8 weights).
 // The output copies the gathered codes when it stays on the table's grid; otherwise the decoded
 // values are stored per a QuantStorePlan. A per-channel table is decoded with the scale of each
 // element's channel. Negative indices count from the end, as in ONNX.
 
 #include "SOFIE/quantization/lowered/ROperator_QuantLowered.hxx"
+#include "SOFIE/quantization/spec/RQuantization_CodeFormat.hxx"
 
 namespace SOFIE {
 
@@ -72,10 +73,8 @@ public:
             // Per-channel table: decodes symmetric codes with their channel's scale.
             op += SP + SP + SP + "std::size_t const channel = (source / " + std::to_string(fChannelStride) + ") % " +
                   std::to_string(fChannelCount) + ";\n";
-            load = fTable.spec && fTable.spec->IsFloatingPoint()
-                      ? "(SOFIE::QuantCodec::DecodeE4M3(static_cast<std::uint8_t>(table[source])) * "
-                        "static_cast<double>(channelScales[channel]))"
-                      : "(static_cast<double>(table[source]) * static_cast<double>(channelScales[channel]))";
+            load = QuantDecodeExpression(*fTable.spec, "table[source]", "static_cast<double>(channelScales[channel])",
+                                         "0.0");
          }
          op += SP + SP + SP + "double v = " + load + ";\n";
          op += fStore.Statements("v", "y[idx]", SP + SP + SP);
@@ -98,8 +97,7 @@ public:
          outer *= fTableShape[i];
       for (std::size_t i = fAxis + 1; i < fTableShape.size(); ++i)
          inner *= fTableShape[i];
-      const std::string scales =
-         fChannelScales.empty() ? "static_cast<float const *>(nullptr)" : Ptr(fChannelScales);
+      const std::string scales = OrNull(fChannelScales, "float");
       return "\n//------ QUANTIZED_GATHER " + opName + "\n" +
              Launch1D(opName, "quantizedGatherKernel_" + opName, outer * fIndexCount * inner,
                       Ptr(fTable.tensor) + ", " + Ptr(fIndices) + ", " + scales + ", " + Ptr(fY));

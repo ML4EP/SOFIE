@@ -125,14 +125,17 @@ public:
    }
 
    // Returns whether a carrier operand can decode at the load with the pair's scale, using
-   // the dequantize kernel's arithmetic without its memory round trip.
-   bool CanFuseDequantizedInput() const override { return !fIsOutputConstant; }
+   // the dequantize kernel's arithmetic without its memory round trip. Accepts per-tensor E4M3
+   // only: an affine grid adds a zero point, and E5M2 has its own decode.
+   bool CanFuseDequantizedInput(const QuantizationGrid &grid) const override
+   {
+      return !fIsOutputConstant && IsPerTensorE4M3(grid);
+   }
 
    bool FuseDequantizedInput(const std::string &from, const std::string &carrier,
                              const QuantizationGrid &grid) override
    {
-      // Accepts per-tensor E4M3 only: an affine grid adds a zero point, and E5M2 has its own decode.
-      if (!IsPerTensorE4M3(grid))
+      if (!CanFuseDequantizedInput(grid))
          return false;
       if (fNA == from && !fInputGridA) {
          fNA = carrier;
@@ -578,8 +581,9 @@ public:
       const auto flattened_index_B =
          makeFlattenedIndex(fShapeB, stridesB, isBScalar, isBContiguous);
 
-      // Decodes a carrier operand at the load with the pair's scale. The fused kernel may hold
-      // the value at wider precision than the two-kernel path; results agree within one code step.
+      // Decodes a carrier operand at the load with the pair's scale. The fused kernel keeps the
+      // decoded value at the compiler's working precision; results agree with the two-kernel path
+      // within one code step.
       std::string decodes;
       auto operandExpr = [&decodes](const std::string &load, const char *name,
                                     const std::optional<QuantizationGrid> &grid) {
